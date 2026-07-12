@@ -7,9 +7,9 @@
 #   docker logs -f grok-reg-tool
 
 services:
-  grok-reg-tool:
+  grok-gegister-agent:
     image: ghcr.io/murasamecyan/grokregisteragent:latest
-    container_name: grok-reg-tool
+    container_name: grok-gegister-agent
     restart: unless-stopped
     ports:
       - "${WEB_PORT:-6657}:6657"
