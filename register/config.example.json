@@ -1,0 +1,15 @@
+{
+    "run": {
+        "count": 10
+    },
+    "mail_api_base": "https://your-cloudflare-temp-email-api.example.com",
+    "mail_admin_auth": "<cloudflare_temp_email_admin_password>",
+    "mail_domain": "example.com",
+    "proxy": "",
+    "browser_proxy": "",
+    "api": {
+        "endpoint": "",
+        "token": "",
+        "pool": "basic"
+    }
+}

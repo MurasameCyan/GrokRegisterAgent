@@ -1,0 +1,6 @@
+# Python 运行时产物(脚本运行时生成,不入库)
+__pycache__/
+*.pyc
+logs/
+sso/
+config.json

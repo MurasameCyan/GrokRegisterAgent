@@ -1,0 +1,4 @@
+DrissionPage==4.1.0.9
+curl_cffi>=0.7.0
+requests>=2.32.0
+pyvirtualdisplay>=3.0

@@ -1,0 +1,33 @@
+node_modules/
+out/
+release/
+dist/
+server/dist/
+
+# 运行时数据（账号号池、配置、SSO 存档）
+out/accounts.json
+out/sso/
+data/
+./data/
+docker/data/
+register/config.json
+register/logs/
+register/sso/
+register/__pycache__/
+register/**/*.pyc
+
+# 环境变量
+.env
+docker/.env
+
+# editor / OS junk
+.vscode/
+.idea/
+.fleet/
+.DS_Store
+Thumbs.db
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
