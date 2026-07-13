@@ -20,6 +20,11 @@ export interface AppSettings {
   registerDir: string;
   /** 一次"开始注册"要跑的轮数，1..50 */
   runCount: number;
+  /**
+   * Turnstile「自动通过」等待上限（秒）。
+   * 实际每次在 [30, turnstileAutoWaitMax] 内随机；必须 ≥ 30。
+   */
+  turnstileAutoWaitMax: number;
   mail: MailSettings;
   /** Python 进程使用的 HTTP 代理 */
   proxy: string;
@@ -35,6 +40,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   pythonPath: '',
   registerDir: '',
   runCount: 10,
+  turnstileAutoWaitMax: 60,
   mail: {
     apiBase: '',
     adminAuth: '',
@@ -50,6 +56,12 @@ export function validateSettings(s: AppSettings): Record<string, string> {
   const errors: Record<string, string> = {};
   if (!Number.isInteger(s.runCount) || s.runCount < 1 || s.runCount > 50)
     errors.runCount = '数量必须在 1 到 50 之间';
+  if (
+    !Number.isInteger(s.turnstileAutoWaitMax) ||
+    s.turnstileAutoWaitMax < 30 ||
+    s.turnstileAutoWaitMax > 180
+  )
+    errors.turnstileAutoWaitMax = 'Turnstile 自动等待上限须在 30 到 180 秒之间';
   if (!s.mail.apiBase.trim()) errors['mail.apiBase'] = '请填写邮件后端地址';
   if (!s.mail.adminAuth.trim()) errors['mail.adminAuth'] = '请填写邮件后端管理密码';
   if (!s.mail.domain.trim()) errors['mail.domain'] = '请填写邮件域名';

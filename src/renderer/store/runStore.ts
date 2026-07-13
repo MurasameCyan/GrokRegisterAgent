@@ -70,6 +70,15 @@ export const useRunStore = create<RunState>((set) => ({
           next.status = {
             ...state.status,
             success: e.success,
+            failed: e.failed ?? state.status.failed,
+            total: e.total
+          };
+          break;
+        case 'failed':
+          next.status = {
+            ...state.status,
+            success: e.success ?? state.status.success,
+            failed: e.failed,
             total: e.total
           };
           break;

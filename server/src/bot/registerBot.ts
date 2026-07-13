@@ -240,20 +240,43 @@ export class RegisterBot extends EventEmitter {
         }
 
         // 成功 "✔ 第 N 轮成功"：累加成功数并关联出一条账号记录
-        if (msg.startsWith('✔') && msg.includes('轮成功')) {
+        // 兼容可能的 emoji 变体 / 乱码（✔ �️ 等）
+        const isRoundSuccess =
+            (/[✔✅✓]/.test(msg) || msg.includes('轮成功')) &&
+            msg.includes('成功') &&
+            /第\s*\d+/.test(msg) &&
+            !msg.includes('失败');
+        if (isRoundSuccess) {
             this.status.success++;
-            this.push({ type: 'success', runId, success: this.status.success, total });
+            this.push({
+                type: 'success',
+                runId,
+                success: this.status.success,
+                failed: this.status.failed,
+                total
+            });
             this.recordAccount(runId);
         }
 
-        // 失败 "✘ 第 N 轮失败"
-        if (msg.startsWith('✘') && msg.includes('轮失败')) {
+        // 失败 "✘ 第 N 轮失败" —— 必须推送 failed 事件，否则前端只显示 0
+        const isRoundFail =
+            (/[✘❌✕xX]/.test(msg) || msg.includes('轮失败')) &&
+            msg.includes('失败') &&
+            /第\s*\d+/.test(msg);
+        if (isRoundFail) {
             this.status.failed++;
             this.pendingAccount = {};
+            this.push({
+                type: 'failed',
+                runId,
+                success: this.status.success,
+                failed: this.status.failed,
+                total
+            });
         }
 
         // 转发到 WebUI
-        if (msg.startsWith('✘') || msg.includes('[Error]') || msg.includes('失败')) {
+        if (isRoundFail || msg.startsWith('✘') || msg.includes('[Error]') || msg.includes('失败')) {
             this.error(runId, msg);
         } else {
             this.log(runId, msg);

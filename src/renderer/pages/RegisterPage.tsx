@@ -169,6 +169,26 @@ function RuntimeSettingsPanel() {
             </div>
           </div>
 
+          <div className="rounded-xl bg-muted/70 p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="field-label">Turnstile 自动等待上限</div>
+                <div className="mt-1 text-[12px] text-muted-foreground">
+                  每次随机等待 30～{draft.turnstileAutoWaitMax ?? 60}s，再尝试点击
+                </div>
+              </div>
+              <span className="chip tabular-nums">{draft.turnstileAutoWaitMax ?? 60}s</span>
+            </div>
+            <div className="mt-3">
+              <Slider
+                min={30}
+                max={180}
+                value={draft.turnstileAutoWaitMax ?? 60}
+                onValueChange={(v) => update('turnstileAutoWaitMax', v)}
+              />
+            </div>
+          </div>
+
           <Field label="HTTP 代理（可选）" hint="例如 http://127.0.0.1:7890">
             <Input value={draft.proxy} onChange={(e) => update('proxy', e.target.value)} />
           </Field>

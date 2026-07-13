@@ -48,7 +48,8 @@ export type RunEvent =
   | { type: 'stdout'; runId: string; level: LogLevel; text: string; ts: number }
   | { type: 'stderr'; runId: string; text: string; ts: number }
   | { type: 'progress'; runId: string; current: number; total: number }
-  | { type: 'success'; runId: string; success: number; total: number }
+  | { type: 'success'; runId: string; success: number; failed: number; total: number }
+  | { type: 'failed'; runId: string; success: number; failed: number; total: number }
   | { type: 'sso'; runId: string; token: string }
   | { type: 'account'; runId: string; record: AccountRecord }
   | {

@@ -111,5 +111,14 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
     config.run = { ...(config.run || {}), count };
   }
 
+  // Turnstile 自动通过等待上限（秒）；Python 在 [30, max] 内随机
+  const autoMax = Number(settings.turnstileAutoWaitMax);
+  if (Number.isFinite(autoMax) && autoMax >= 30) {
+    config.turnstile = {
+      ...(config.turnstile || {}),
+      auto_wait_max: Math.min(180, Math.floor(autoMax))
+    };
+  }
+
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
 }

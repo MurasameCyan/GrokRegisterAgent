@@ -1518,10 +1518,51 @@ return true;
         return False
 
 
+def _load_turnstile_auto_wait_max() -> int:
+    """
+    从 config.json 读取 Turnstile 自动通过等待上限（秒）。
+    实际等待在 [30, max] 内随机；缺省 max=60。
+    """
+    default_max = 60
+    config_path = os.path.join(os.path.dirname(__file__), "config.json")
+    try:
+        import json
+        with open(config_path, "r", encoding="utf-8") as f:
+            conf = json.load(f)
+        # 支持 turnstile.auto_wait_max 或顶层 turnstile_auto_wait_max
+        raw = None
+        if isinstance(conf.get("turnstile"), dict):
+            raw = conf["turnstile"].get("auto_wait_max")
+        if raw is None:
+            raw = conf.get("turnstile_auto_wait_max")
+        v = int(raw) if raw is not None else default_max
+        if v < 30:
+            v = 30
+        if v > 180:
+            v = 180
+        return v
+    except Exception:
+        return default_max
+
+
+def _pick_turnstile_auto_wait_secs(timeout: float) -> float:
+    """在 [30, configured_max] 内随机，且不超过本次 getTurnstileToken 的总 timeout-5。"""
+    configured_max = _load_turnstile_auto_wait_max()
+    lo = 30
+    hi = max(lo, configured_max)
+    # secrets.randbelow(n) → [0, n)
+    span = hi - lo + 1
+    picked = lo + secrets.randbelow(span)
+    # 不能把整个 timeout 吃光，至少给点击阶段留 5s
+    cap = max(0.0, float(timeout) - 5.0)
+    return float(min(picked, cap)) if cap > 0 else 0.0
+
+
 def getTurnstileToken(timeout=50):
     """
     求解最终注册页 Turnstile。
-    优先长等自动通过（实测成功多在此）；点击阶段压缩，少点、少等。
+    优先长等自动通过（实测成功多在此）；自动等待时长在 30~n 秒随机（n 由 WebUI 运行参数配置）。
+    点击阶段压缩，少点、少等。
     """
     refresh_active_page()
     _apply_stealth_patches(page)
@@ -1531,10 +1572,13 @@ def getTurnstileToken(timeout=50):
     reset_count = 0
     max_clicks = 2  # 连点收益低，压缩次数
 
-    # 仅加长自动通过；其余流程从紧
-    auto_wait_secs = min(30, max(0, timeout - 5))
+    # 自动通过：30 ~ n 秒随机（n = config turnstile.auto_wait_max，默认 60）
+    auto_wait_secs = _pick_turnstile_auto_wait_secs(timeout)
     auto_wait_until = time.time() + auto_wait_secs
-    print(f"[*] Turnstile 自动通过等待最长 {auto_wait_secs:.0f}s …")
+    print(
+        f"[*] Turnstile 自动通过等待最长 {auto_wait_secs:.0f}s "
+        f"（区间 30~{_load_turnstile_auto_wait_max()}s 随机）…"
+    )
     while time.time() < auto_wait_until:
         token = _read_turnstile_token()
         if token:
@@ -1691,8 +1735,11 @@ def build_profile():
     return given_name, family_name, password
 
 
-def fill_profile_and_submit(timeout=75):
-    # 覆盖 Turnstile 自动通过 30s + 短点击 + 表单填写（点击阶段已压缩）。
+def fill_profile_and_submit(timeout=None):
+    # 覆盖 Turnstile 自动通过（30~n 秒随机）+ 短点击 + 表单填写。
+    # timeout 默认随 config turnstile.auto_wait_max 放宽。
+    if timeout is None:
+        timeout = float(_load_turnstile_auto_wait_max() + 30)
 
     given_name, family_name, password = build_profile()
     deadline = time.time() + timeout
@@ -1859,8 +1906,9 @@ return value ? 'ready' : 'pending';
             if turnstile_attempted:
                 remain = max(5, deadline - time.time() - 3)
             else:
-                # 30s 自动通过 + 压缩点击，总预算约 50s
-                remain = max(45, min(55, deadline - time.time() - 3))
+                # 自动通过上限 n（默认 60，WebUI 可配）+ 点击缓冲；总预算随 n 放宽
+                auto_max = _load_turnstile_auto_wait_max()
+                remain = max(auto_max + 15, min(auto_max + 25, deadline - time.time() - 3))
             print("[*] 检测到最终注册页存在 Turnstile，优先等待自动通过。")
             turnstile_attempted = True
             turnstile_token = getTurnstileToken(timeout=remain)
@@ -2112,6 +2160,9 @@ if (/grok\.com\/(chat|c)\//.test(location.href)) return true;
 // 输入框出现 = 已登录
 const ta = Array.from(document.querySelectorAll('textarea, [contenteditable="true"]')).find(n => isVisible(n) && !n.disabled && !n.readOnly);
 if (ta) return true;
+// 年龄确认弹窗也说明已进入产品页
+const body = (document.body && (document.body.innerText || document.body.textContent) || '');
+if (/请确认你的年龄|Confirm your age|选择你的出生年份|Select your birth year/i.test(body)) return true;
 return false;
 """))
                 if logged_in:
@@ -2125,6 +2176,387 @@ return false;
 
     print(f"[Warn] 等待 grok.com 登录超时，最后 URL: {last_url}")
     return False
+
+
+def _random_adult_birth_year() -> int:
+    """随机成年出生年：年龄约 18–45 岁（含）。"""
+    now_year = datetime.datetime.now().year
+    min_year = now_year - 45
+    max_year = now_year - 18
+    if max_year < min_year:
+        max_year = min_year
+    return min_year + secrets.randbelow(max_year - min_year + 1)
+
+
+def detect_age_gate() -> bool:
+    """页面是否出现「确认年龄 / 出生年份」弹窗。"""
+    global page
+    try:
+        refresh_active_page()
+        return bool(page.run_js(r"""
+function isVisible(n) {
+    if (!n) return false;
+    const s = window.getComputedStyle(n);
+    if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
+    const r = n.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+}
+const body = (document.body && (document.body.innerText || document.body.textContent) || '');
+if (/请确认你的年龄|请确认您的年龄|Confirm your age|选择你的出生年份|选择你的出生年|Select your birth year|birth year/i.test(body)) {
+    return true;
+}
+// 对话框内出现 4 位年份输入
+const yearInputs = Array.from(document.querySelectorAll('input')).filter((n) => {
+    if (!isVisible(n) || n.disabled) return false;
+    const ph = String(n.placeholder || '') + ' ' + String(n.name || '') + ' ' + String(n.getAttribute('aria-label') || '');
+    const t = String(n.type || '').toLowerCase();
+    if (/year|birth|年龄|出生/i.test(ph)) return true;
+    if ((t === 'number' || t === 'text' || t === 'tel') && Number(n.maxLength || 0) === 4) return true;
+    const v = String(n.value || '').trim();
+    if (/^(19|20)\d{2}$/.test(v)) return true;
+    return false;
+});
+return yearInputs.length > 0 && /年龄|continue|确认|confirm|年龄|age/i.test(body);
+"""))
+    except Exception:
+        return False
+
+
+def fill_age_gate_and_submit(birth_year: int | None = None, timeout: float = 25) -> bool:
+    """
+    填写年龄弹窗中的出生年份并点「继续」。
+    返回 True 表示已提交或弹窗已消失；False 表示未找到/超时。
+    """
+    global page
+    year = int(birth_year if birth_year is not None else _random_adult_birth_year())
+    year_s = str(year)
+    deadline = time.time() + timeout
+    print(f"[*] 年龄门：尝试填写出生年 {year_s}")
+
+    while time.time() < deadline:
+        try:
+            refresh_active_page()
+            result = page.run_js(
+                r"""
+const year = String(arguments[0] || '').trim();
+
+function isVisible(n) {
+    if (!n) return false;
+    const s = window.getComputedStyle(n);
+    if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
+    const r = n.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+}
+
+function setNativeValue(input, value) {
+    const proto = input.tagName === 'TEXTAREA'
+        ? window.HTMLTextAreaElement.prototype
+        : window.HTMLInputElement.prototype;
+    const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+    const tracker = input._valueTracker;
+    if (tracker) tracker.setValue('');
+    if (nativeSetter) {
+        nativeSetter.call(input, '');
+        nativeSetter.call(input, value);
+    } else {
+        input.value = '';
+        input.value = value;
+    }
+    input.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, data: value, inputType: 'insertText' }));
+    input.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, data: value, inputType: 'insertText' }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    input.dispatchEvent(new Event('blur', { bubbles: true }));
+}
+
+const body = (document.body && (document.body.innerText || document.body.textContent) || '');
+const ageCtx = /请确认你的年龄|请确认您的年龄|Confirm your age|选择你的出生年份|选择你的出生年|Select your birth year|birth year|年龄/i.test(body);
+
+const inputs = Array.from(document.querySelectorAll('input, textarea')).filter((n) => {
+    if (!isVisible(n) || n.disabled || n.readOnly) return false;
+    const meta = [
+        n.placeholder, n.name, n.id, n.getAttribute('aria-label'), n.getAttribute('data-testid'), n.type
+    ].map((x) => String(x || '')).join(' ');
+    if (/year|birth|年龄|出生|age/i.test(meta)) return true;
+    const t = String(n.type || '').toLowerCase();
+    if ((t === 'number' || t === 'text' || t === 'tel') && Number(n.maxLength || 0) === 4) return true;
+    // 弹窗内已有 4 位年或空的数字框
+    if (ageCtx && (t === 'number' || t === 'text' || t === 'tel')) {
+        const v = String(n.value || '').trim();
+        if (!v || /^(19|20)\d{0,2}$/.test(v)) return true;
+    }
+    return false;
+});
+
+// 优先选看起来像年份的 input
+let yearInput = inputs.find((n) => {
+    const meta = [n.placeholder, n.name, n.id, n.getAttribute('aria-label')].join(' ');
+    return /year|birth|出生|年龄/i.test(meta);
+}) || inputs.find((n) => Number(n.maxLength || 0) === 4)
+  || inputs.find((n) => String(n.type || '').toLowerCase() === 'number')
+  || inputs[0] || null;
+
+if (!yearInput) {
+    return ageCtx ? 'no-input' : 'not-present';
+}
+
+yearInput.focus();
+yearInput.click();
+// 全选后覆盖
+try {
+    yearInput.select();
+} catch (e) {}
+setNativeValue(yearInput, year);
+if (String(yearInput.value || '').trim() !== year) {
+    // 再试键盘式写入
+    setNativeValue(yearInput, '');
+    setNativeValue(yearInput, year);
+}
+if (String(yearInput.value || '').trim() !== year) {
+    return 'fill-failed:' + String(yearInput.value || '');
+}
+
+const buttons = Array.from(document.querySelectorAll('button, [role="button"], a')).filter((n) => {
+    return isVisible(n) && !n.disabled && n.getAttribute('aria-disabled') !== 'true';
+});
+const cont = buttons.find((n) => {
+    const text = (n.innerText || n.textContent || '').replace(/\s+/g, '');
+    const t = text.toLowerCase();
+    return text === '继续' || text.includes('继续') || t === 'continue' || t.includes('continue')
+        || text === '确认' || text.includes('确认') || t === 'confirm' || t.includes('confirm')
+        || text === '下一步' || t.includes('next') || t.includes('submit');
+});
+if (!cont) {
+    return 'filled-no-button';
+}
+cont.focus();
+cont.click();
+return 'submitted';
+                """,
+                year_s,
+            )
+        except PageDisconnectedError:
+            refresh_active_page()
+            result = "disconnected"
+        except Exception as e:
+            result = f"error:{e}"
+
+        if result == "not-present":
+            return False
+        if result == "submitted":
+            print(f"[*] 年龄门：已提交出生年 {year_s}")
+            time.sleep(1.2)
+            # 弹窗是否消失
+            if not detect_age_gate():
+                print("[*] 年龄门：弹窗已关闭")
+                return True
+            print("[*] 年龄门：已点继续，弹窗可能仍在，继续观察…")
+            time.sleep(1.0)
+            if not detect_age_gate():
+                return True
+            # 可能点了但未生效，循环重试
+            continue
+        if result == "filled-no-button":
+            print("[Debug] 年龄门：年份已填，未找到继续按钮")
+        elif result == "no-input":
+            print("[Debug] 年龄门：文案在但未找到年份输入框")
+        elif isinstance(result, str) and result.startswith("fill-failed"):
+            print(f"[Debug] 年龄门：年份写入失败 {result}")
+        elif result == "disconnected":
+            pass
+        else:
+            print(f"[Debug] 年龄门：状态 {result}")
+
+        time.sleep(0.6)
+
+    print(f"[Warn] 年龄门：处理超时（目标年 {year_s}）")
+    return False
+
+
+def send_chat_message(text: str = "你好", timeout: float = 20) -> bool:
+    """在 grok.com 输入框发送一条消息（用于触发生日/年龄门）。"""
+    global page
+    msg = str(text or "你好").strip() or "你好"
+    deadline = time.time() + timeout
+    print(f"[*] 发送聊天消息以触发年龄门: {msg!r}")
+
+    while time.time() < deadline:
+        try:
+            refresh_active_page()
+            # 若年龄门已在，无需再发
+            if detect_age_gate():
+                print("[*] 发送前已检测到年龄门，跳过发消息")
+                return True
+
+            result = page.run_js(
+                r"""
+const msg = String(arguments[0] || '');
+
+function isVisible(n) {
+    if (!n) return false;
+    const s = window.getComputedStyle(n);
+    if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
+    const r = n.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+}
+
+function setNativeValue(el, value) {
+    const isTextarea = el.tagName === 'TEXTAREA';
+    const proto = isTextarea ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+    const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+    const tracker = el._valueTracker;
+    if (tracker) tracker.setValue('');
+    if (nativeSetter) {
+        nativeSetter.call(el, '');
+        nativeSetter.call(el, value);
+    } else if (el.isContentEditable) {
+        el.focus();
+        el.textContent = value;
+        el.dispatchEvent(new InputEvent('input', { bubbles: true, data: value, inputType: 'insertText' }));
+        return (el.innerText || el.textContent || '').includes(value) || (el.innerText || el.textContent || '').trim().length > 0;
+    } else {
+        el.value = value;
+    }
+    el.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, data: value, inputType: 'insertText' }));
+    el.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, data: value, inputType: 'insertText' }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+}
+
+// 优先 textarea / contenteditable 聊天输入
+const candidates = Array.from(document.querySelectorAll(
+    'textarea, [contenteditable="true"], input[type="text"], div[role="textbox"]'
+)).filter((n) => isVisible(n) && !n.disabled && !n.readOnly);
+
+// 排除年龄弹窗里的年份框
+const input = candidates.find((n) => {
+    const meta = [n.placeholder, n.getAttribute('aria-label'), n.getAttribute('data-testid'), n.name].join(' ');
+    if (/year|birth|年龄|出生/i.test(meta)) return false;
+    const r = n.getBoundingClientRect();
+    // 聊天框通常较宽
+    return r.width >= 120 && r.height >= 24;
+}) || null;
+
+if (!input) {
+    return 'no-input';
+}
+
+input.focus();
+input.click();
+const ok = setNativeValue(input, msg);
+if (!ok) return 'fill-failed';
+
+// Enter 发送；部分 UI 需要点发送按钮
+const enterOpts = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true };
+input.dispatchEvent(new KeyboardEvent('keydown', enterOpts));
+input.dispatchEvent(new KeyboardEvent('keypress', enterOpts));
+input.dispatchEvent(new KeyboardEvent('keyup', enterOpts));
+
+// 再尝试点发送按钮
+const buttons = Array.from(document.querySelectorAll('button, [role="button"]')).filter(isVisible);
+const sendBtn = buttons.find((n) => {
+    const text = (n.innerText || n.textContent || n.getAttribute('aria-label') || '').replace(/\s+/g, '');
+    const t = text.toLowerCase();
+    return t === 'send' || text === '发送' || text.includes('发送')
+        || /send/i.test(n.getAttribute('aria-label') || '')
+        || /send/i.test(n.getAttribute('data-testid') || '');
+});
+if (sendBtn && !sendBtn.disabled) {
+    sendBtn.click();
+    return 'sent-click';
+}
+return 'sent-enter';
+                """,
+                msg,
+            )
+        except PageDisconnectedError:
+            refresh_active_page()
+            result = "disconnected"
+        except Exception as e:
+            result = f"error:{e}"
+
+        if result in ("sent-enter", "sent-click"):
+            print(f"[*] 聊天消息已发送（{result}）")
+            time.sleep(1.5)
+            return True
+        if result == "no-input":
+            # 可能还在加载，或年龄门挡住
+            if detect_age_gate():
+                print("[*] 发消息时检测到年龄门")
+                return True
+        else:
+            print(f"[Debug] 发消息状态: {result}")
+
+        time.sleep(0.8)
+
+    print("[Warn] 发送聊天消息超时（输入框未就绪）")
+    return False
+
+
+def ensure_age_gate_completed(
+    trigger_message: str = "你好",
+    timeout: float = 45,
+) -> dict:
+    """
+    注册落到 grok.com 后：
+      1) 若已有年龄弹窗 → 直接填随机成年出生年
+      2) 否则先发一条消息触发弹窗，再填写
+    失败不抛异常（避免拖死整轮注册），返回状态 dict。
+    """
+    global page
+    birth_year = _random_adult_birth_year()
+    status = {
+        "attempted": True,
+        "triggered_by_message": False,
+        "age_gate_seen": False,
+        "submitted": False,
+        "birth_year": birth_year,
+    }
+    deadline = time.time() + timeout
+
+    try:
+        # 先等页面稍稳
+        time.sleep(1.0)
+        refresh_active_page()
+
+        if detect_age_gate():
+            status["age_gate_seen"] = True
+            status["submitted"] = fill_age_gate_and_submit(birth_year, timeout=min(25, deadline - time.time()))
+            return status
+
+        # 发消息触发
+        sent = send_chat_message(trigger_message, timeout=min(20, max(5, deadline - time.time())))
+        status["triggered_by_message"] = bool(sent)
+
+        # 等待弹窗出现
+        wait_end = time.time() + min(20, max(3, deadline - time.time()))
+        while time.time() < wait_end:
+            if detect_age_gate():
+                status["age_gate_seen"] = True
+                break
+            time.sleep(0.6)
+
+        if not status["age_gate_seen"]:
+            print("[*] 年龄门：发消息后未出现弹窗（可能账号无需确认或已确认）")
+            return status
+
+        remain = max(8, deadline - time.time())
+        status["submitted"] = fill_age_gate_and_submit(birth_year, timeout=remain)
+
+        # 提交后有时需再点一次继续 / 或输入框恢复
+        if status["submitted"]:
+            time.sleep(1.0)
+            if detect_age_gate():
+                print("[*] 年龄门：提交后仍在，再试一次…")
+                status["submitted"] = fill_age_gate_and_submit(birth_year, timeout=12)
+    except Exception as e:
+        print(f"[Warn] 年龄门流程异常（不影响 sso 落盘）: {e}")
+        status["error"] = str(e)
+
+    if status.get("submitted"):
+        print(f"[*] 年龄门完成 | birth_year={birth_year}")
+    elif status.get("age_gate_seen"):
+        print(f"[Warn] 年龄门已出现但未成功提交 | birth_year={birth_year}")
+    return status
 
 
 def append_sso_to_txt(sso_value, output_path=DEFAULT_SSO_FILE, email="", password=""):
@@ -2199,7 +2631,7 @@ def push_sso_to_api(new_tokens: list):
 
 
 def run_single_registration(output_path=DEFAULT_SSO_FILE, extract_numbers=False):
-    # 单轮流程：打开注册页 -> 完成注册 -> 获取 sso -> 写 txt。
+    # 单轮流程：打开注册页 -> 完成注册 -> 触发生日门(可选) -> 获取 sso -> 写 txt。
     open_signup_page()
     email, dev_token = fill_email_and_submit()
     fill_code_and_submit(email, dev_token)
@@ -2208,6 +2640,10 @@ def run_single_registration(output_path=DEFAULT_SSO_FILE, extract_numbers=False)
     # 会话 cookie（含 cf_clearance / sso / sso-rw）此时才会真正写下来。
     if not wait_for_grok_com_landing():
         print("[Warn] 未能落到 grok.com 登录态，sso 质量可能受影响")
+
+    # 发随机英文短消息触发生日/年龄确认弹窗，并自动填随机成年出生年（失败不阻断写 sso）
+    age_status = ensure_age_gate_completed(timeout=45)
+
     sso_value = wait_for_sso_cookie()
     password = str(profile.get("password", "") or "")
     append_sso_to_txt(sso_value, output_path, email=email, password=password)
@@ -2218,16 +2654,19 @@ def run_single_registration(output_path=DEFAULT_SSO_FILE, extract_numbers=False)
     result = {
         "email": email,
         "sso": sso_value,
+        "age_gate": age_status,
         **profile,
     }
 
     if run_logger:
         run_logger.info(
-            "注册成功 | email=%s | password=%s | given=%s | family=%s",
+            "注册成功 | email=%s | password=%s | given=%s | family=%s | age_year=%s | age_ok=%s",
             email,
             profile.get("password", ""),
             profile.get("given_name", ""),
             profile.get("family_name", ""),
+            age_status.get("birth_year"),
+            age_status.get("submitted"),
         )
 
     print(f"[*] 本轮注册完成，邮箱: {email}")

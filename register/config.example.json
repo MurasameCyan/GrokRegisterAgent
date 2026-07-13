@@ -2,6 +2,9 @@
     "run": {
         "count": 10
     },
+    "turnstile": {
+        "auto_wait_max": 60
+    },
     "mail_api_base": "https://your-cloudflare-temp-email-api.example.com",
     "mail_admin_auth": "<cloudflare_temp_email_admin_password>",
     "mail_domain": "example.com",

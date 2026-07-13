@@ -46,6 +46,14 @@ function merge(partial: unknown): AppSettings {
     ...p,
     mail: { ...DEFAULT_SETTINGS.mail, ...(p.mail ?? {}) }
   };
+  // 旧配置无此字段时回落到默认 60
+  if (
+    !Number.isInteger(merged.turnstileAutoWaitMax) ||
+    merged.turnstileAutoWaitMax < 30 ||
+    merged.turnstileAutoWaitMax > 180
+  ) {
+    merged.turnstileAutoWaitMax = DEFAULT_SETTINGS.turnstileAutoWaitMax;
+  }
   return applyEnvOverrides(merged, p);
 }
 
