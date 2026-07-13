@@ -1,6 +1,6 @@
 ---
 name: 问题反馈
-about: 反馈 grok-reg-tool 中可以复现的问题
+about: 反馈 Grok Agent 中可以复现的问题
 title: "[问题] "
 labels: ""
 assignees: ""
@@ -29,7 +29,7 @@ assignees: ""
 - 操作系统：
 - Docker 版本：
 - 浏览器：
-- grok-reg-tool 版本或提交：
+- Grok Agent 版本或提交：
 
 ## 日志
 

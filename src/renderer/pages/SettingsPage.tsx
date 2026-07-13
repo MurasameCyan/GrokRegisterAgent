@@ -77,14 +77,18 @@ function SecurityPanel({
   return (
     <form onSubmit={submit} className="terminal-card">
       <div className="terminal-card-header">
-        <h3 className="text-base font-semibold">用户安全措施</h3>
+        <div>
+          <div className="brand-subtitle">安全</div>
+          <h3 className="mt-0.5 text-[17px] font-semibold tracking-[-0.02em]">账号与密码</h3>
+        </div>
         <ShieldCheck className="h-4 w-4 text-ok" />
       </div>
-      <div className="terminal-card-body space-y-5">
-        <div className="rounded-2xl border border-border bg-muted/45 p-4 text-sm leading-7 text-muted-foreground">
-          当前账号为 <span className="font-mono text-foreground">{username}</span>。建议不要继续使用默认账号密码；修改后会更新当前 session。
+      <div className="terminal-card-body space-y-4">
+        <div className="rounded-[14px] bg-muted/60 p-3.5 text-[13px] leading-5 text-muted-foreground">
+          当前账号 <span className="font-medium text-foreground">{username}</span>
+          。请勿长期使用默认密码；修改后会更新当前会话。
         </div>
-        <div className="grid gap-5 lg:grid-cols-2">
+        <div className="grid gap-4 lg:grid-cols-2">
           <Field label="当前密码">
             <PasswordInput
               value={draft.currentPassword}

@@ -1,6 +1,6 @@
-# Grok Register Agent
+# Grok Agent
 
-基于grok-reg-tool可自部署的 Grok 注册机 Web 控制台：Docker 多架构镜像、DrissionPage 自动化注册、邮件验证码读取、SSO 输出和本地账号号池管理。
+可自部署的 Grok 注册机 Web 控制台（Grok Agent）：Docker 多架构镜像、DrissionPage 自动化注册、邮件验证码读取、SSO 输出和本地账号号池管理。
 
 > 本项目与 xAI、Grok、X 没有官方关联。请仅在合法、合规、获得许可的研究、学习或自托管实验环境中使用。
 
@@ -39,7 +39,7 @@ http://你的服务器IP:6657
 初始 Web 登录信息：
 
 ```bash
-docker logs grok-reg-tool
+docker logs grok-agent
 ```
 
 首次登录后请修改默认用户名和密码。直接用 `http://服务器IP:6657` 访问时，`COOKIE_SECURE` 请留空；仅 HTTPS 反代时建议 `COOKIE_SECURE=1`。
@@ -59,7 +59,7 @@ compose 会把宿主机 `./register` **只读挂载到** `/opt/register-host`（
 ```bash
 # 改完本地 register/ 后重启即可同步进运行目录
 docker compose restart
-docker logs grok-gegister-agent 2>&1 | head -n 30
+docker logs grok-agent 2>&1 | head -n 30
 # 应看到类似：
 # [entrypoint] syncing register from host:/opt/register-host -> /app/register
 # [entrypoint] register sync done from host:...

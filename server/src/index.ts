@@ -276,18 +276,18 @@ httpServer.on('upgrade', async (request, socket, head) => {
 });
 
 httpServer.listen(PORT, HOST, () => {
-  console.log(`[grok-reg-tool] listening on http://${HOST}:${PORT}`);
-  console.log(`[grok-reg-tool] data dir: ${dataDir()}`);
+  console.log(`[Grok Agent] listening on http://${HOST}:${PORT}`);
+  console.log(`[Grok Agent] data dir: ${dataDir()}`);
   console.log(
-    `[grok-reg-tool] static UI: ${existsSync(STATIC_ROOT) ? STATIC_ROOT : '(not built)'}`
+    `[Grok Agent] static UI: ${existsSync(STATIC_ROOT) ? STATIC_ROOT : '(not built)'}`
   );
   void authBootstrapInfo().then((info) => {
-    console.log(`[grok-reg-tool] default account: ${info.defaultUsername}`);
-    console.log(`[grok-reg-tool] default password: ${info.defaultPassword}`);
+    console.log(`[Grok Agent] default account: ${info.defaultUsername}`);
+    console.log(`[Grok Agent] default password: ${info.defaultPassword}`);
     if (info.mustChangePassword) {
-      console.log('[grok-reg-tool] first login must change username/password');
+      console.log('[Grok Agent] first login must change username/password');
     } else {
-      console.log(`[grok-reg-tool] web account configured: ${info.username}`);
+      console.log(`[Grok Agent] web account configured: ${info.username}`);
     }
   });
 });
@@ -364,7 +364,7 @@ async function checkDataDirWritable(): Promise<SystemHealthCheck> {
 }
 
 async function shutdown(sig: string) {
-  console.log(`[grok-reg-tool] received ${sig}, stopping...`);
+  console.log(`[Grok Agent] received ${sig}, stopping...`);
   await registerBot.stop().catch(() => undefined);
   wss.close();
   httpServer.close(() => process.exit(0));

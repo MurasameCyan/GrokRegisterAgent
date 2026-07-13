@@ -42,15 +42,15 @@ export function LogPanel() {
   };
 
   return (
-    <div className="terminal-card flex h-[520px] flex-col overflow-hidden">
+    <div className="terminal-card flex h-[min(520px,60vh)] flex-col overflow-hidden">
       <div className="terminal-card-header">
         <div>
-          <div className="terminal-title">stdout / stderr</div>
-          <div className="mt-1 text-base font-semibold">实时日志面板</div>
+          <div className="brand-subtitle">输出</div>
+          <div className="mt-0.5 text-[17px] font-semibold tracking-[-0.02em]">实时日志</div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <span className={cn('status-pill', autoScroll ? 'status-pill-ok' : 'status-pill-warn')}>
-            {autoScroll ? '自动滚动' : '已暂停滚动'}
+            {autoScroll ? '自动滚动' : '已暂停'}
           </span>
           <Button variant="ghost" size="sm" onClick={copyAll}>
             <Copy className="h-3.5 w-3.5" />
@@ -65,11 +65,11 @@ export function LogPanel() {
       <div
         ref={ref}
         onScroll={onScroll}
-        className="console-surface flex-1 overflow-y-auto px-4 py-3 font-mono text-[12.5px] leading-7"
+        className="console-surface m-3 flex-1 overflow-y-auto px-3 py-2.5 font-mono text-[12px] leading-6"
       >
         {logs.length === 0 ? (
-          <div className="mt-20 text-center text-muted-foreground">
-            尚无日志。点击"开始注册"后这里会实时显示 Python 进程输出。
+          <div className="mt-16 text-center text-[13px] text-muted-foreground">
+            尚无日志。开始注册后将实时显示输出。
           </div>
         ) : (
           logs.map((l) => (

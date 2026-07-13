@@ -2,48 +2,55 @@
 @tailwind components;
 @tailwind utilities;
 
+/* iOS 简约风：系统字体 + 低开销色板，无网格/重阴影/外链字体 */
 @layer base {
   :root {
-    --background: 42 20% 95%;
-    --foreground: 195 16% 16%;
-    --card: 40 29% 98%;
-    --card-foreground: 195 16% 16%;
-    --muted: 42 17% 90%;
-    --muted-foreground: 200 11% 38%;
-    --primary: 184 27% 25%;
-    --primary-foreground: 42 20% 95%;
-    --accent: 48 21% 88%;
-    --accent-foreground: 195 16% 16%;
-    --border: 36 15% 78%;
-    --input: 36 15% 82%;
-    --ring: 184 27% 25%;
-    --warn: 35 82% 44%;
-    --danger: 5 62% 48%;
-    --info: 201 44% 40%;
-    --tip: 166 26% 34%;
-    --ok: 159 31% 31%;
-    --radius: 0.95rem;
+    --background: 240 5% 96%;
+    --foreground: 240 6% 10%;
+    --card: 0 0% 100%;
+    --card-foreground: 240 6% 10%;
+    --muted: 240 5% 92%;
+    --muted-foreground: 240 4% 46%;
+    --primary: 211 100% 50%;
+    --primary-foreground: 0 0% 100%;
+    --accent: 240 5% 94%;
+    --accent-foreground: 240 6% 10%;
+    --border: 240 6% 90%;
+    --input: 240 6% 90%;
+    --ring: 211 100% 50%;
+    --warn: 36 100% 47%;
+    --danger: 4 90% 58%;
+    --info: 199 89% 48%;
+    --tip: 174 62% 36%;
+    --ok: 142 71% 35%;
+    --radius: 0.875rem;
+    --ios-fill: 240 5% 96%;
+    --ios-separator: 240 6% 90%;
+    --ios-shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 4px 16px rgba(0, 0, 0, 0.04);
   }
 
   .dark {
-    --background: 200 17% 10%;
-    --foreground: 42 20% 92%;
-    --card: 195 16% 12%;
-    --card-foreground: 42 20% 92%;
-    --muted: 196 12% 17%;
-    --muted-foreground: 42 12% 68%;
-    --primary: 167 29% 62%;
-    --primary-foreground: 196 18% 10%;
-    --accent: 196 12% 17%;
-    --accent-foreground: 42 20% 92%;
-    --border: 196 10% 24%;
-    --input: 196 10% 24%;
-    --ring: 167 29% 62%;
-    --warn: 38 78% 56%;
-    --danger: 6 73% 63%;
-    --info: 198 54% 64%;
-    --tip: 166 31% 58%;
-    --ok: 159 39% 62%;
+    --background: 240 6% 7%;
+    --foreground: 240 5% 96%;
+    --card: 240 5% 11%;
+    --card-foreground: 240 5% 96%;
+    --muted: 240 4% 16%;
+    --muted-foreground: 240 5% 64%;
+    --primary: 211 100% 55%;
+    --primary-foreground: 0 0% 100%;
+    --accent: 240 4% 16%;
+    --accent-foreground: 240 5% 96%;
+    --border: 240 4% 18%;
+    --input: 240 4% 18%;
+    --ring: 211 100% 55%;
+    --warn: 36 100% 55%;
+    --danger: 4 84% 62%;
+    --info: 199 89% 55%;
+    --tip: 174 50% 48%;
+    --ok: 142 60% 48%;
+    --ios-fill: 240 5% 11%;
+    --ios-separator: 240 4% 18%;
+    --ios-shadow: 0 1px 2px rgba(0, 0, 0, 0.2), 0 8px 24px rgba(0, 0, 0, 0.25);
   }
 
   * {
@@ -58,26 +65,11 @@
 
   body {
     @apply bg-background font-sans text-foreground antialiased;
-    background-image:
-      radial-gradient(circle at top left, rgba(24, 92, 87, 0.08), transparent 32%),
-      linear-gradient(rgba(67, 73, 61, 0.06) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(67, 73, 61, 0.06) 1px, transparent 1px);
-    background-size: auto, 26px 26px, 26px 26px;
-    background-attachment: fixed;
-    font-feature-settings: 'rlig' 1, 'calt' 1;
-  }
-
-  body::before {
-    content: '';
-    position: fixed;
-    inset: 0;
-    pointer-events: none;
-    opacity: 0.08;
-    background-image:
-      linear-gradient(rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.04)),
-      radial-gradient(circle at 20% 10%, rgba(0, 0, 0, 0.08) 0.5px, transparent 0.75px);
-    background-size: 100% 100%, 8px 8px;
-    mix-blend-mode: multiply;
+    /* 纯色底，无渐变网格，降低 GPU/合成开销 */
+    background-color: hsl(var(--background));
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-feature-settings: 'kern' 1;
   }
 
   ::selection {
@@ -85,8 +77,8 @@
   }
 
   ::-webkit-scrollbar {
-    width: 10px;
-    height: 10px;
+    width: 6px;
+    height: 6px;
   }
 
   ::-webkit-scrollbar-track {
@@ -94,56 +86,50 @@
   }
 
   ::-webkit-scrollbar-thumb {
-    @apply rounded-full bg-muted-foreground/35;
+    @apply rounded-full bg-muted-foreground/25;
   }
 
   ::-webkit-scrollbar-thumb:hover {
-    @apply bg-muted-foreground/50;
+    @apply bg-muted-foreground/40;
   }
 }
 
 @layer components {
   .app-frame {
-    @apply mx-auto flex min-h-full w-full max-w-[1520px] flex-col gap-5 px-4 py-4 lg:flex-row lg:px-6 lg:py-6;
+    @apply mx-auto flex min-h-full w-full max-w-[1280px] flex-col gap-4 px-3 py-3 sm:px-4 sm:py-4 lg:flex-row lg:gap-5 lg:px-6 lg:py-6;
   }
 
   .side-rail {
-    @apply z-10 w-full shrink-0 lg:sticky lg:top-6 lg:h-[calc(100vh-3rem)] lg:w-[292px];
+    @apply z-10 w-full shrink-0 lg:sticky lg:top-5 lg:h-[calc(100vh-2.5rem)] lg:w-[240px];
   }
 
   .main-stage {
-    @apply min-w-0 flex-1 pb-10 lg:pl-1;
+    @apply min-w-0 flex-1 pb-8 lg:pl-0;
   }
 
   .side-nav-item {
-    @apply flex w-full items-center gap-3 rounded-2xl border border-transparent px-3 py-3 text-left text-sm transition-colors hover:border-border hover:bg-accent/65;
+    @apply flex w-full items-center gap-3 rounded-[12px] px-3 py-2.5 text-left text-[15px] font-medium text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground;
   }
 
   .side-nav-item-active {
-    @apply border-border bg-card shadow-[inset_3px_0_0_hsl(var(--primary))];
+    @apply bg-primary/10 text-primary hover:bg-primary/12 hover:text-primary;
   }
 
   .login-stage {
-    @apply flex min-h-full items-center justify-center px-4 py-8;
+    @apply flex min-h-full items-center justify-center px-4 py-10;
+    background: hsl(var(--background));
   }
 
   .login-card {
-    @apply shell-window w-full max-w-[460px] p-6;
+    @apply shell-window w-full max-w-[400px] p-7;
   }
 
   .hero-panel {
-    @apply relative overflow-hidden rounded-[1.5rem] border border-border bg-card/90 p-6 shadow-[0_24px_60px_rgba(57,63,51,0.08)] md:p-8;
+    @apply relative overflow-hidden rounded-[16px] border border-border bg-card p-5 shadow-[var(--ios-shadow)] md:p-6;
   }
 
   .hero-panel::before {
-    content: '';
-    position: absolute;
-    inset: 0;
-    pointer-events: none;
-    background:
-      linear-gradient(120deg, hsl(var(--primary) / 0.08), transparent 42%),
-      repeating-linear-gradient(90deg, transparent 0 21px, hsl(var(--border) / 0.35) 22px);
-    opacity: 0.65;
+    content: none;
   }
 
   .hero-panel > * {
@@ -151,43 +137,37 @@
   }
 
   .hero-stamp {
-    @apply absolute right-5 top-5 inline-flex items-center gap-2 rounded-full border border-border bg-card/90 px-3 py-1.5 font-mono text-xs text-muted-foreground;
+    @apply absolute right-4 top-4 inline-flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground;
   }
 
   .shell-window {
-    @apply overflow-hidden rounded-[1.35rem] border border-border bg-card shadow-[0_0_0_1px_rgba(255,255,255,0.35),0_24px_60px_rgba(57,63,51,0.08)];
+    @apply overflow-hidden rounded-[16px] border border-border bg-card shadow-[var(--ios-shadow)];
   }
 
   .shell-bar {
-    @apply flex items-center justify-between border-b border-border bg-muted/70 px-4 py-2.5;
+    @apply flex items-center justify-between border-b border-border/80 bg-muted/40 px-4 py-2.5;
   }
 
   .shell-dots {
-    @apply flex items-center gap-1.5;
+    @apply hidden;
   }
 
   .shell-dot {
-    @apply h-2.5 w-2.5 rounded-full border border-black/10;
+    @apply hidden;
   }
 
-  .shell-dot-rose {
-    background: rgba(195, 102, 90, 0.7);
-  }
-
-  .shell-dot-amber {
-    background: rgba(199, 151, 66, 0.72);
-  }
-
+  .shell-dot-rose,
+  .shell-dot-amber,
   .shell-dot-mint {
-    background: rgba(84, 143, 118, 0.75);
+    @apply hidden;
   }
 
   .shell-label {
-    @apply font-mono text-[11px] uppercase tracking-[0.24em] text-muted-foreground;
+    @apply text-[11px] font-semibold uppercase tracking-[0.06em] text-muted-foreground;
   }
 
   .shell-chip {
-    @apply inline-flex items-center gap-2 rounded-full border border-border bg-card/90 px-3 py-1 font-mono text-[11px] uppercase tracking-[0.16em] text-muted-foreground;
+    @apply inline-flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-1 text-[12px] font-medium text-muted-foreground;
   }
 
   .terminal-card {
@@ -195,71 +175,71 @@
   }
 
   .terminal-card-header {
-    @apply shell-bar;
+    @apply flex items-start justify-between gap-3 border-b border-border/70 px-4 py-3.5;
   }
 
   .terminal-card-body {
-    @apply p-5;
+    @apply p-4 sm:p-5;
   }
 
   .terminal-title {
-    @apply font-display text-[12px] uppercase tracking-[0.24em] text-muted-foreground;
+    @apply text-[12px] font-semibold tracking-[0.02em] text-muted-foreground;
   }
 
   .terminal-heading {
-    @apply font-mono text-lg font-semibold tracking-[0.02em] text-foreground;
+    @apply text-lg font-semibold tracking-[-0.02em] text-foreground;
   }
 
   .terminal-copy {
-    @apply text-sm leading-7 text-muted-foreground;
+    @apply text-sm leading-6 text-muted-foreground;
   }
 
   .terminal-grid {
-    @apply grid gap-4 md:grid-cols-2 xl:grid-cols-4;
+    @apply grid gap-3 sm:grid-cols-2 xl:grid-cols-4;
   }
 
   .metric-panel {
-    @apply rounded-[1.15rem] border border-border bg-card/90 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.45)];
+    @apply rounded-[14px] border border-border bg-card p-4 shadow-[var(--ios-shadow)];
   }
 
   .metric-kicker {
-    @apply font-mono text-[11px] uppercase tracking-[0.22em] text-muted-foreground;
+    @apply text-[12px] font-medium text-muted-foreground;
   }
 
   .metric-value {
-    @apply mt-3 font-mono text-2xl font-semibold tracking-tight text-foreground;
+    @apply mt-2 text-2xl font-semibold tracking-[-0.03em] text-foreground;
   }
 
   .metric-note {
-    @apply mt-2 text-xs leading-5 text-muted-foreground;
+    @apply mt-1.5 text-xs leading-5 text-muted-foreground;
   }
 
   .pane-grid {
-    @apply grid gap-6 lg:grid-cols-[1.35fr_0.9fr];
+    @apply grid gap-4 lg:grid-cols-[1.35fr_0.9fr];
   }
 
   .status-pill {
-    @apply inline-flex items-center rounded-full border px-2.5 py-1 font-mono text-[11px] uppercase tracking-[0.16em];
+    @apply inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] font-medium;
   }
 
   .status-pill-ok {
-    @apply border-ok/30 bg-ok/10 text-ok;
+    @apply bg-ok/12 text-ok;
   }
 
   .status-pill-warn {
-    @apply border-warn/30 bg-warn/10 text-warn;
+    @apply bg-warn/12 text-warn;
   }
 
   .status-pill-idle {
-    @apply border-border bg-muted/70 text-muted-foreground;
+    @apply bg-muted text-muted-foreground;
   }
 
   .status-pill-danger {
-    @apply border-danger/30 bg-danger/10 text-danger;
+    @apply bg-danger/12 text-danger;
   }
 
   .field-label {
-    @apply font-mono text-[11px] uppercase tracking-[0.22em] text-muted-foreground;
+    @apply text-[13px] font-medium text-muted-foreground;
   }
 
   .field-hint {
@@ -267,14 +247,38 @@
   }
 
   .ghost-divider {
-    @apply border-t border-dashed border-border/90;
+    @apply border-t border-border;
   }
 
   .console-surface {
-    @apply rounded-[1rem] border border-border bg-[#f5f1e7] text-[12.5px] shadow-[inset_0_1px_0_rgba(255,255,255,0.55)];
+    @apply rounded-[12px] border border-border bg-muted/50 text-[13px];
   }
 
   .dark .console-surface {
-    @apply bg-[#10181a];
+    @apply bg-muted/40;
+  }
+
+  .brand-mark {
+    @apply flex h-9 w-9 items-center justify-center rounded-[11px] bg-primary text-[15px] font-semibold tracking-tight text-primary-foreground;
+  }
+
+  .brand-title {
+    @apply text-[17px] font-semibold tracking-[-0.02em] text-foreground;
+  }
+
+  .brand-subtitle {
+    @apply text-[12px] font-medium text-muted-foreground;
+  }
+
+  .page-title {
+    @apply text-[28px] font-semibold tracking-[-0.03em] text-foreground sm:text-[32px];
+  }
+
+  .ios-list {
+    @apply overflow-hidden rounded-[14px] border border-border bg-card shadow-[var(--ios-shadow)];
+  }
+
+  .ios-list-row {
+    @apply flex items-center justify-between gap-3 border-b border-border/70 px-4 py-3 last:border-b-0;
   }
 }

@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import type { UpdateInfo } from '@shared/ipc';
 
-const REPO = 'FengZi1221/grok-reg-tool';
+const REPO = 'MurasameCyan/GrokRegisterAgent';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 let cachedVersion: string | null = null;
@@ -71,7 +71,7 @@ export async function checkForUpdate(): Promise<UpdateInfo> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 8000);
     const resp = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
-      headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'grok-reg-tool' },
+      headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'grok-agent' },
       signal: controller.signal
     });
     clearTimeout(timer);

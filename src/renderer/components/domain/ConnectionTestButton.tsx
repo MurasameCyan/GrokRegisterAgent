@@ -47,7 +47,7 @@ export function ConnectionTestButton({
       {result && (
         <span
           className={cn(
-            'font-mono text-[11px]',
+            'text-[12px] font-medium',
             result.ok ? 'text-ok' : 'text-danger'
           )}
           title={result.message}

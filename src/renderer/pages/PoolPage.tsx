@@ -149,22 +149,23 @@ export function PoolPage() {
       </section>
 
       <div className="shell-window">
-        <div className="shell-bar">
-          <div className="flex items-center gap-3">
-            <h3 className="text-base font-semibold">号池</h3>
+        <div className="flex flex-col gap-3 border-b border-border/80 px-4 py-3.5 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <div className="brand-subtitle">号池</div>
+            <h3 className="mt-0.5 text-[17px] font-semibold tracking-[-0.02em]">账号列表</h3>
             {lastRefresh && (
-              <span className="font-mono text-[11px] text-muted-foreground">
-                最后刷新 {fmtBeijingTime(lastRefresh)}
-              </span>
+              <p className="mt-0.5 text-[12px] text-muted-foreground">
+                刷新于 {fmtBeijingTime(lastRefresh)}
+              </p>
             )}
           </div>
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-1.5">
             <Button variant="ghost" size="sm" onClick={toggleAll} disabled={accounts.length === 0}>
               {allSelected ? '取消全选' : '全选'}
             </Button>
             <Button size="sm" onClick={() => void verifyBatch()} disabled={verifying || accounts.length === 0}>
               <ShieldCheck className={cn('h-3.5 w-3.5', verifying && 'animate-pulse')} />
-              {verifying ? '验活中…' : selected.size > 0 ? `验活选中(${selected.size})` : '验活全部'}
+              {verifying ? '验活中…' : selected.size > 0 ? `验活(${selected.size})` : '验活全部'}
             </Button>
             <Button
               variant="secondary"
@@ -173,7 +174,7 @@ export function PoolPage() {
               disabled={picked.length === 0}
             >
               <FileDown className="h-3.5 w-3.5" />
-              选中·SSO
+              选中 SSO
             </Button>
             <Button
               variant="secondary"
@@ -182,15 +183,15 @@ export function PoolPage() {
               disabled={picked.length === 0}
             >
               <FileDown className="h-3.5 w-3.5" />
-              选中·账号
+              选中账号
             </Button>
             <Button size="sm" onClick={() => exportSso(accounts)} disabled={accounts.length === 0}>
               <FileDown className="h-3.5 w-3.5" />
-              全部·SSO
+              全部 SSO
             </Button>
             <Button size="sm" onClick={() => exportAccounts(accounts)} disabled={accounts.length === 0}>
               <FileDown className="h-3.5 w-3.5" />
-              全部·账号
+              全部账号
             </Button>
             <Button variant="secondary" size="sm" onClick={() => void doReload()} disabled={loading}>
               <RefreshCcw className={cn('h-3.5 w-3.5', loading && 'animate-spin')} />
@@ -201,11 +202,11 @@ export function PoolPage() {
       </div>
 
       {accounts.length === 0 ? (
-        <div className="rounded-2xl border border-dashed border-border p-12 text-center text-muted-foreground">
-          还没有账号记录。到「注册机」页跑一次任务。
+        <div className="rounded-[16px] border border-dashed border-border bg-card p-12 text-center text-[13px] text-muted-foreground">
+          还没有账号。到「注册机」跑一轮任务即可出现在这里。
         </div>
       ) : (
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
           {accounts.map((a) => (
             <AccountCard
               key={a.id}
@@ -264,8 +265,8 @@ function AccountCard({
     <div
       onClick={onOpen}
       className={cn(
-        'flex cursor-pointer flex-col gap-3 rounded-[1.15rem] border bg-card/90 p-4 transition-colors hover:border-primary/50',
-        checked ? 'border-primary bg-primary/5' : 'border-border'
+        'flex cursor-pointer flex-col gap-3 rounded-[16px] border bg-card p-4 shadow-[var(--ios-shadow)] transition-colors hover:border-primary/40',
+        checked ? 'border-primary/60 bg-primary/5' : 'border-border'
       )}
     >
       <div className="flex items-start gap-3">
@@ -287,7 +288,7 @@ function AccountCard({
         <SsoBadge result={ssoResult} />
       </div>
 
-      <div className="rounded-xl border border-border/80 bg-muted/40 px-3 py-2" onClick={stop}>
+      <div className="rounded-[12px] bg-muted/60 px-3 py-2" onClick={stop}>
         <div className="flex items-center justify-between gap-2">
           <span className="field-label">密码</span>
           <div className="flex items-center gap-1">
@@ -314,7 +315,7 @@ function AccountCard({
         </div>
       </div>
 
-      <div className="rounded-xl border border-border/80 bg-muted/40 px-3 py-2" onClick={stop}>
+      <div className="rounded-[12px] bg-muted/60 px-3 py-2" onClick={stop}>
         <div className="flex items-center justify-between gap-2">
           <span className="field-label">SSO</span>
           <div className="flex items-center gap-1">

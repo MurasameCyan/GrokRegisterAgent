@@ -7,16 +7,16 @@ export function StatusCard({ status }: { status: RunStatus }) {
   return (
     <div
       className={cn(
-        'rounded-[1.2rem] border px-5 py-4 transition-colors',
+        'rounded-[16px] border px-4 py-4 transition-colors sm:px-5',
         tone.border,
         tone.bg
       )}
     >
       <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-        <div className="flex min-w-0 items-start gap-4">
+        <div className="flex min-w-0 items-start gap-3.5">
           <div
             className={cn(
-              'flex h-11 w-11 items-center justify-center rounded-full',
+              'flex h-10 w-10 items-center justify-center rounded-full',
               tone.iconBg
             )}
           >
@@ -31,20 +31,20 @@ export function StatusCard({ status }: { status: RunStatus }) {
               <span className={cn('status-pill', tone.pill)}>{tone.label}</span>
               {status.pid && <span className="shell-chip">pid {status.pid}</span>}
             </div>
-            <p className="mt-3 text-base font-semibold tracking-tight">{summary(status)}</p>
-            <p className="mt-2 text-sm leading-7 text-muted-foreground">
+            <p className="mt-2 text-[17px] font-semibold tracking-[-0.02em]">{summary(status)}</p>
+            <p className="mt-1 text-[13px] leading-5 text-muted-foreground">
               {status.startedAt
-                ? `started ${new Date(status.startedAt).toLocaleString('zh-CN')}`
-                : 'waiting for launch'}
+                ? `开始于 ${new Date(status.startedAt).toLocaleString('zh-CN')}`
+                : '等待启动'}
             </p>
           </div>
         </div>
 
-        <div className="grid min-w-[220px] grid-cols-2 gap-3">
-          <DataCell label="current" value={String(status.current)} />
-          <DataCell label="total" value={String(status.total)} />
-          <DataCell label="success" value={String(status.success)} />
-          <DataCell label="failed" value={String(status.failed)} />
+        <div className="grid min-w-[200px] grid-cols-2 gap-2">
+          <DataCell label="当前" value={String(status.current)} />
+          <DataCell label="总数" value={String(status.total)} />
+          <DataCell label="成功" value={String(status.success)} />
+          <DataCell label="失败" value={String(status.failed)} />
         </div>
       </div>
     </div>
@@ -53,9 +53,9 @@ export function StatusCard({ status }: { status: RunStatus }) {
 
 function DataCell({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-xl border border-border/80 bg-card/70 px-3 py-2">
+    <div className="rounded-[12px] bg-card/80 px-3 py-2">
       <div className="field-label">{label}</div>
-      <div className="mt-2 font-mono text-sm">{value}</div>
+      <div className="mt-1 text-[15px] font-semibold tabular-nums tracking-tight">{value}</div>
     </div>
   );
 }

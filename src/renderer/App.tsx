@@ -7,8 +7,7 @@ import {
   LogOut,
   PlayCircle,
   Settings2,
-  ShieldCheck,
-  Terminal
+  ShieldCheck
 } from 'lucide-react';
 import { DashboardPage } from '@renderer/pages/DashboardPage';
 import { RegisterPage } from '@renderer/pages/RegisterPage';
@@ -133,32 +132,19 @@ export default function App() {
   return (
     <div className="app-frame">
       <aside className="side-rail">
-        <div className="shell-window overflow-hidden">
-          <div className="shell-bar">
-            <div className="shell-dots">
-              <span className="shell-dot shell-dot-rose" />
-              <span className="shell-dot shell-dot-amber" />
-              <span className="shell-dot shell-dot-mint" />
-            </div>
-            <a
-              href="https://github.com/FengZi1221/grok-reg-tool"
-              target="_blank"
-              rel="noreferrer"
-              className="shell-chip transition-colors hover:text-foreground"
-              title="GitHub"
-            >
-              <Github className="h-3 w-3" />
-              GitHub
-            </a>
-          </div>
+        <div className="shell-window h-full">
           <div className="space-y-5 p-4">
-            <div>
-              <h1 className="font-display text-2xl font-semibold tracking-[-0.02em]">
-                grok-reg-tool
-              </h1>
+            <div className="flex items-center gap-3">
+              <div className="brand-mark" aria-hidden>
+                G
+              </div>
+              <div className="min-w-0">
+                <h1 className="brand-title">Grok Agent</h1>
+                <p className="brand-subtitle">注册控制台</p>
+              </div>
             </div>
 
-            <nav className="space-y-2">
+            <nav className="space-y-1">
               {tabs.map(({ id, label, Icon }) => (
                 <button
                   key={id}
@@ -166,8 +152,8 @@ export default function App() {
                   onClick={() => setTab(id)}
                   className={cn('side-nav-item', tab === id && 'side-nav-item-active')}
                 >
-                  <Icon className="h-4 w-4" />
-                  <span className="font-semibold">{label}</span>
+                  <Icon className="h-4 w-4 shrink-0 opacity-90" />
+                  <span>{label}</span>
                 </button>
               ))}
             </nav>
@@ -175,26 +161,38 @@ export default function App() {
             <div className="ghost-divider" />
 
             <div className="space-y-3">
-              <div className="flex items-center justify-between gap-2 rounded-2xl border border-border bg-muted/45 p-3">
+              <div className="flex items-center justify-between gap-2 rounded-[14px] bg-muted/70 px-3 py-2.5">
                 <div className="flex min-w-0 items-center gap-2">
                   <ShieldCheck className="h-4 w-4 shrink-0 text-ok" />
-                  <span className="truncate font-mono text-xs">{auth.username}</span>
+                  <span className="truncate text-[13px] font-medium">{auth.username}</span>
                 </div>
                 <Button variant="ghost" size="sm" onClick={logout} title="退出登录">
                   <LogOut className="h-3.5 w-3.5" />
                   退出
                 </Button>
               </div>
-              <ThemeToggle />
+              <div className="flex items-center justify-between gap-2">
+                <ThemeToggle />
+                <a
+                  href="https://github.com/MurasameCyan/GrokRegisterAgent"
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex h-9 w-9 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                  title="GitHub"
+                >
+                  <Github className="h-4 w-4" />
+                </a>
+              </div>
             </div>
           </div>
         </div>
       </aside>
 
       <main className="main-stage">
-        <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <h2 className="font-display text-[clamp(1.8rem,3vw,2.8rem)] font-semibold tracking-[-0.03em]">
+            <p className="brand-subtitle mb-1">Grok Agent</p>
+            <h2 className="page-title">
               {tabs.find((item) => item.id === tab)?.label}
             </h2>
           </div>
@@ -244,12 +242,16 @@ export default function App() {
 function BootScreen() {
   return (
     <div className="flex min-h-full items-center justify-center p-6">
-      <div className="shell-window max-w-md p-6">
+      <div className="shell-window max-w-sm p-6">
         <div className="flex items-center gap-3">
-          <Terminal className="h-5 w-5 text-primary" />
+          <div className="brand-mark" aria-hidden>
+            G
+          </div>
           <div>
-            <div className="terminal-title">boot</div>
-            <div className="mt-1 font-semibold">正在检查登录状态…</div>
+            <div className="brand-subtitle">Grok Agent</div>
+            <div className="mt-0.5 text-[15px] font-semibold tracking-[-0.01em]">
+              正在检查登录状态…
+            </div>
           </div>
         </div>
       </div>
@@ -279,38 +281,37 @@ function LoginScreen({ onAuthed }: { onAuthed(next: AuthState): void }) {
   return (
     <div className="login-stage">
       <form onSubmit={submit} className="login-card">
-        <div className="shell-bar -mx-6 -mt-6 mb-6 rounded-t-[1.35rem]">
-          <div className="shell-dots">
-            <span className="shell-dot shell-dot-rose" />
-            <span className="shell-dot shell-dot-amber" />
-            <span className="shell-dot shell-dot-mint" />
+        <div className="mb-6 flex items-center gap-3">
+          <div className="brand-mark" aria-hidden>
+            G
+          </div>
+          <div>
+            <div className="brand-title">Grok Agent</div>
+            <p className="brand-subtitle">注册控制台</p>
           </div>
         </div>
-        <div className="space-y-2">
-          <h1 className="font-display text-3xl font-semibold tracking-[-0.03em]">
-            登录控制台
-          </h1>
-          <p className="text-sm leading-7 text-muted-foreground">
-            默认账号 admin/admin（见启动日志），首次登录后强制修改。
+        <div className="space-y-1.5">
+          <h1 className="text-[28px] font-semibold tracking-[-0.03em]">登录</h1>
+          <p className="text-[13px] leading-5 text-muted-foreground">
+            默认账号 admin/admin（见启动日志），首次登录后需修改。
           </p>
         </div>
         <div className="mt-6 space-y-4">
-          <label className="block space-y-2">
+          <label className="block space-y-1.5">
             <span className="field-label">用户名</span>
             <Input value={username} onChange={(e) => setUsername(e.target.value)} autoFocus />
           </label>
-          <label className="block space-y-2">
+          <label className="block space-y-1.5">
             <span className="field-label">密码</span>
             <PasswordInput value={password} onChange={(e) => setPassword(e.target.value)} />
           </label>
           {error && (
-            <div className="rounded-2xl border border-danger/30 bg-danger/8 px-4 py-3 text-sm text-danger">
+            <div className="rounded-[12px] bg-danger/10 px-3.5 py-3 text-[13px] text-danger">
               {error}
             </div>
           )}
           <Button type="submit" size="lg" className="w-full" disabled={busy}>
-            <Terminal className="h-4 w-4" />
-            {busy ? '登录中…' : '进入项目'}
+            {busy ? '登录中…' : '继续'}
           </Button>
         </div>
       </form>
@@ -352,20 +353,20 @@ function ChangeCredentialsModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-foreground/20 p-4 backdrop-blur-sm">
-      <form onSubmit={submit} className="shell-window w-full max-w-lg p-6 shadow-2xl">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/25 p-4">
+      <form onSubmit={submit} className="shell-window w-full max-w-md p-6">
         <div className="mb-5 flex items-start gap-3">
-          <div className="rounded-2xl border border-ok/25 bg-ok/10 p-3 text-ok">
+          <div className="flex h-10 w-10 items-center justify-center rounded-full bg-ok/12 text-ok">
             <ShieldCheck className="h-5 w-5" />
           </div>
           <div>
-            <h2 className="text-xl font-semibold">{title}</h2>
-            <p className="mt-2 text-sm leading-7 text-muted-foreground">{description}</p>
+            <h2 className="text-[20px] font-semibold tracking-[-0.02em]">{title}</h2>
+            <p className="mt-1 text-[13px] leading-5 text-muted-foreground">{description}</p>
           </div>
         </div>
 
-        <div className="space-y-4">
-          <label className="block space-y-2">
+        <div className="space-y-3.5">
+          <label className="block space-y-1.5">
             <span className="field-label">当前密码</span>
             <PasswordInput
               value={draft.currentPassword}
@@ -373,21 +374,21 @@ function ChangeCredentialsModal({
               autoFocus
             />
           </label>
-          <label className="block space-y-2">
+          <label className="block space-y-1.5">
             <span className="field-label">新用户名</span>
             <Input
               value={draft.username}
               onChange={(e) => setDraft({ ...draft, username: e.target.value })}
             />
           </label>
-          <label className="block space-y-2">
+          <label className="block space-y-1.5">
             <span className="field-label">新密码</span>
             <PasswordInput
               value={draft.password}
               onChange={(e) => setDraft({ ...draft, password: e.target.value })}
             />
           </label>
-          <label className="block space-y-2">
+          <label className="block space-y-1.5">
             <span className="field-label">确认密码</span>
             <PasswordInput
               value={draft.confirmPassword}
@@ -395,12 +396,11 @@ function ChangeCredentialsModal({
             />
           </label>
           {error && (
-            <div className="rounded-2xl border border-danger/30 bg-danger/8 px-4 py-3 text-sm text-danger">
+            <div className="rounded-[12px] bg-danger/10 px-3.5 py-3 text-[13px] text-danger">
               {error}
             </div>
           )}
           <Button type="submit" size="lg" className="w-full" disabled={busy}>
-            <ShieldCheck className="h-4 w-4" />
             {busy ? '保存中…' : '保存并继续'}
           </Button>
         </div>

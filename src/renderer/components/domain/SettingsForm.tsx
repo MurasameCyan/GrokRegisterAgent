@@ -16,7 +16,7 @@ function RepoLink({ href, label }: { href: string; label: string }) {
       href={href}
       target="_blank"
       rel="noreferrer"
-      className="inline-flex shrink-0 items-center gap-1 rounded-full border border-border bg-card px-2.5 py-1 font-mono text-[11px] uppercase tracking-[0.12em] text-muted-foreground transition-colors hover:bg-accent/80 hover:text-foreground"
+      className="inline-flex shrink-0 items-center gap-1 rounded-full bg-muted px-2.5 py-1 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
       title={href}
     >
       <Github className="h-3 w-3" />
@@ -92,16 +92,16 @@ export function SettingsForm() {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       <Card>
         <CardHeader
-          title="WebUI 配置"
-          description="账号密码 + HttpOnly Cookie 登录。"
+          title="WebUI"
+          description="账号密码 + HttpOnly Cookie 登录"
           right={<ThemeToggle />}
         />
-        <CardBody className="grid gap-4 md:grid-cols-3">
+        <CardBody className="grid gap-3 md:grid-cols-3">
           <InfoTile Icon={Server} label="访问地址" value={origin} />
-          <InfoTile Icon={ShieldCheck} label="登录方式" value="cookie session" />
+          <InfoTile Icon={ShieldCheck} label="登录方式" value="Cookie Session" />
           <InfoTile Icon={ShieldCheck} label="反向代理" value="未启用" />
         </CardBody>
       </Card>
@@ -109,26 +109,26 @@ export function SettingsForm() {
       <Card>
         <CardHeader
           title="邮件后端"
-          description="兼容 cloudflare_temp_email，填写域名和管理密码。"
+          description="兼容 cloudflare_temp_email"
           right={
             <div className="flex flex-wrap items-center gap-2">
               <RepoLink
                 href="https://github.com/dreamhunter2333/cloudflare_temp_email"
-                label="部署文档"
+                label="文档"
               />
               <ConnectionTestButton onTest={() => window.api.testMail(draft.mail)} disabled={!valid} />
             </div>
           }
         />
-        <CardBody className="grid gap-5 lg:grid-cols-2">
-          <Field label="mail api base" hint="例如 https://mail.example.com" error={errors['mail.apiBase']}>
+        <CardBody className="grid gap-4 lg:grid-cols-2">
+          <Field label="API 地址" hint="例如 https://mail.example.com" error={errors['mail.apiBase']}>
             <Input
               value={draft.mail.apiBase}
               onChange={(e) => updateMail('apiBase', e.target.value)}
               invalid={!!errors['mail.apiBase']}
             />
           </Field>
-          <Field label="mail domain" hint="例如 example.com" error={errors['mail.domain']}>
+          <Field label="邮件域名" hint="例如 example.com" error={errors['mail.domain']}>
             <Input
               value={draft.mail.domain}
               onChange={(e) => updateMail('domain', e.target.value)}
@@ -136,7 +136,7 @@ export function SettingsForm() {
             />
           </Field>
           <div className="lg:col-span-2">
-            <Field label="admin auth" hint="Cloudflare Temp Email 后端管理员密码" error={errors['mail.adminAuth']}>
+            <Field label="管理密码" hint="Temp Email 管理员密码" error={errors['mail.adminAuth']}>
               <PasswordInput
                 value={draft.mail.adminAuth}
                 onChange={(e) => updateMail('adminAuth', e.target.value)}
@@ -148,13 +148,13 @@ export function SettingsForm() {
       </Card>
 
       <div className="sticky bottom-4 z-10 flex justify-end">
-        <div className="shell-window flex items-center gap-3 px-3 py-2">
-          <span className="px-2 text-[11px] font-mono uppercase tracking-[0.18em] text-muted-foreground">
-            {dirty ? (valid ? 'modified' : 'validation error') : 'synced'}
+        <div className="flex items-center gap-3 rounded-[14px] border border-border bg-card px-3 py-2 shadow-[var(--ios-shadow)]">
+          <span className="px-1 text-[12px] font-medium text-muted-foreground">
+            {dirty ? (valid ? '未保存' : '校验失败') : '已同步'}
           </span>
           <Button onClick={save} disabled={!dirty || !valid || saving} size="sm">
             <Save className="h-4 w-4" />
-            保存配置
+            保存
           </Button>
         </div>
       </div>
@@ -172,12 +172,12 @@ function InfoTile({
   value: string;
 }) {
   return (
-    <div className="rounded-2xl border border-border bg-muted/45 p-4">
+    <div className="rounded-[14px] bg-muted/60 p-3.5">
       <div className="flex items-center gap-2 text-muted-foreground">
         <Icon className="h-4 w-4" />
         <span className="field-label">{label}</span>
       </div>
-      <div className="mt-3 break-all font-mono text-sm">{value}</div>
+      <div className="mt-2 break-all text-[13px] font-medium tracking-tight">{value}</div>
     </div>
   );
 }

@@ -8,12 +8,12 @@
 # 热更新：修改仓库根目录 register/ 后 docker compose restart 即可同步
 
 services:
-  grok-reg-tool:
+  grok-agent:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-    image: grok-reg-tool:latest
-    container_name: grok-reg-tool
+    image: grok-agent:latest
+    container_name: grok-agent
     restart: unless-stopped
     ports:
       - "${WEB_PORT:-6657}:6657"

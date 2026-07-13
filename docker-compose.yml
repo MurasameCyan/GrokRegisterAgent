@@ -4,7 +4,7 @@
 # 快速启动：
 #   cp .env.example .env
 #   docker compose up -d
-#   docker logs -f grok-gegister-agent
+#   docker logs -f grok-agent
 #
 # 热更新 Python 注册脚本：
 #   修改本地 ./register 后执行 docker compose restart
@@ -12,7 +12,7 @@
 #   （空目录/只有 logs 的目录不会覆盖镜像内置脚本）
 
 services:
-  grok-gegister-agent:
+  grok-agent:
     # 默认拉 GHCR；需要自动同步 register 的新 entrypoint 时可本地构建：
     #   docker compose build --pull
     #   docker compose up -d
@@ -20,7 +20,7 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile
-    container_name: grok-gegister-agent
+    container_name: grok-agent
     restart: unless-stopped
     ports:
       - "${WEB_PORT:-6657}:6657"

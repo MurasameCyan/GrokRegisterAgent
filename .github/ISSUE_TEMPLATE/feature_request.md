@@ -1,6 +1,6 @@
 ---
 name: 功能建议
-about: 为 grok-reg-tool 提出改进建议
+about: 为 Grok Agent 提出改进建议
 title: "[建议] "
 labels: ""
 assignees: ""

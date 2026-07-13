@@ -39,9 +39,39 @@ const config: Config = {
         sm: 'calc(var(--radius) - 4px)'
       },
       fontFamily: {
-        sans: ['IBM Plex Sans', 'PingFang SC', 'Microsoft YaHei', 'system-ui', 'sans-serif'],
-        mono: ['IBM Plex Mono', 'JetBrains Mono', 'Consolas', 'Menlo', 'monospace'],
-        display: ['IBM Plex Mono', 'IBM Plex Sans', 'sans-serif']
+        // 系统字体栈：iOS/macOS SF，Windows Segoe，零外链
+        sans: [
+          '-apple-system',
+          'BlinkMacSystemFont',
+          '"SF Pro Text"',
+          '"SF Pro Display"',
+          '"Segoe UI"',
+          'Roboto',
+          '"Helvetica Neue"',
+          'Arial',
+          '"PingFang SC"',
+          '"Hiragino Sans GB"',
+          '"Microsoft YaHei"',
+          'sans-serif'
+        ],
+        mono: [
+          'ui-monospace',
+          'SFMono-Regular',
+          'Menlo',
+          'Monaco',
+          'Consolas',
+          'monospace'
+        ],
+        display: [
+          '-apple-system',
+          'BlinkMacSystemFont',
+          '"SF Pro Display"',
+          '"Segoe UI"',
+          'sans-serif'
+        ]
+      },
+      boxShadow: {
+        ios: 'var(--ios-shadow)'
       }
     }
   },

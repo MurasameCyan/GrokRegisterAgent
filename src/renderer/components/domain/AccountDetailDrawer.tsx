@@ -45,7 +45,7 @@ export function AccountDetailDrawer({
   }, [account?.id]);
 
   if (!account) {
-    return <Drawer open={open} onClose={onClose} title="" subtitle="account detail" children={null} />;
+    return <Drawer open={open} onClose={onClose} title="" subtitle="账号详情" children={null} />;
   }
 
   const copy = async (value: string, label: string) => {
@@ -90,9 +90,9 @@ export function AccountDetailDrawer({
   };
 
   return (
-    <Drawer open={open} onClose={onClose} title={account.email || '(无邮箱)'} subtitle="account detail" width={460}>
-      <div className="space-y-5 p-5">
-        <div className="font-mono text-[11px] text-muted-foreground">
+    <Drawer open={open} onClose={onClose} title={account.email || '(无邮箱)'} subtitle="账号详情" width={460}>
+      <div className="space-y-4 p-4">
+        <div className="text-[12px] text-muted-foreground">
           创建于 {fmtBeijing(account.createdAt)}（北京时间）
         </div>
 
@@ -116,9 +116,9 @@ export function AccountDetailDrawer({
         </section>
 
         {/* 验证码 */}
-        <section className="rounded-2xl border border-border bg-muted/40 p-4">
+        <section className="rounded-[14px] bg-muted/60 p-4">
           <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2 text-sm font-semibold">
+            <div className="flex items-center gap-2 text-[15px] font-semibold tracking-[-0.01em]">
               <Mail className="h-4 w-4 text-muted-foreground" />
               最新验证码
             </div>
@@ -132,19 +132,19 @@ export function AccountDetailDrawer({
               <button
                 type="button"
                 onClick={() => void copy(code.code!, '验证码')}
-                className="font-mono text-3xl font-bold tracking-[0.2em] text-primary transition-opacity hover:opacity-70"
+                className="text-[28px] font-semibold tracking-[0.18em] text-primary transition-opacity hover:opacity-70"
                 title="点击复制"
               >
                 {code.code}
               </button>
             ) : (
-              <span className="font-mono text-2xl text-muted-foreground">
+              <span className="text-[22px] font-medium text-muted-foreground">
                 {codeLoading ? '获取中…' : code ? '暂无验证码' : '— — —'}
               </span>
             )}
           </div>
           {code && (
-            <div className="mt-3 space-y-1 text-center text-[11px] text-muted-foreground">
+            <div className="mt-3 space-y-1 text-center text-[12px] text-muted-foreground">
               {code.subject && <div className="truncate" title={code.subject}>主题：{code.subject}</div>}
               {code.receivedAt && <div>收件：{fmtBeijing(code.receivedAt)}</div>}
               {!code.hasMail && !code.error && <div>该邮箱暂无邮件</div>}
@@ -153,9 +153,9 @@ export function AccountDetailDrawer({
         </section>
 
         {/* SSO 验活 */}
-        <section className="rounded-2xl border border-border bg-muted/40 p-4">
+        <section className="rounded-[14px] bg-muted/60 p-4">
           <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2 text-sm font-semibold">
+            <div className="flex items-center gap-2 text-[15px] font-semibold tracking-[-0.01em]">
               <KeyRound className="h-4 w-4 text-muted-foreground" />
               SSO 验活
             </div>
@@ -169,10 +169,10 @@ export function AccountDetailDrawer({
             <div className="mt-3 space-y-2">
               <div
                 className={cn(
-                  'inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold',
+                  'inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[12px] font-medium',
                   ssoResult.alive
-                    ? 'border-ok/40 bg-ok/10 text-ok'
-                    : 'border-danger/40 bg-danger/10 text-danger'
+                    ? 'bg-ok/12 text-ok'
+                    : 'bg-danger/12 text-danger'
                 )}
               >
                 {ssoResult.alive ? <ShieldCheck className="h-3.5 w-3.5" /> : <ShieldX className="h-3.5 w-3.5" />}
@@ -181,7 +181,7 @@ export function AccountDetailDrawer({
               </div>
 
               {ssoResult.alive && (
-                <div className="space-y-1.5 rounded-xl border border-border/60 bg-card/70 p-3 text-xs">
+                <div className="space-y-1.5 rounded-[12px] bg-card p-3 text-[12px]">
                   <KV label="grok 邮箱" value={ssoResult.email} highlight={ssoResult.email !== account.email} />
                   <KV
                     label="姓名"
@@ -193,16 +193,16 @@ export function AccountDetailDrawer({
                 </div>
               )}
               {ssoResult.error && (
-                <div className="rounded-xl border border-danger/30 bg-danger/8 px-3 py-2 text-[11px] text-danger">
+                <div className="rounded-[12px] bg-danger/10 px-3 py-2 text-[12px] text-danger">
                   {ssoResult.error}
                 </div>
               )}
-              <div className="text-[11px] text-muted-foreground">
+              <div className="text-[12px] text-muted-foreground">
                 检查于 {fmtBeijing(ssoResult.checkedAt)}
               </div>
             </div>
           ) : (
-            <div className="mt-3 text-center text-xs text-muted-foreground">
+            <div className="mt-3 text-center text-[12px] text-muted-foreground">
               {ssoLoading ? '验活中…' : '点击「验活」检查 grok 账户实时状态'}
             </div>
           )}
@@ -228,14 +228,14 @@ function CredRow({
   onCopy(): void;
 }) {
   return (
-    <div className="rounded-2xl border border-border bg-muted/40 px-4 py-3">
+    <div className="rounded-[14px] bg-muted/60 px-3.5 py-3">
       <div className="flex items-center justify-between gap-2">
         <span className="field-label">{label}</span>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-0.5">
           <button
             type="button"
             onClick={onToggle}
-            className="rounded p-1 text-muted-foreground hover:text-foreground"
+            className="rounded-full p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             title={masked ? '显示' : '隐藏'}
           >
             {masked ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
@@ -243,14 +243,14 @@ function CredRow({
           <button
             type="button"
             onClick={onCopy}
-            className="rounded p-1 text-muted-foreground hover:text-foreground"
+            className="rounded-full p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             title="复制"
           >
             <Copy className="h-3.5 w-3.5" />
           </button>
         </div>
       </div>
-      <div className={cn('mt-1 break-all text-xs', mono && 'font-mono')}>
+      <div className={cn('mt-1.5 break-all text-[13px] font-medium tracking-tight', mono && 'font-mono text-[12px]')}>
         {masked ? '••••••••••••' : value || '(无)'}
       </div>
     </div>

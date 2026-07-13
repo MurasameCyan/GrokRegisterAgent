@@ -3,23 +3,25 @@ import { cva, type VariantProps } from 'class-variance-authority';
 import { cn } from '@renderer/lib/cn';
 
 const buttonVariants = cva(
-  'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-xl border text-sm font-display uppercase tracking-[0.12em] ring-offset-background transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-45',
+  'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-[12px] border text-[15px] font-semibold tracking-[-0.01em] ring-offset-background transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-45 active:opacity-80',
   {
     variants: {
       variant: {
         primary:
-          'border-primary bg-primary text-primary-foreground shadow-[inset_0_1px_0_rgba(255,255,255,0.18)] hover:-translate-y-px hover:bg-primary/92',
+          'border-transparent bg-primary text-primary-foreground hover:bg-primary/90',
         secondary:
-          'border-border bg-card text-foreground hover:-translate-y-px hover:bg-accent/85',
-        ghost: 'border-transparent bg-transparent text-muted-foreground hover:border-border hover:bg-accent/70 hover:text-foreground',
-        danger: 'border-danger bg-danger text-white hover:-translate-y-px hover:bg-danger/92',
+          'border-transparent bg-muted text-foreground hover:bg-muted/80',
+        ghost:
+          'border-transparent bg-transparent text-primary hover:bg-primary/8',
+        danger:
+          'border-transparent bg-danger text-white hover:bg-danger/90',
         outline:
-          'border-border bg-transparent text-foreground hover:bg-accent/75'
+          'border-border bg-card text-foreground hover:bg-accent'
       },
       size: {
-        sm: 'h-9 px-3 text-[11px]',
-        md: 'h-10 px-4 text-[11px]',
-        lg: 'h-12 px-6 text-[12px]',
+        sm: 'h-9 px-3 text-[13px]',
+        md: 'h-11 px-4 text-[15px]',
+        lg: 'h-12 px-5 text-[16px]',
         icon: 'h-10 w-10'
       }
     },

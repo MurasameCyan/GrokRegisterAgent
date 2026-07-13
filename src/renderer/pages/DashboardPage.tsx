@@ -79,19 +79,28 @@ export function DashboardPage({ username }: { username: string }) {
   return (
     <div className="space-y-6">
       <section className="hero-panel">
-        <div className="space-y-3">
-          <div className="shell-label">dashboard</div>
-          <h3 className="font-display text-[clamp(1.8rem,4vw,3.5rem)] font-semibold tracking-[-0.04em]">
+        <div className="space-y-2 pr-16">
+          <div className="brand-subtitle">概览</div>
+          <h3 className="page-title text-[26px] sm:text-[30px]">
             {username}，{greeting(now)}
           </h3>
-          <p className="max-w-3xl text-sm leading-7 text-muted-foreground">
-            {nowBeijing()}（北京时间）
+          <p className="text-[13px] leading-5 text-muted-foreground">
+            {nowBeijing()} · 北京时间
           </p>
-          <VersionBadge update={update} loading={updateLoading} onCheck={() => void loadUpdate()} />
+          <div className="pt-1">
+            <VersionBadge update={update} loading={updateLoading} onCheck={() => void loadUpdate()} />
+          </div>
         </div>
         <div className="hero-stamp">
-          <Clock3 className="h-5 w-5" />
-          <span>{now.toLocaleTimeString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false, hour: '2-digit', minute: '2-digit' })}</span>
+          <Clock3 className="h-3.5 w-3.5" />
+          <span>
+            {now.toLocaleTimeString('zh-CN', {
+              timeZone: 'Asia/Shanghai',
+              hour12: false,
+              hour: '2-digit',
+              minute: '2-digit'
+            })}
+          </span>
         </div>
       </section>
 
@@ -111,15 +120,18 @@ export function DashboardPage({ username }: { username: string }) {
       <div className="pane-grid">
         <section className="terminal-card">
           <div className="terminal-card-header">
-            <h3 className="text-base font-semibold">系统体检</h3>
+            <div>
+              <div className="brand-subtitle">系统</div>
+              <h3 className="mt-0.5 text-[17px] font-semibold tracking-[-0.02em]">体检</h3>
+            </div>
             <Button variant="secondary" size="sm" onClick={() => void loadHealth()} disabled={healthLoading}>
               <RefreshCcw className="h-3.5 w-3.5" />
-              重新检查
+              检查
             </Button>
           </div>
-          <div className="terminal-card-body space-y-3">
+          <div className="terminal-card-body space-y-2.5">
             {!health ? (
-              <div className="rounded-2xl border border-border bg-muted/45 p-5 text-sm text-muted-foreground">
+              <div className="rounded-[14px] bg-muted/60 p-4 text-[13px] text-muted-foreground">
                 正在读取体检结果…
               </div>
             ) : (
@@ -130,12 +142,15 @@ export function DashboardPage({ username }: { username: string }) {
 
         <section className="terminal-card">
           <div className="terminal-card-header">
-            <h3 className="text-base font-semibold">最近号池</h3>
+            <div>
+              <div className="brand-subtitle">号池</div>
+              <h3 className="mt-0.5 text-[17px] font-semibold tracking-[-0.02em]">最近</h3>
+            </div>
             <div className="shell-chip">{accounts.length} 账号</div>
           </div>
-          <div className="terminal-card-body space-y-4">
+          <div className="terminal-card-body space-y-2.5">
             <InfoLine label="邮箱后端" value={settings?.mail.apiBase || '未配置'} />
-            <InfoLine label="代理配置" value={settings?.proxy || '直接连接'} />
+            <InfoLine label="代理" value={settings?.proxy || '直接连接'} />
             <InfoLine label="最近账号" value={latest?.email || '暂无记录'} />
             <InfoLine
               label="最近时间"
@@ -157,20 +172,20 @@ function HealthRow({ check }: { check: SystemHealthCheck }) {
   const Icon = check.level === 'ok' ? CheckCircle2 : AlertTriangle;
 
   return (
-    <div className="rounded-2xl border border-border bg-card/80 p-4">
-      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+    <div className="rounded-[14px] bg-muted/50 p-3.5">
+      <div className="flex flex-col gap-2.5 md:flex-row md:items-start md:justify-between">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <span className={cn('status-pill', tone)}>
               <Icon className="h-3.5 w-3.5" />
               {check.level}
             </span>
-            <span className="font-semibold">{check.label}</span>
+            <span className="text-[15px] font-semibold tracking-[-0.01em]">{check.label}</span>
           </div>
-          <p className="mt-2 text-sm leading-6 text-muted-foreground">{check.message}</p>
+          <p className="mt-1.5 text-[13px] leading-5 text-muted-foreground">{check.message}</p>
         </div>
         {check.detail && (
-          <div className="max-w-full break-all rounded-xl border border-border bg-muted/45 px-3 py-2 font-mono text-[11px] text-muted-foreground md:max-w-[48%]">
+          <div className="max-w-full break-all rounded-[10px] bg-card px-3 py-2 font-mono text-[11px] text-muted-foreground md:max-w-[48%]">
             {check.detail}
           </div>
         )}
@@ -181,9 +196,9 @@ function HealthRow({ check }: { check: SystemHealthCheck }) {
 
 function InfoLine({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-2xl border border-border bg-muted/45 p-4">
+    <div className="rounded-[14px] bg-muted/60 p-3.5">
       <div className="field-label">{label}</div>
-      <div className="mt-2 break-all font-mono text-sm">{value}</div>
+      <div className="mt-1.5 break-all text-[13px] font-medium tracking-tight">{value}</div>
     </div>
   );
 }

@@ -1,7 +1,7 @@
 {
-  "name": "grok-reg-tool",
+  "name": "grok-agent",
   "version": "0.1.2",
-  "description": "可自部署的 Grok 注册机 Web 控制台，支持 Docker、DrissionPage 自动化、邮件后端配置和本地账号号池管理。",
+  "description": "Grok Agent — 可自部署的 Grok 注册机 Web 控制台，支持 Docker、DrissionPage、邮件后端与本地号池。",
   "keywords": [
     "grok",
     "grok注册机",
@@ -15,16 +15,16 @@
     "注册工具"
   ],
   "private": false,
-  "author": "FengZi1221",
+  "author": "MurasameCyan",
   "license": "MIT",
   "type": "module",
-  "homepage": "https://github.com/FengZi1221/grok-reg-tool",
+  "homepage": "https://github.com/MurasameCyan/GrokRegisterAgent",
   "repository": {
     "type": "git",
-    "url": "https://github.com/FengZi1221/grok-reg-tool.git"
+    "url": "https://github.com/MurasameCyan/GrokRegisterAgent.git"
   },
   "bugs": {
-    "url": "https://github.com/FengZi1221/grok-reg-tool/issues"
+    "url": "https://github.com/MurasameCyan/GrokRegisterAgent/issues"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.web.json",

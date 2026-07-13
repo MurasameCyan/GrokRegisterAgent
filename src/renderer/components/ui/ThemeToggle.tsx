@@ -15,7 +15,7 @@ export function ThemeToggle({ size = 'sm' }: { size?: 'sm' | 'md' }) {
     <div
       role="group"
       className={cn(
-        'inline-flex flex-nowrap items-center rounded-full border border-border bg-muted/80 p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.35)]',
+        'inline-flex flex-nowrap items-center rounded-full bg-muted p-0.5',
         size === 'md' ? 'text-sm' : 'text-xs'
       )}
     >
@@ -25,7 +25,7 @@ export function ThemeToggle({ size = 'sm' }: { size?: 'sm' | 'md' }) {
           title={label}
           onClick={() => setMode(m)}
           className={cn(
-            'flex items-center gap-1 whitespace-nowrap rounded-full px-2.5 py-1.5 font-display transition-colors',
+            'flex items-center gap-1 whitespace-nowrap rounded-full px-2.5 py-1.5 font-medium transition-colors duration-150',
             m === mode
               ? 'bg-card text-foreground shadow-sm'
               : 'text-muted-foreground hover:text-foreground'

@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
-  FolderOpen,
   Play,
   Save,
   SlidersHorizontal,
@@ -51,58 +50,66 @@ export function RegisterPage({ onOpenSettings }: { onOpenSettings(): void }) {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       <div className="pane-grid">
         <section className="terminal-card">
           <div className="terminal-card-header">
-            <h3 className="text-base font-semibold">注册机运行台</h3>
+            <div>
+              <div className="brand-subtitle">控制</div>
+              <h3 className="mt-0.5 text-[17px] font-semibold tracking-[-0.02em]">注册机</h3>
+            </div>
             <div className="flex flex-wrap items-center gap-2">
               {running ? (
-                <Button variant="danger" size="lg" onClick={stop}>
-                  <StopCircle className="h-[18px] w-[18px]" />
-                  停止运行
+                <Button variant="danger" size="md" onClick={stop}>
+                  <StopCircle className="h-4 w-4" />
+                  停止
                 </Button>
               ) : (
-                <Button size="lg" onClick={start} disabled={!ready}>
-                  <Play className="h-[18px] w-[18px]" />
-                  开始运行
+                <Button size="md" onClick={start} disabled={!ready}>
+                  <Play className="h-4 w-4" />
+                  开始
                 </Button>
               )}
             </div>
           </div>
-          <div className="terminal-card-body space-y-5">
+          <div className="terminal-card-body space-y-4">
             <StatusCard status={status} />
 
-            <div className="rounded-2xl border border-border bg-muted/45 p-4">
+            <div className="rounded-[14px] bg-muted/60 p-4">
               <div className="flex items-center justify-between gap-3">
                 <div>
-                  <div className="field-label">register progress</div>
-                  <div className="mt-2 text-sm text-muted-foreground">
+                  <div className="field-label">进度</div>
+                  <div className="mt-1 text-[13px] text-muted-foreground">
                     成功 {status.success} / 计划 {status.total || settings?.runCount || 0}
                   </div>
                 </div>
-                <div className="font-mono text-2xl font-semibold">{progress}%</div>
+                <div className="text-[22px] font-semibold tabular-nums tracking-tight">
+                  {progress}%
+                </div>
               </div>
-              <div className="mt-4 h-3 overflow-hidden rounded-full border border-border bg-card">
-                <div className="h-full bg-primary transition-all" style={{ width: `${progress}%` }} />
+              <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-border">
+                <div
+                  className="h-full rounded-full bg-primary transition-[width] duration-300"
+                  style={{ width: `${progress}%` }}
+                />
               </div>
             </div>
 
             {!ready && (
-              <div className="rounded-2xl border border-warn/35 bg-warn/8 p-4 text-sm leading-7 text-warn">
+              <div className="rounded-[14px] bg-warn/10 p-4 text-[13px] leading-5 text-warn">
                 <div className="flex items-start gap-2">
-                  <TriangleAlert className="mt-1 h-4 w-4 shrink-0" />
+                  <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />
                   <span>启动前请到「配置」页补齐邮箱后端。</span>
                 </div>
                 <Button className="mt-3" variant="secondary" size="sm" onClick={onOpenSettings}>
-                  打开配置页
+                  打开配置
                 </Button>
               </div>
             )}
 
-            <div className="grid gap-4 md:grid-cols-2">
-              <InfoBox label="run count" value={String(settings?.runCount ?? '--')} />
-              <InfoBox label="proxy" value={settings?.proxy || '直接连接'} />
+            <div className="grid gap-3 sm:grid-cols-2">
+              <InfoBox label="轮数" value={String(settings?.runCount ?? '--')} />
+              <InfoBox label="代理" value={settings?.proxy || '直接连接'} />
             </div>
           </div>
         </section>
@@ -154,41 +161,54 @@ function RuntimeSettingsPanel() {
   return (
     <section className="terminal-card flex flex-col">
       <div className="terminal-card-header">
-        <h3 className="text-base font-semibold">运行参数</h3>
+        <div>
+          <div className="brand-subtitle">参数</div>
+          <h3 className="mt-0.5 text-[17px] font-semibold tracking-[-0.02em]">运行设置</h3>
+        </div>
         <SlidersHorizontal className="h-4 w-4 text-muted-foreground" />
       </div>
-      <div className="terminal-card-body space-y-5 flex-1 flex flex-col justify-between">
-        <div className="space-y-5">
-          <div className="rounded-2xl border border-border bg-muted/45 p-4">
+      <div className="terminal-card-body flex flex-1 flex-col justify-between space-y-4">
+        <div className="space-y-4">
+          <div className="rounded-[14px] bg-muted/60 p-4">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <div className="field-label">run count</div>
-                <div className="mt-1 text-xs text-muted-foreground">单次启动执行轮数，范围 1 到 50，保存后下次启动生效。</div>
+                <div className="field-label">轮数</div>
+                <div className="mt-1 text-[12px] leading-5 text-muted-foreground">
+                  单次 1–50，保存后下次启动生效
+                </div>
               </div>
-              <div className="shell-chip">{draft.runCount}</div>
+              <div className="shell-chip tabular-nums">{draft.runCount}</div>
             </div>
-            <div className="mt-4">
+            <div className="mt-3">
               <Slider min={1} max={50} value={draft.runCount} onValueChange={(v) => update('runCount', v)} />
             </div>
           </div>
 
-          <Field label="HTTP 代理配置 (可选)" hint="例如 http://127.0.0.1:7890">
+          <Field label="HTTP 代理（可选）" hint="例如 http://127.0.0.1:7890">
             <Input value={draft.proxy} onChange={(e) => update('proxy', e.target.value)} />
           </Field>
-          
-          <Field label="Python 路径" hint="Python 解释器路径，留空则使用系统 PATH 中的 python">
-            <Input value={draft.pythonPath} onChange={(e) => update('pythonPath', e.target.value)} placeholder="python" />
+
+          <Field label="Python 路径" hint="留空则用系统 PATH 中的 python">
+            <Input
+              value={draft.pythonPath}
+              onChange={(e) => update('pythonPath', e.target.value)}
+              placeholder="python"
+            />
           </Field>
 
-          <Field label="注册脚本目录" hint="可选；留空时自动使用项目内置 register/，Docker 中为 /app/register">
-            <Input value={draft.registerDir} onChange={(e) => update('registerDir', e.target.value)} placeholder="/app/register" />
+          <Field label="注册脚本目录" hint="留空用内置 register/">
+            <Input
+              value={draft.registerDir}
+              onChange={(e) => update('registerDir', e.target.value)}
+              placeholder="/app/register"
+            />
           </Field>
         </div>
 
-        <div className="pt-5">
+        <div className="pt-2">
           <Button onClick={save} disabled={!dirty || saving} className="w-full">
             <Save className="h-4 w-4" />
-            {saving ? '保存中…' : '保存运行参数'}
+            {saving ? '保存中…' : '保存'}
           </Button>
         </div>
       </div>
@@ -206,10 +226,10 @@ function Field({
   children: ReactNode;
 }) {
   return (
-    <div className="space-y-2">
+    <div className="space-y-1.5">
       <div>
         <div className="field-label">{label}</div>
-        {hint && <div className="field-hint mt-1">{hint}</div>}
+        {hint && <div className="field-hint mt-0.5">{hint}</div>}
       </div>
       {children}
     </div>
@@ -218,9 +238,9 @@ function Field({
 
 function InfoBox({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-2xl border border-border bg-muted/45 p-4">
+    <div className="rounded-[14px] bg-muted/60 p-3.5">
       <div className="field-label">{label}</div>
-      <div className="mt-2 break-all font-mono text-xs">{value}</div>
+      <div className="mt-1.5 break-all text-[13px] font-medium tracking-tight">{value}</div>
     </div>
   );
 }
