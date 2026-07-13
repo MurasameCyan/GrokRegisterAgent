@@ -163,6 +163,51 @@ _sso_ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 DEFAULT_SSO_FILE = os.path.join(_sso_dir, f"sso_{_sso_ts}_{os.getpid()}.txt")
 
 
+def _apply_stealth_patches(tab=None):
+    """弱化常见自动化指纹。Turnstile 失败反馈页出现时尤其需要。"""
+    target = tab or page
+    if target is None:
+        return
+    try:
+        target.run_cdp(
+            "Page.addScriptToEvaluateOnNewDocument",
+            source=r"""
+Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+try {
+  if (!window.chrome) window.chrome = { runtime: {} };
+} catch (e) {}
+try {
+  Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
+} catch (e) {}
+try {
+  Object.defineProperty(navigator, 'plugins', {
+    get: () => [1, 2, 3, 4, 5],
+  });
+} catch (e) {}
+try {
+  const originalQuery = window.navigator.permissions && window.navigator.permissions.query;
+  if (originalQuery) {
+    window.navigator.permissions.query = (parameters) => (
+      parameters && parameters.name === 'notifications'
+        ? Promise.resolve({ state: Notification.permission })
+        : originalQuery(parameters)
+    );
+  }
+} catch (e) {}
+            """,
+        )
+    except Exception:
+        pass
+    try:
+        target.run_js(
+            """
+try { Object.defineProperty(navigator, 'webdriver', { get: () => undefined }); } catch (e) {}
+            """
+        )
+    except Exception:
+        pass
+
+
 def start_browser():
     # 每轮从全新浏览器开始，使用独立临时 profile 目录避免 Cookie/Session 复用。
     global browser, page, _chrome_temp_dir
@@ -171,6 +216,7 @@ def start_browser():
     browser = Chromium(co)
     tabs = browser.get_tabs()
     page = tabs[-1] if tabs else browser.new_tab()
+    _apply_stealth_patches(page)
     return browser, page
 
 
@@ -225,11 +271,13 @@ def open_signup_page():
     # 每轮开始时打开注册页，并切到“使用邮箱注册”流程。
     global page
     refresh_active_page()
+    _apply_stealth_patches(page)
     try:
         page.get(SIGNUP_URL)
     except Exception:
         refresh_active_page()
         page = browser.new_tab(SIGNUP_URL)
+    _apply_stealth_patches(page)
     click_email_signup_button()
 
 
@@ -713,12 +761,97 @@ return '';
     return ""
 
 
+def _turnstile_widget_state():
+    """
+    观察 Turnstile 当前状态。
+    诊断日志里出现 title=Turnstile feedback report / src 含 /failure 表示已被 Cloudflare 判定失败。
+    """
+    try:
+        return page.run_js(
+            """
+const input = document.querySelector('input[name="cf-turnstile-response"]');
+const frames = Array.from(document.querySelectorAll('iframe')).map((n) => {
+  const r = n.getBoundingClientRect();
+  return {
+    src: n.src || '',
+    title: n.title || '',
+    w: Math.round(r.width),
+    h: Math.round(r.height),
+    x: r.left,
+    y: r.top,
+  };
+});
+const failure = frames.some((f) =>
+  /\\/failure/i.test(f.src) || /feedback report/i.test(f.title) || /failed/i.test(f.title)
+);
+const challenge = frames.find((f) =>
+  /challenges\\.cloudflare\\.com/i.test(f.src) && !/\\/failure/i.test(f.src) && f.w >= 20 && f.h >= 20
+) || frames.find((f) =>
+  /turnstile|widget containing/i.test((f.src || '') + ' ' + (f.title || '')) && f.w >= 20 && f.h >= 20
+) || null;
+// 宿主 shadow 内的 300x65 级控件有时 src 为空，用尺寸兜底
+const sized = frames.find((f) => f.w >= 240 && f.w <= 400 && f.h >= 50 && f.h <= 90) || null;
+const tokenLen = input ? String(input.value || '').trim().length : 0;
+return {
+  failure: !!failure,
+  tokenLen,
+  hasInput: !!input,
+  hasApi: typeof turnstile !== 'undefined',
+  challenge,
+  sized,
+  frames: frames.map((f) => ({
+    src: (f.src || '').slice(0, 140),
+    title: f.title,
+    w: f.w,
+    h: f.h,
+  })),
+};
+            """
+        ) or {}
+    except Exception as e:
+        return {"failure": False, "error": str(e)}
+
+
+def _iframe_box(iframe):
+    """取 iframe 在页面视口中的矩形。"""
+    try:
+        box = iframe.run_js(
+            """
+const r = this.getBoundingClientRect();
+return {x: r.left, y: r.top, w: r.width, h: r.height};
+            """
+        )
+        if box and float(box.get("w") or 0) > 0:
+            return box
+    except Exception:
+        pass
+    try:
+        rect = iframe.rect
+        if hasattr(rect, "location") and hasattr(rect, "size"):
+            return {
+                "x": float(rect.location[0]),
+                "y": float(rect.location[1]),
+                "w": float(rect.size[0]),
+                "h": float(rect.size[1]),
+            }
+        if hasattr(rect, "mid_x"):
+            w = float(getattr(rect, "width", 300) or 300)
+            h = float(getattr(rect, "height", 65) or 65)
+            return {
+                "x": float(rect.mid_x) - w / 2.0,
+                "y": float(rect.mid_y) - h / 2.0,
+                "w": w,
+                "h": h,
+            }
+    except Exception:
+        pass
+    return None
+
+
 def _locate_turnstile_click_target():
     """
     定位 Turnstile 复选框点击目标。
-    DOM 结构通常为:
-      div(含 cf-turnstile) -> shadowRoot -> iframe -> body -> shadowRoot -> input/checkbox
-    Cloudflare 会改版，所以用多条路径兜底。
+    跳过 failure feedback 大 iframe，优先找正常 challenge/widget。
     """
     last_err = ""
 
@@ -727,16 +860,24 @@ def _locate_turnstile_click_target():
         challenge_solution = page.ele("@name=cf-turnstile-response", timeout=0.5)
         if challenge_solution:
             wrapper = challenge_solution.parent()
-            # 向上找带 shadow 的宿主
-            for _ in range(4):
+            for _ in range(5):
                 if wrapper is None:
                     break
                 try:
                     sr = wrapper.shadow_root
                     if sr:
-                        iframe = sr.ele("tag:iframe", timeout=0.3) or sr.ele("css:iframe", timeout=0.3)
-                        if iframe:
-                            return iframe, "input-parent-shadow"
+                        for iframe in sr.eles("tag:iframe", timeout=0.3) or []:
+                            try:
+                                src = (iframe.attr("src") or "") + " " + (iframe.attr("title") or "")
+                            except Exception:
+                                src = ""
+                            if "/failure" in src or "feedback report" in src.lower():
+                                continue
+                            box = _iframe_box(iframe)
+                            if box and float(box.get("w") or 0) >= 20 and float(box.get("h") or 0) >= 20:
+                                return iframe, "input-parent-shadow"
+                            if not box:
+                                return iframe, "input-parent-shadow"
                 except Exception as e:
                     last_err = f"pathA-shadow:{e}"
                 try:
@@ -746,14 +887,21 @@ def _locate_turnstile_click_target():
     except Exception as e:
         last_err = f"pathA:{e}"
 
-    # 路径 B：页面上 challenges.cloudflare.com 的 iframe
+    # 路径 B：页面上 challenges.cloudflare.com 的非 failure iframe
     try:
         for iframe in page.eles("tag:iframe", timeout=0.5) or []:
             try:
-                src = (iframe.attr("src") or "") + " " + (iframe.attr("title") or "")
+                src = (iframe.attr("src") or "")
+                title = (iframe.attr("title") or "")
             except Exception:
-                src = ""
-            if "challenges.cloudflare.com" in src or "turnstile" in src.lower() or "Widget containing" in src:
+                src, title = "", ""
+            blob = (src + " " + title).lower()
+            if "/failure" in blob or "feedback report" in blob:
+                continue
+            if "challenges.cloudflare.com" in blob or "turnstile" in blob or "widget containing" in blob:
+                box = _iframe_box(iframe)
+                if box and float(box.get("w") or 0) < 20:
+                    continue
                 return iframe, "direct-iframe"
     except Exception as e:
         last_err = f"pathB:{e}"
@@ -786,160 +934,128 @@ def _locate_turnstile_click_target():
         except Exception as e:
             last_err = f"pathC:{selector}:{e}"
 
+    # 路径 D：按尺寸兜底（约 300x65 的 widget）
+    try:
+        for iframe in page.eles("tag:iframe", timeout=0.5) or []:
+            box = _iframe_box(iframe)
+            if not box:
+                continue
+            w, h = float(box.get("w") or 0), float(box.get("h") or 0)
+            if 240 <= w <= 400 and 50 <= h <= 90:
+                return iframe, "sized-widget"
+    except Exception as e:
+        last_err = f"pathD:{e}"
+
     return None, last_err or "not-found"
 
 
-def _click_turnstile_checkbox(iframe):
-    """对 Turnstile iframe 内复选框做多策略点击。"""
+def _cdp_human_click(cx, cy):
+    """用 CDP 分步移动 + 按下/抬起，比 element.click() 更像真人。"""
+    steps = 12 + secrets.randbelow(8)
+    # 从附近随机起点移入
+    sx = cx - (40 + secrets.randbelow(80))
+    sy = cy - (20 + secrets.randbelow(40))
+    for i in range(1, steps + 1):
+        t = i / steps
+        # 轻微缓动
+        ease = t * t * (3 - 2 * t)
+        x = sx + (cx - sx) * ease + (secrets.randbelow(3) - 1)
+        y = sy + (cy - sy) * ease + (secrets.randbelow(3) - 1)
+        page.run_cdp(
+            "Input.dispatchMouseEvent",
+            type="mouseMoved",
+            x=float(x),
+            y=float(y),
+        )
+        time.sleep(0.008 + secrets.randbelow(12) / 1000.0)
+    time.sleep(0.05 + secrets.randbelow(12) / 100.0)
+    page.run_cdp(
+        "Input.dispatchMouseEvent",
+        type="mousePressed",
+        x=float(cx),
+        y=float(cy),
+        button="left",
+        buttons=1,
+        clickCount=1,
+    )
+    time.sleep(0.04 + secrets.randbelow(8) / 100.0)
+    page.run_cdp(
+        "Input.dispatchMouseEvent",
+        type="mouseReleased",
+        x=float(cx),
+        y=float(cy),
+        button="left",
+        buttons=0,
+        clickCount=1,
+    )
+
+
+def _click_turnstile_checkbox(iframe, prefer_cdp=True):
+    """
+    对 Turnstile 复选框点击。
+    优先 CDP 坐标点击；少用 shadow element.click（易被判定自动化）。
+    """
     clicked = False
     detail = []
 
-    # 注入更自然的 screenX/screenY（按 client 坐标偏移，不用固定常量）
-    try:
-        iframe.run_js(
-            """
-try {
-  if (!window.__ts_screen_patch) {
-    window.__ts_screen_patch = 1;
-    const ox = 40 + Math.floor(Math.random() * 100);
-    const oy = 80 + Math.floor(Math.random() * 80);
-    Object.defineProperty(MouseEvent.prototype, 'screenX', {
-      get: function () { return (this.clientX || 0) + (window.screenX || 0) + ox; },
-      configurable: true
-    });
-    Object.defineProperty(MouseEvent.prototype, 'screenY', {
-      get: function () { return (this.clientY || 0) + (window.screenY || 0) + oy; },
-      configurable: true
-    });
-  }
-} catch (e) {}
-            """
-        )
-    except Exception as e:
-        detail.append(f"patch:{e}")
+    box = _iframe_box(iframe)
+    if box:
+        w = float(box.get("w") or 300)
+        h = float(box.get("h") or 65)
+        # checkbox 在左侧；对超大 failure 面板不要点中心
+        if w > 420 or h > 200:
+            detail.append(f"skip-large:{int(w)}x{int(h)}")
+        else:
+            cx = float(box.get("x") or 0) + max(26.0, min(42.0, w * 0.12)) + (secrets.randbelow(5) - 2)
+            cy = float(box.get("y") or 0) + h * (0.45 + secrets.randbelow(10) / 100.0)
 
-    # 策略 1：body.shadow_root 内 input
-    try:
-        body = iframe.ele("tag:body", timeout=0.8)
-        if body is not None:
-            try:
-                sr = body.shadow_root
-                if sr:
-                    btn = (
-                        sr.ele("tag:input", timeout=0.4)
-                        or sr.ele("css:input[type=checkbox]", timeout=0.3)
-                        or sr.ele("css:label", timeout=0.3)
-                        or sr.ele("css:div[role=checkbox]", timeout=0.3)
-                    )
-                    if btn:
-                        try:
-                            btn.click(by_js=False)
-                        except Exception:
-                            btn.click()
-                        clicked = True
-                        detail.append("shadow-input")
-            except Exception as e:
-                detail.append(f"shadow:{e}")
+            if prefer_cdp:
+                try:
+                    _cdp_human_click(cx, cy)
+                    clicked = True
+                    detail.append(f"cdp-human:{int(cx)},{int(cy)}")
+                except Exception as e:
+                    detail.append(f"cdp-human:{e}")
+
             if not clicked:
                 try:
-                    btn = body.ele("tag:input", timeout=0.3) or body.ele("css:input", timeout=0.2)
-                    if btn:
-                        btn.click()
-                        clicked = True
-                        detail.append("body-input")
-                except Exception as e:
-                    detail.append(f"body-input:{e}")
-    except Exception as e:
-        detail.append(f"body:{e}")
-
-    # 策略 2：按 iframe 视口坐标点左侧复选框区域（checkbox 通常在左侧）
-    if not clicked:
-        try:
-            box = None
-            try:
-                # 在宿主页面坐标系下取 iframe 矩形，最稳定
-                box = iframe.run_js(
-                    """
-const r = this.getBoundingClientRect();
-return {x: r.left, y: r.top, w: r.width, h: r.height};
-                    """
-                )
-            except Exception:
-                box = None
-            if not box:
-                try:
-                    rect = iframe.rect
-                    # DrissionPage ElementRect: 优先 corners / size
-                    if hasattr(rect, "location") and hasattr(rect, "size"):
-                        box = {
-                            "x": float(rect.location[0]),
-                            "y": float(rect.location[1]),
-                            "w": float(rect.size[0]),
-                            "h": float(rect.size[1]),
-                        }
-                    elif hasattr(rect, "mid_x"):
-                        w = float(getattr(rect, "width", 300) or 300)
-                        h = float(getattr(rect, "height", 65) or 65)
-                        box = {
-                            "x": float(rect.mid_x) - w / 2.0,
-                            "y": float(rect.mid_y) - h / 2.0,
-                            "w": w,
-                            "h": h,
-                        }
-                except Exception:
-                    box = None
-
-            if box:
-                w = float(box.get("w") or 300)
-                h = float(box.get("h") or 65)
-                cx = float(box.get("x") or 0) + max(28.0, w * 0.18) + (secrets.randbelow(5) - 2)
-                cy = float(box.get("y") or 0) + h / 2.0 + (secrets.randbelow(5) - 2)
-                try:
-                    page.actions.move_to((cx, cy)).click()
+                    page.actions.move_to((cx, cy))
+                    time.sleep(0.08 + secrets.randbelow(15) / 100.0)
+                    page.actions.click()
                     clicked = True
                     detail.append(f"actions:{int(cx)},{int(cy)}")
                 except Exception as e:
                     detail.append(f"actions:{e}")
+
+    # 兜底：shadow 内 input（可能触发 automation 指纹，放最后）
+    if not clicked:
+        try:
+            body = iframe.ele("tag:body", timeout=0.6)
+            if body is not None:
+                sr = None
+                try:
+                    sr = body.shadow_root
+                except Exception:
+                    sr = None
+                btn = None
+                if sr:
+                    btn = (
+                        sr.ele("tag:input", timeout=0.3)
+                        or sr.ele("css:input[type=checkbox]", timeout=0.2)
+                        or sr.ele("css:[role=checkbox]", timeout=0.2)
+                    )
+                if btn is None:
+                    btn = body.ele("tag:input", timeout=0.2)
+                if btn is not None:
                     try:
-                        page.actions.move_to((cx, cy))
-                        time.sleep(0.05 + secrets.randbelow(10) / 100.0)
-                        page.actions.click()
-                        clicked = True
-                        detail.append(f"actions2:{int(cx)},{int(cy)}")
-                    except Exception as e2:
-                        detail.append(f"actions2:{e2}")
-                        try:
-                            # CDP 级真实鼠标事件（若可用）
-                            page.run_cdp(
-                                "Input.dispatchMouseEvent",
-                                type="mouseMoved",
-                                x=cx,
-                                y=cy,
-                            )
-                            time.sleep(0.05)
-                            page.run_cdp(
-                                "Input.dispatchMouseEvent",
-                                type="mousePressed",
-                                x=cx,
-                                y=cy,
-                                button="left",
-                                clickCount=1,
-                            )
-                            page.run_cdp(
-                                "Input.dispatchMouseEvent",
-                                type="mouseReleased",
-                                x=cx,
-                                y=cy,
-                                button="left",
-                                clickCount=1,
-                            )
-                            clicked = True
-                            detail.append(f"cdp:{int(cx)},{int(cy)}")
-                        except Exception as e3:
-                            detail.append(f"cdp:{e3}")
+                        btn.click(by_js=False)
+                    except Exception:
+                        btn.click()
+                    clicked = True
+                    detail.append("shadow-input")
         except Exception as e:
-            detail.append(f"coord:{e}")
-    # 策略 3：直接点 iframe 本体
+            detail.append(f"shadow:{e}")
+
     if not clicked:
         try:
             iframe.click()
@@ -951,29 +1067,46 @@ return {x: r.left, y: r.top, w: r.width, h: r.height};
     return clicked, ",".join(detail)
 
 
+def _soft_reset_turnstile():
+    try:
+        page.run_js(
+            """
+try { if (typeof turnstile !== 'undefined') turnstile.reset(); } catch (e) {}
+// 部分站点 widget 需要移除后重渲染；这里只 reset，避免破坏 React 树
+return true;
+            """
+        )
+        return True
+    except Exception:
+        return False
+
+
 def getTurnstileToken(timeout=65):
     """
     求解最终注册页 Turnstile。
-    改进点：
-    1. 不再一上来 reset（会打断已自动通过/进行中的验证）
-    2. 先等待 managed 模式静默出 token（默认约 20s）
-    3. 多路径定位 iframe + 多策略点击
-    4. 失败时打印诊断信息，避免 except: pass 完全静默
+    根据实测诊断：连点会导致 /failure feedback report。
+    策略改为：长等自动通过 -> 最多 3 次 CDP 真人点击且间隔长 -> 检测到 failure 则 soft reset 一次。
     """
     refresh_active_page()
+    _apply_stealth_patches(page)
     deadline = time.time() + timeout
     last_diag = ""
     click_attempts = 0
-    reset_done = False
+    reset_count = 0
+    max_clicks = 3
 
-    # 先给 managed / invisible 模式最长 20 秒自动通过（不超过总超时）
-    auto_wait_secs = min(20, max(0, timeout - 5))
+    # 先给 managed / invisible 模式最长 20 秒自动通过
+    auto_wait_secs = min(20, max(0, timeout - 8))
     auto_wait_until = time.time() + auto_wait_secs
     while time.time() < auto_wait_until:
         token = _read_turnstile_token()
         if token:
             print("[*] Turnstile 已自动通过（无需点击）。")
             return token
+        state = _turnstile_widget_state()
+        if state.get("failure"):
+            print("[Warn] 自动等待阶段检测到 Turnstile failure 反馈页。")
+            break
         time.sleep(0.5)
 
     while time.time() < deadline:
@@ -982,71 +1115,84 @@ def getTurnstileToken(timeout=65):
             print("[*] Turnstile token 已获取。")
             return token
 
+        state = _turnstile_widget_state()
+        if state.get("failure"):
+            last_diag = f"failure-state frames={state.get('frames')}"
+            if reset_count < 1 and time.time() + 12 < deadline:
+                print("[*] 检测到 Turnstile failure，执行 soft reset 并重新等待。")
+                _soft_reset_turnstile()
+                reset_count += 1
+                # reset 后先再等自动通过，不要立刻连点
+                wait_end = time.time() + min(12, deadline - time.time())
+                while time.time() < wait_end:
+                    token = _read_turnstile_token()
+                    if token:
+                        print("[*] Turnstile soft reset 后已自动通过。")
+                        return token
+                    if _turnstile_widget_state().get("failure"):
+                        break
+                    time.sleep(0.5)
+                continue
+            print("[Debug] Turnstile 已被 Cloudflare 判定 failure（IP/指纹/环境），停止无效连点。")
+            break
+
+        if click_attempts >= max_clicks:
+            last_diag = f"max-clicks:{click_attempts}"
+            if reset_count < 1 and time.time() + 10 < deadline:
+                print("[*] 已达最大点击次数，尝试 soft reset。")
+                _soft_reset_turnstile()
+                reset_count += 1
+                click_attempts = 0
+                time.sleep(2)
+                continue
+            break
+
         iframe, how = _locate_turnstile_click_target()
         if iframe is None:
-            last_diag = f"locate-fail:{how}"
-            # 偶尔 widget 尚未渲染
-            if not reset_done and time.time() + 12 < deadline:
-                # 只在中后期尝试一次 reset，避免一开始就打乱状态
-                pass
-            time.sleep(0.8)
+            last_diag = f"locate-fail:{how} state={state}"
+            # widget 可能仍在渲染
+            time.sleep(1.0)
             continue
 
         if click_attempts == 0:
-            print(f"[*] 已定位 Turnstile 控件 ({how})，开始真人化点击。")
+            print(f"[*] 已定位 Turnstile 控件 ({how})，开始 CDP 真人化点击（最多 {max_clicks} 次）。")
 
-        clicked, detail = _click_turnstile_checkbox(iframe)
+        # 点击前轻微随机停顿，模拟阅读
+        time.sleep(0.4 + secrets.randbelow(60) / 100.0)
+        clicked, detail = _click_turnstile_checkbox(iframe, prefer_cdp=True)
         click_attempts += 1
         last_diag = f"click#{click_attempts} via={how} detail={detail} ok={clicked}"
-        if click_attempts <= 3 or click_attempts % 5 == 0:
-            print(f"[*] Turnstile 点击尝试 #{click_attempts}: {detail}")
+        print(f"[*] Turnstile 点击尝试 #{click_attempts}: {detail}")
 
-        # 点击后等待 token
-        wait_slice = min(3.5, max(1.0, deadline - time.time()))
+        # 点击后给足时间出 token / 或进入 failure，不要马上再点
+        wait_slice = min(10.0, max(3.0, deadline - time.time()))
         wait_end = time.time() + wait_slice
         while time.time() < wait_end:
             token = _read_turnstile_token()
             if token:
                 print(f"[*] Turnstile 点击后已出 token（第 {click_attempts} 次尝试）。")
                 return token
+            st = _turnstile_widget_state()
+            if st.get("failure"):
+                print("[Warn] 点击后进入 Turnstile failure 状态。")
+                last_diag = f"post-click-failure #{click_attempts}"
+                break
             time.sleep(0.4)
 
-        # 多次点击仍失败时，尝试 reset 一次再重试
-        if click_attempts in (4, 10) and not reset_done:
-            try:
-                page.run_js("try { turnstile.reset(); } catch (e) {}")
-                print("[*] 已 reset Turnstile，准备重试。")
-                reset_done = True
-                time.sleep(1.2)
-            except Exception:
-                pass
-
-        time.sleep(0.3 + secrets.randbelow(40) / 100.0)
+        time.sleep(0.6 + secrets.randbelow(50) / 100.0)
 
     # 最终诊断
     try:
-        diag = page.run_js(
-            """
-const input = document.querySelector('input[name="cf-turnstile-response"]');
-const iframes = Array.from(document.querySelectorAll('iframe')).map((n) => ({
-  src: (n.src || '').slice(0, 120),
-  title: n.title || '',
-  w: Math.round(n.getBoundingClientRect().width),
-  h: Math.round(n.getBoundingClientRect().height),
-}));
-const widgets = document.querySelectorAll('.cf-turnstile, [data-sitekey]').length;
-return {
-  url: location.href,
-  hasInput: !!input,
-  inputLen: input ? String(input.value || '').length : 0,
-  widgets,
-  iframes,
-  hasTurnstileApi: typeof turnstile !== 'undefined',
-};
-            """
-        )
+        diag = _turnstile_widget_state()
         print(f"[Debug] Turnstile 失败诊断: {diag} | last={last_diag}")
+        if diag.get("failure"):
+            raise Exception(
+                "failed to solve turnstile: Cloudflare 返回 failure 反馈页"
+                "（多为 IP 信誉/浏览器指纹问题，而非单纯点不中）"
+            )
     except Exception as e:
+        if "failed to solve turnstile" in str(e):
+            raise
         print(f"[Debug] Turnstile 失败诊断不可用: {e} | last={last_diag}")
 
     raise Exception("failed to solve turnstile")
