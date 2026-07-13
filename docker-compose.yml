@@ -1,28 +1,10 @@
-# 使用 GitHub Container Registry 预构建多架构镜像（linux/amd64 + linux/arm64）
-# 开发主线分支：beta
-# 镜像：ghcr.io/murasamecyan/grokregisteragent:beta
-#      （推送 beta 时 CI 同时打 latest 标签，可用 :latest 或 :beta）
-#
-# 快速启动：
-#   cp .env.example .env
-#   docker compose up -d
-#   docker logs -f grok-agent
-#
-# 热更新 Python 注册脚本：
-#   修改本地 ./register 后执行 docker compose restart
-#   entrypoint 会从 /opt/register-host 自动同步到 /app/register
-#   （空目录/只有 logs 的目录不会覆盖镜像内置脚本）
-
 services:
   grok-agent:
-    # 默认拉 GHCR beta 线；需要自动同步 register 的新 entrypoint 时可本地构建：
-    #   docker compose build --pull
-    #   docker compose up -d
     image: ghcr.io/murasamecyan/grokregisteragent:beta
     build:
       context: .
       dockerfile: docker/Dockerfile
-    container_name: grok-agent
+    container_name: grok-gegister-agent
     restart: unless-stopped
     ports:
       - "${WEB_PORT:-6657}:6657"
@@ -47,7 +29,5 @@ services:
       DISPLAY: ":99"
     volumes:
       - ./data:/data
-      # 宿主 register 源码只读挂载到热更新目录（不要挂到 /app/register）
-      # entrypoint 检测到 runner.py / DrissionPage_example.py 后自动 rsync 进镜像运行目录
       - ./register:/opt/register-host:ro
     shm_size: "1gb"

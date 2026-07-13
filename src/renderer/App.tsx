@@ -143,7 +143,12 @@ export default function App() {
       <aside className="app-nav">
         <div className="flex h-full flex-col">
           <div className="nav-brand">
-            <div className="nav-logo" aria-hidden title="Grok Register Agent">
+            <div
+              className="nav-logo"
+              aria-hidden
+              title="Grok Register Agent"
+              style={{ width: 100, height: 100, minWidth: 100, minHeight: 100, fontSize: 30 }}
+            >
               GRA
             </div>
             <div className="site-name" aria-label="Grok Register Agent">
@@ -288,7 +293,12 @@ function LoginScreen({ onAuthed }: { onAuthed(next: AuthState): void }) {
     <div className="login-wrap">
       <form onSubmit={submit} className="login-panel">
         <div className="mb-7 flex items-center gap-3">
-          <div className="nav-logo" aria-hidden title="Grok Register Agent">
+          <div
+            className="nav-logo"
+            aria-hidden
+            title="Grok Register Agent"
+            style={{ width: 100, height: 100, minWidth: 100, minHeight: 100, fontSize: 30 }}
+          >
             GRA
           </div>
           <div className="site-name site-name-lg" aria-label="Grok Register Agent">

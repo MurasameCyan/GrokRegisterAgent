@@ -34,6 +34,8 @@
     "server:start:8098": "cross-env PORT=8098 node server/dist/server/src/index.js"
   },
   "dependencies": {
+    "@fontsource/dancing-script": "^5.2.8",
+    "@fontsource/great-vibes": "^5.2.8",
     "axios": "^1.17.0",
     "class-variance-authority": "0.7.0",
     "clsx": "2.1.1",

@@ -265,10 +265,10 @@
   }
 
   .site-name-lg {
-    font-size: 28px;
-    letter-spacing: 0.02em;
+    font-size: 32px !important;
+    letter-spacing: 0.03em;
     gap: 2px;
-    line-height: 1.15;
+    line-height: 1.08;
   }
 
   .nav-sub {
