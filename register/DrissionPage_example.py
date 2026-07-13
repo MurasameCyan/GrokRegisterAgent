@@ -178,46 +178,13 @@ def _ensure_virtual_display():
 
 _ensure_virtual_display()
 
-co = ChromiumOptions()
-co.auto_port()
-# 明确有头模式：Xvfb 下跑“真窗口”，不要 headless=new
-try:
-    co.headless(False)
-except Exception:
-    pass
-co.set_argument("--no-sandbox")
-co.set_argument("--disable-dev-shm-usage")
-co.set_argument(f"--window-size={_WINDOW_W},{_WINDOW_H}")
-co.set_argument("--window-position=0,0")
-co.set_argument("--disable-blink-features=AutomationControlled")
-co.set_argument("--lang=en-US,en")
-co.set_argument("--accept-lang=en-US,en")
-# 无 GPU 服务器：用软件 GL，保留 canvas/WebGL 能力（Turnstile 会读这些）
-# 切勿只 disable-gpu 却不给 swiftshader，否则指纹残缺极易 failure
-if _IS_LINUX:
-    co.set_argument("--disable-gpu-compositing")
-    # angle/swiftshader 在不同 chromium 版本上可用性不一，多写几个兼容
-    co.set_argument("--use-gl=angle")
-    co.set_argument("--use-angle=swiftshader-webgl")
-    co.set_argument("--enable-webgl")
-    co.set_argument("--ignore-gpu-blocklist")
-    co.set_argument("--enable-features=NetworkService,NetworkServiceInProcess")
-    # 无音频设备时减少报错噪音
-    co.set_argument("--mute-audio")
-    co.set_argument("--disable-background-networking")
-    co.set_argument("--no-first-run")
-    co.set_argument("--no-default-browser-check")
-try:
-    co.set_pref("credentials_enable_service", False)
-    co.set_pref("profile.password_manager_enabled", False)
-except Exception:
-    pass
-
 # 从 config.json 读取代理 / 浏览器路径；代理支持池轮换（每轮 start_browser 再取）
 _browser_proxy = ""
 _browser_path_cfg = ""
+_resolved_browser_path = ""
 _current_fingerprint = None
 _auto_auth_export = True
+_proxy_prefer_local_forward = False
 try:
     import json as _json_mod
     _cfg_path = os.path.join(os.path.dirname(__file__), "config.json")
@@ -227,17 +194,27 @@ try:
         _browser_proxy = str(_cfg.get("browser_proxy", "") or _cfg.get("proxy", "") or "")
         _browser_path_cfg = str(_cfg.get("browser_path", "") or "")
         _auto_auth_export = bool(_cfg.get("auto_auth_export", True))
+        _proxy_prefer_local_forward = bool(_cfg.get("proxy_prefer_local_forward", False))
 except Exception:
     pass
 
 try:
-    from pools import next_proxy, reload_pools
+    from pools import next_proxy, reload_pools, peek_status
 except Exception:
     def next_proxy(fallback: str = "") -> str:
         return fallback
 
     def reload_pools(force: bool = False) -> None:
         return None
+
+    def peek_status() -> dict:
+        return {}
+
+try:
+    from proxy_auth_ext import apply_proxy_to_chromium_options, parse_proxy_url
+except Exception:
+    apply_proxy_to_chromium_options = None
+    parse_proxy_url = None
 
 try:
     from fingerprint import build_fingerprint, apply_to_chromium_options, stealth_js
@@ -252,13 +229,11 @@ except Exception:
     sso_to_cpa_auth = None
     default_auth_dir = None
 
+# 解析浏览器路径（只做一次）
 if _browser_path_cfg and os.path.isfile(_browser_path_cfg):
-    co.set_browser_path(_browser_path_cfg)
+    _resolved_browser_path = _browser_path_cfg
     print(f"[*] 浏览器路径: {_browser_path_cfg}")
-
-# Linux 服务器自动检测 chrome/chromium 路径
-# 优先 google-chrome（指纹更接近真实用户），再系统 chromium，再 playwright
-if _IS_LINUX and not (_browser_path_cfg and os.path.isfile(_browser_path_cfg)):
+elif _IS_LINUX:
     _linux_candidates = [
         "/usr/bin/google-chrome-stable",
         "/usr/bin/google-chrome",
@@ -271,26 +246,66 @@ if _IS_LINUX and not (_browser_path_cfg and os.path.isfile(_browser_path_cfg)):
         _glob_mod.glob(os.path.expanduser("~/.cache/ms-playwright/chromium-*/chrome-linux*/chrome")),
         reverse=True,
     )
-    _picked = ""
     for _candidate in _linux_candidates + _pw_chromes:
         if _candidate and os.path.isfile(_candidate) and os.access(_candidate, os.X_OK):
-            _picked = _candidate
+            _resolved_browser_path = _candidate
             break
-    if _picked:
-        co.set_browser_path(_picked)
-        print(f"[*] Linux 浏览器: {_picked}")
+    if _resolved_browser_path:
+        print(f"[*] Linux 浏览器: {_resolved_browser_path}")
     else:
         print("[Warn] 未找到 chrome/chromium，将使用 DrissionPage 默认路径")
 
-co.set_timeouts(base=1)
-
-# 加载修复 MouseEvent.screenX / screenY 的扩展（需要非 headless + 可加载 extension）
 EXTENSION_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "turnstilePatch"))
 if os.path.isdir(EXTENSION_PATH):
-    co.add_extension(EXTENSION_PATH)
     print(f"[*] 已加载 Turnstile 扩展: {EXTENSION_PATH}")
 else:
     print(f"[Warn] Turnstile 扩展目录不存在: {EXTENSION_PATH}")
+
+
+def _new_chromium_options() -> ChromiumOptions:
+    """每轮新建 ChromiumOptions，避免代理扩展/指纹在全局 co 上累积。"""
+    opts = ChromiumOptions()
+    opts.auto_port()
+    try:
+        opts.headless(False)
+    except Exception:
+        pass
+    opts.set_argument("--no-sandbox")
+    opts.set_argument("--disable-dev-shm-usage")
+    opts.set_argument(f"--window-size={_WINDOW_W},{_WINDOW_H}")
+    opts.set_argument("--window-position=0,0")
+    opts.set_argument("--disable-blink-features=AutomationControlled")
+    opts.set_argument("--lang=en-US,en")
+    opts.set_argument("--accept-lang=en-US,en")
+    if _IS_LINUX:
+        opts.set_argument("--disable-gpu-compositing")
+        opts.set_argument("--use-gl=angle")
+        opts.set_argument("--use-angle=swiftshader-webgl")
+        opts.set_argument("--enable-webgl")
+        opts.set_argument("--ignore-gpu-blocklist")
+        opts.set_argument("--enable-features=NetworkService,NetworkServiceInProcess")
+        opts.set_argument("--mute-audio")
+        opts.set_argument("--disable-background-networking")
+        opts.set_argument("--no-first-run")
+        opts.set_argument("--no-default-browser-check")
+    try:
+        opts.set_pref("credentials_enable_service", False)
+        opts.set_pref("profile.password_manager_enabled", False)
+    except Exception:
+        pass
+    try:
+        opts.set_timeouts(base=1)
+    except Exception:
+        pass
+    if _resolved_browser_path and os.path.isfile(_resolved_browser_path):
+        opts.set_browser_path(_resolved_browser_path)
+    if os.path.isdir(EXTENSION_PATH):
+        opts.add_extension(EXTENSION_PATH)
+    return opts
+
+
+# 兼容旧代码中对全局 co 的引用（探测版本等）
+co = _new_chromium_options()
 
 _MACHINE = platform.machine() or ""
 _ARCH_NOTE = ""
@@ -538,24 +553,92 @@ def log_runtime_fingerprint(tab=None, force: bool = False):
 def start_browser():
     # 每轮从全新浏览器开始，使用独立临时 profile 目录避免 Cookie/Session 复用。
     # 每轮轮换代理 + 随机浏览器特征。
-    global browser, page, _chrome_temp_dir, _current_fingerprint, _browser_proxy
+    # 注意：带 user:pass 的代理必须用扩展注入，co.set_proxy 会静默忽略（DrissionPage 限制）。
+    global browser, page, _chrome_temp_dir, _current_fingerprint, _browser_proxy, co
     if _IS_LINUX:
         _ensure_virtual_display()
 
-    # 代理池：每轮取一个
+    # 每轮新 ChromiumOptions，避免认证扩展/指纹在全局对象上累积
+    co = _new_chromium_options()
+    proxy_apply_result = None
+
+    # 代理池：每轮取一个（先创建 profile 目录，auth 扩展写在其下）
+    _chrome_temp_dir = tempfile.mkdtemp(prefix="chrome_run_")
     try:
         reload_pools(force=True)
     except Exception:
         pass
     try:
+        st = peek_status() if callable(peek_status) else {}
+        pool_n = len(st.get("proxies") or []) if isinstance(st, dict) else 0
+        if pool_n:
+            print(f"[*] 代理池: {pool_n} 条 mode={st.get('proxy_mode') or '?'}")
+    except Exception:
+        pass
+
+    proxy_apply_result = None
+    try:
         picked = next_proxy(_browser_proxy)
         if picked:
             _browser_proxy = picked
+            # 脱敏日志
+            log_proxy = picked
             try:
-                co.set_proxy(picked)
+                if parse_proxy_url:
+                    p = parse_proxy_url(picked)
+                    if p and p.get("has_auth"):
+                        log_proxy = (
+                            f"{p['scheme']}://{p['username'][:8]}…:***@{p['host']}:{p['port']}"
+                        )
             except Exception:
                 pass
-            print(f"[*] 浏览器代理(本轮): {picked}")
+
+            if apply_proxy_to_chromium_options is not None:
+                # 热读 prefer local forward
+                prefer_local = _proxy_prefer_local_forward
+                try:
+                    import json as _jm
+                    _cp = os.path.join(os.path.dirname(__file__), "config.json")
+                    if os.path.isfile(_cp):
+                        with open(_cp, "r", encoding="utf-8") as _cf:
+                            prefer_local = bool(
+                                _jm.load(_cf).get("proxy_prefer_local_forward", prefer_local)
+                            )
+                except Exception:
+                    pass
+                proxy_apply_result = apply_proxy_to_chromium_options(
+                    co,
+                    picked,
+                    work_dir=_chrome_temp_dir,
+                    prefer_local_forward=prefer_local,
+                )
+                mode = proxy_apply_result.get("mode")
+                if mode == "auth_extension":
+                    print(
+                        f"[*] 浏览器代理(本轮/认证扩展): {proxy_apply_result.get('proxy') or log_proxy}"
+                    )
+                elif mode == "local_forward":
+                    print(
+                        f"[*] 浏览器代理(本轮/本地转发): {proxy_apply_result.get('local_proxy')} "
+                        f"→ {proxy_apply_result.get('proxy') or log_proxy}"
+                    )
+                elif mode in ("set_proxy", "arg"):
+                    print(
+                        f"[*] 浏览器代理(本轮/{mode}): {proxy_apply_result.get('proxy') or log_proxy}"
+                    )
+                elif mode == "error":
+                    print(
+                        f"[Warn] 代理配置失败，将直连: {proxy_apply_result.get('error')} | raw={log_proxy}"
+                    )
+                else:
+                    print(f"[*] 浏览器代理(本轮): {log_proxy}")
+            else:
+                # 无 proxy_auth_ext 时退回 set_proxy（账号密码会失败）
+                try:
+                    co.set_proxy(picked)
+                    print(f"[*] 浏览器代理(本轮/set_proxy): {log_proxy}")
+                except Exception as e:
+                    print(f"[Warn] set_proxy 失败: {e} | {log_proxy}")
         else:
             print("[*] 浏览器代理: 直接连接")
     except Exception as e:
@@ -576,7 +659,6 @@ def start_browser():
             print(f"[Warn] 指纹生成失败: {e}")
             _current_fingerprint = None
 
-    _chrome_temp_dir = tempfile.mkdtemp(prefix="chrome_run_")
     co.set_user_data_path(_chrome_temp_dir)
     browser = Chromium(co)
     tabs = browser.get_tabs()
@@ -599,6 +681,88 @@ def start_browser():
             page.run_js(stealth_js(_current_fingerprint))
         except Exception:
             pass
+
+    # 出口 IP：确认代理是否真正生效（浏览器视角）
+    try:
+        from proxy_local_forward import (
+            verify_exit_ip_via_browser,
+            verify_exit_ip,
+            start_local_forward,
+            stop_local_forward,
+        )
+
+        ip_info = verify_exit_ip_via_browser(page, timeout=12.0)
+        if ip_info.get("ok") and ip_info.get("ip"):
+            print(f"[*] 浏览器出口 IP: {ip_info['ip']}（api.ipify.org）")
+        else:
+            err = ip_info.get("error") or ip_info.get("raw") or "unknown"
+            print(f"[Warn] 浏览器出口 IP 探测失败: {err}")
+            # 认证扩展可能未生效：尝试本地转发并重建浏览器
+            can_fb = bool(
+                proxy_apply_result
+                and proxy_apply_result.get("can_fallback_local")
+                and proxy_apply_result.get("upstream_url")
+            )
+            if can_fb and apply_proxy_to_chromium_options is not None:
+                up = proxy_apply_result["upstream_url"]
+                print("[*] 尝试本地转发兜底并重建浏览器…")
+                try:
+                    stop_browser()
+                except Exception:
+                    pass
+                try:
+                    stop_local_forward()
+                except Exception:
+                    pass
+                co = _new_chromium_options()
+                fb = apply_proxy_to_chromium_options(
+                    co, up, work_dir=_chrome_temp_dir, prefer_local_forward=True
+                )
+                if fb.get("mode") == "local_forward":
+                    print(
+                        f"[*] 浏览器代理(兜底/本地转发): {fb.get('local_proxy')} → {fb.get('proxy')}"
+                    )
+                    if build_fingerprint is not None and _current_fingerprint is not None:
+                        try:
+                            if apply_to_chromium_options is not None:
+                                apply_to_chromium_options(co, _current_fingerprint)
+                        except Exception:
+                            pass
+                    co.set_user_data_path(_chrome_temp_dir)
+                    browser = Chromium(co)
+                    tabs = browser.get_tabs()
+                    page = tabs[-1] if tabs else browser.new_tab()
+                    try:
+                        page.set.window.size(win_w, win_h)
+                    except Exception:
+                        pass
+                    _apply_stealth_patches(page)
+                    if _current_fingerprint is not None and stealth_js is not None:
+                        try:
+                            page.run_js(stealth_js(_current_fingerprint))
+                        except Exception:
+                            pass
+                    ip2 = verify_exit_ip_via_browser(page, timeout=12.0)
+                    if ip2.get("ok") and ip2.get("ip"):
+                        print(f"[*] 浏览器出口 IP(本地转发): {ip2['ip']}")
+                    else:
+                        print(
+                            f"[Warn] 本地转发后出口 IP 仍失败: {ip2.get('error') or ip2.get('raw')}"
+                        )
+                        # 进程侧再测一次上游，便于对照
+                        try:
+                            py_ip = verify_exit_ip(up, timeout=10.0)
+                            if py_ip.get("ok"):
+                                print(f"[*] Python 经上游出口 IP: {py_ip.get('ip')}（浏览器未走通）")
+                            else:
+                                print(f"[Warn] Python 经上游也失败: {py_ip.get('error')}")
+                        except Exception as e3:
+                            print(f"[Warn] Python 出口探测异常: {e3}")
+                else:
+                    print(f"[Warn] 本地转发兜底失败: {fb.get('error')}")
+    except Exception as e:
+        print(f"[Warn] 出口 IP 检测跳过: {e}")
+
     # 进程内首次启动时打印架构/版本/WebGL，确认 ARM 无 GUI 环境
     log_runtime_fingerprint(page, force=False)
     return browser, page
@@ -614,6 +778,13 @@ def stop_browser():
             pass
     browser = None
     page = None
+    # 停掉本轮本地代理转发（若有）
+    try:
+        from proxy_local_forward import stop_local_forward
+
+        stop_local_forward()
+    except Exception:
+        pass
     if _chrome_temp_dir and os.path.isdir(_chrome_temp_dir):
         shutil.rmtree(_chrome_temp_dir, ignore_errors=True)
     _chrome_temp_dir = ""

@@ -160,6 +160,8 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
   }
 
   config.browser_path = settings.browserPath || '';
+  // 带认证代理：优先本地转发（可选）
+  config.proxy_prefer_local_forward = settings.proxyPreferLocalForward === true;
 
   config.random_fingerprint =
     settings.randomFingerprint === undefined ? true : !!settings.randomFingerprint;

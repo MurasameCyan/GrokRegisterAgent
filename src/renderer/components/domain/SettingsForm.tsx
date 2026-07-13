@@ -17,9 +17,6 @@ import {
 } from '@shared/settings';
 import { cn } from '@renderer/lib/cn';
 
-/** 批量测活默认并发 */
-const PROXY_PROBE_CONCURRENCY = 8;
-
 const TEXTAREA_CLASS =
   'flex min-h-[96px] w-full rounded-[12px] border border-input bg-muted/60 px-3.5 py-2.5 text-[14px] leading-5 tracking-[-0.01em] transition-colors placeholder:text-muted-foreground/70 focus-visible:border-primary/40 focus-visible:bg-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30 disabled:cursor-not-allowed disabled:opacity-50';
 
@@ -313,9 +310,13 @@ export function SettingsForm() {
     setProxyProbes((prev) => ({ ...prev, ...loadingMap }));
     try {
       const proxies = proxyPoolEntries.map((e) => e.proxy);
+      const conc = Math.max(
+        1,
+        Math.min(20, Number(draft.proxyProbeConcurrency) || 8)
+      );
       const batch = await window.api.testProxyBatch({
         proxies,
-        concurrency: PROXY_PROBE_CONCURRENCY
+        concurrency: conc
       });
       // 服务端 results 与请求 proxies 同序
       setProxyProbes((prev) => {
@@ -349,10 +350,11 @@ export function SettingsForm() {
     }
   };
 
-  const removeProxiesFromDraft = (proxies: string[]) => {
-    if (!proxies.length) return;
+  const removeProxiesFromDraft = (proxies: string[]): AppSettings | null => {
+    if (!proxies.length) return null;
     const nextText = removeProxiesFromPoolText(draft.proxyPool || '', proxies);
-    setDraft({ ...draft, proxyPool: nextText });
+    const nextDraft = { ...draft, proxyPool: nextText };
+    setDraft(nextDraft);
     setProxyProbes((prev) => {
       const next = { ...prev };
       for (const p of proxies) {
@@ -362,30 +364,58 @@ export function SettingsForm() {
       }
       return next;
     });
+    return nextDraft;
   };
 
-  const removeFailed = () => {
-    if (failedProxies.length === 0) return;
-    const n = failedProxies.length;
-    removeProxiesFromDraft(failedProxies);
-    push({ tone: 'ok', title: '已删除失败代理', description: `已从池文本移除 ${n} 条` });
-  };
-
-  const removeOne = (proxy: string) => {
-    removeProxiesFromDraft([proxy]);
-    push({ tone: 'ok', title: '已删除', description: proxy.slice(0, 48) });
-  };
-
-  const save = async () => {
+  const save = async (override?: AppSettings, opts?: { silentOk?: boolean; okTitle?: string; okDesc?: string }) => {
+    const payload = override || draft;
     setSaving(true);
     try {
-      await window.api.saveSettings(draft);
+      await window.api.saveSettings(payload);
       await reload();
-      push({ tone: 'ok', title: '配置已保存' });
+      if (!opts?.silentOk) {
+        push({
+          tone: 'ok',
+          title: opts?.okTitle || '配置已保存',
+          description: opts?.okDesc
+        });
+      }
+      return true;
     } catch (err) {
       push({ tone: 'danger', title: '保存失败', description: String(err) });
+      return false;
     } finally {
       setSaving(false);
+    }
+  };
+
+  const removeFailed = async () => {
+    if (failedProxies.length === 0) return;
+    const n = failedProxies.length;
+    const nextDraft = removeProxiesFromDraft(failedProxies);
+    if (draft.proxyAutoSaveOnRemoveFailed && nextDraft) {
+      await save(nextDraft, {
+        okTitle: '已删除失败代理并保存',
+        okDesc: `已从池文本移除 ${n} 条`
+      });
+    } else {
+      push({
+        tone: 'ok',
+        title: '已删除失败代理',
+        description: `已从池文本移除 ${n} 条（未保存，请点保存）`
+      });
+    }
+  };
+
+  const removeOne = async (proxy: string) => {
+    const nextDraft = removeProxiesFromDraft([proxy]);
+    if (draft.proxyAutoSaveOnRemoveFailed && nextDraft) {
+      await save(nextDraft, {
+        okTitle: '已删除并保存',
+        okDesc: proxy.slice(0, 48)
+      });
+    } else {
+      push({ tone: 'ok', title: '已删除', description: proxy.slice(0, 48) });
     }
   };
 
@@ -558,8 +588,45 @@ export function SettingsForm() {
                       onChange={(v) => update('proxyMode', v)}
                     />
                   </Field>
+                  <Field
+                    label="测活并发"
+                    hint="全部测活时的并发数（1～20）"
+                    error={errors.proxyProbeConcurrency}
+                  >
+                    <div className="rounded-xl bg-muted/70 p-3">
+                      <div className="mb-2 flex items-center justify-between">
+                        <span className="text-[12px] text-muted-foreground">并发</span>
+                        <span className="chip tabular-nums">
+                          {draft.proxyProbeConcurrency ?? 8}
+                        </span>
+                      </div>
+                      <Slider
+                        min={1}
+                        max={20}
+                        value={draft.proxyProbeConcurrency ?? 8}
+                        onValueChange={(v) => update('proxyProbeConcurrency', v)}
+                      />
+                    </div>
+                  </Field>
+                  <div className="lg:col-span-2">
+                    <ToggleRow
+                      label="删除失败后自动保存"
+                      hint="开：点删除失败/单条删除后立即写入配置；关：仅改草稿，需点保存"
+                      checked={!!draft.proxyAutoSaveOnRemoveFailed}
+                      onChange={(v) => update('proxyAutoSaveOnRemoveFailed', v)}
+                    />
+                  </div>
                 </>
               )}
+
+              <div className="lg:col-span-2">
+                <ToggleRow
+                  label="优先本地代理转发"
+                  hint="带账号密码代理时：开则 127.0.0.1 无认证转发到上游；关则先试浏览器扩展，出口 IP 失败再兜底"
+                  checked={!!draft.proxyPreferLocalForward}
+                  onChange={(v) => update('proxyPreferLocalForward', v)}
+                />
+              </div>
             </>
           )}
         </CardBody>
@@ -643,7 +710,7 @@ export function SettingsForm() {
           <span className="px-1 text-[12px] font-medium text-muted-foreground">
             {dirty ? (valid ? '未保存' : '校验失败') : '已同步'}
           </span>
-          <Button onClick={save} disabled={!dirty || !valid || saving} size="sm">
+          <Button onClick={() => save()} disabled={!dirty || !valid || saving} size="sm">
             <Save className="h-4 w-4" />
             保存
           </Button>

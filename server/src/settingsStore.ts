@@ -91,6 +91,19 @@ function merge(partial: unknown): AppSettings {
     proxyPool,
     proxyPoolEnabled: asBool(p.proxyPoolEnabled, inferProxyPoolOn),
     proxyMode: asPoolMode(p.proxyMode, DEFAULT_SETTINGS.proxyMode),
+    proxyProbeConcurrency: (() => {
+      const n = Number((p as AppSettings).proxyProbeConcurrency);
+      if (Number.isInteger(n) && n >= 1 && n <= 20) return n;
+      return DEFAULT_SETTINGS.proxyProbeConcurrency;
+    })(),
+    proxyAutoSaveOnRemoveFailed: asBool(
+      (p as AppSettings).proxyAutoSaveOnRemoveFailed,
+      DEFAULT_SETTINGS.proxyAutoSaveOnRemoveFailed
+    ),
+    proxyPreferLocalForward: asBool(
+      (p as AppSettings).proxyPreferLocalForward,
+      DEFAULT_SETTINGS.proxyPreferLocalForward
+    ),
     browserProxy,
     randomFingerprint:
       typeof p.randomFingerprint === 'boolean'

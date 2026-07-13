@@ -52,6 +52,20 @@ export interface AppSettings {
   proxyPoolEnabled: boolean;
   /** 代理池轮换模式 */
   proxyMode: PoolMode;
+  /**
+   * 代理池批量测活并发数（1..20，默认 8）。
+   * 仅影响设置页「全部测活」，不写 Python 注册配置。
+   */
+  proxyProbeConcurrency: number;
+  /**
+   * 删除测活失败代理后是否自动保存配置（默认 false，仅改 draft）。
+   */
+  proxyAutoSaveOnRemoveFailed: boolean;
+  /**
+   * 带账号密码代理时优先用本地转发（无认证 127.0.0.1 → 上游认证），
+   * 关则先试 MV3 扩展，出口 IP 失败再 fallback。
+   */
+  proxyPreferLocalForward: boolean;
   /** DrissionPage 浏览器使用的代理；空表示跟随上面的 proxy / 池 */
   browserProxy: string;
   /** Chromium / Chrome / Edge 可执行文件路径；空表示自动探测（UI 不暴露） */
@@ -87,6 +101,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   proxyPool: '',
   proxyPoolEnabled: false,
   proxyMode: 'round_robin',
+  proxyProbeConcurrency: 8,
+  proxyAutoSaveOnRemoveFailed: false,
+  proxyPreferLocalForward: false,
   browserProxy: '',
   browserPath: '',
   randomFingerprint: true,
@@ -255,6 +272,13 @@ export function validateSettings(s: AppSettings): Record<string, string> {
   }
   if (s.proxyMode !== 'round_robin' && s.proxyMode !== 'random') {
     errors.proxyMode = '代理池模式无效';
+  }
+  if (
+    !Number.isInteger(s.proxyProbeConcurrency) ||
+    s.proxyProbeConcurrency < 1 ||
+    s.proxyProbeConcurrency > 20
+  ) {
+    errors.proxyProbeConcurrency = '测活并发须在 1 到 20 之间';
   }
   if (s.proxyEnabled) {
     if (s.proxyPoolEnabled) {

@@ -184,6 +184,22 @@ def create_temp_email() -> Tuple[str, str, str]:
     create_url = f"{MAIL_API_BASE}/admin/new_address"
     print(f"[*] 邮件 API: {MAIL_API_BASE} → POST /admin/new_address")
 
+    # 域名池状态（便于确认轮换是否生效）
+    try:
+        from pools import peek_status as _peek_mail_pools
+
+        _st = _peek_mail_pools()
+        _doms = _st.get("domains") or []
+        if _doms:
+            print(
+                f"[*] 邮箱域名池: {len(_doms)} 个 mode={_st.get('domain_mode') or '?'} "
+                f"→ {', '.join(_doms[:8])}{'…' if len(_doms) > 8 else ''}"
+            )
+        else:
+            print(f"[*] 邮箱域名: 单域名 {MAIL_DOMAIN or '(未设置)'}（未配置 mail_domains 池）")
+    except Exception:
+        pass
+
     last_err = ""
     for _ in range(5):
         local = _generate_local_part()
@@ -204,7 +220,7 @@ def create_temp_email() -> Tuple[str, str, str]:
                 address = data.get("address") or f"{local}@{domain}"
                 password = data.get("password", "")
                 if jwt and address:
-                    print(f"[*] 邮箱创建成功: {address}")
+                    print(f"[*] 邮箱创建成功: {address}（domain={domain}）")
                     return address, password, jwt
                 last_err = f"响应缺少 jwt/address: {data}"
             else:
