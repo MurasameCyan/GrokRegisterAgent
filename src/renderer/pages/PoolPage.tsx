@@ -177,7 +177,9 @@ export function PoolPage() {
   };
 
   const exportSso = (records: AccountRecord[]) => {
-    const lines = records.map((r) => r.sso).filter(Boolean);
+    const lines = records
+      .filter((r) => r.sso)
+      .map((r) => `${r.email || ''} | ${r.password || ''} | ${r.sso}`);
     if (lines.length === 0) {
       push({ tone: 'warn', title: '没有可导出的 SSO' });
       return;
@@ -191,7 +193,9 @@ export function PoolPage() {
       push({ tone: 'warn', title: '没有可导出的账号' });
       return;
     }
-    const text = records.map((r) => `${r.email}----${r.password}----${r.sso}`).join('\n');
+    const text = records
+      .map((r) => `${r.email || ''} | ${r.password || ''} | ${r.sso || ''}`)
+      .join('\n');
     download(`grok-accounts-${stamp()}.txt`, text);
     push({ tone: 'ok', title: '已导出账号', description: `${records.length} 条` });
   };

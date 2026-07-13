@@ -85,7 +85,26 @@ function parseHistoryLine(line: string, fileName: string, lineIndex: number): Ac
   const trimmed = line.trim();
   if (!trimmed) return null;
 
-  // 导出格式：email----password----sso
+  // 标准输出：email | password | sso
+  if (trimmed.includes(' | ')) {
+    const parts = trimmed.split(' | ').map((p) => p.trim());
+    if (parts.length >= 3) {
+      const email = parts[0];
+      const password = parts[1];
+      const sso = parts.slice(2).join(' | ').replace(/^sso=/i, '');
+      if (!email && !password && !sso) return null;
+      return {
+        id: randomUUID(),
+        runId: `import:${basename(fileName)}:${lineIndex}`,
+        email,
+        password,
+        sso,
+        createdAt: createdAtFromSsoFilename(fileName)
+      };
+    }
+  }
+
+  // 兼容旧导出：email----password----sso
   if (trimmed.includes('----')) {
     const parts = trimmed.split('----');
     if (parts.length >= 3) {
@@ -104,7 +123,7 @@ function parseHistoryLine(line: string, fileName: string, lineIndex: number): Ac
     }
   }
 
-  // 纯 SSO token（Python append_sso_to_txt）
+  // 纯 SSO token（历史文件）
   const sso = trimmed.replace(/^sso=/i, '');
   if (!sso || sso.length < 8) return null;
   return {

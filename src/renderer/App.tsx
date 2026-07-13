@@ -146,9 +146,10 @@ export default function App() {
             <div className="nav-logo" aria-hidden title="Grok Register Agent">
               GRA
             </div>
-            <div className="min-w-0">
-              <div className="nav-title">Grok Register Agent</div>
-              <div className="nav-sub">注册控制台</div>
+            <div className="site-name" aria-label="Grok Register Agent">
+              <span>Grok</span>
+              <span>Register</span>
+              <span>Agent</span>
             </div>
           </div>
 
@@ -252,8 +253,12 @@ function BootScreen() {
           GRA
         </div>
         <div>
-          <div className="nav-sub">Grok Register Agent</div>
-          <div className="text-[15px] font-semibold tracking-[-0.01em]">正在检查登录状态…</div>
+          <div className="site-name" aria-label="Grok Register Agent">
+            <span>Grok</span>
+            <span>Register</span>
+            <span>Agent</span>
+          </div>
+          <div className="mt-1 text-[13px] font-medium text-muted-foreground">正在检查登录状态…</div>
         </div>
       </div>
     </div>
@@ -286,9 +291,10 @@ function LoginScreen({ onAuthed }: { onAuthed(next: AuthState): void }) {
           <div className="nav-logo" aria-hidden title="Grok Register Agent">
             GRA
           </div>
-          <div>
-            <div className="nav-title">Grok Register Agent</div>
-            <div className="nav-sub">注册控制台</div>
+          <div className="site-name site-name-lg" aria-label="Grok Register Agent">
+            <span>Grok</span>
+            <span>Register</span>
+            <span>Agent</span>
           </div>
         </div>
         <h1 className="text-[28px] font-bold tracking-[-0.03em]">登录</h1>

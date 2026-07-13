@@ -265,8 +265,10 @@ export class RegisterBot extends EventEmitter {
         this.pendingAccount = {};
         if (!email && !password) return;
 
-        // 该轮 sso 已被 Python 追加到输出文件最后一行
+        // 该轮已由 Python 追加：email | password | sso
         let sso = '';
+        let fileEmail = '';
+        let filePassword = '';
         try {
             if (this.currentSsoFile && fs.existsSync(this.currentSsoFile)) {
                 const lines = fs
@@ -274,7 +276,22 @@ export class RegisterBot extends EventEmitter {
                     .split(/\r?\n/)
                     .map((l) => l.trim())
                     .filter((l) => l.length > 0);
-                if (lines.length > 0) sso = lines[lines.length - 1];
+                if (lines.length > 0) {
+                    const last = lines[lines.length - 1];
+                    if (last.includes(' | ')) {
+                        const parts = last.split(' | ').map((p) => p.trim());
+                        fileEmail = parts[0] || '';
+                        filePassword = parts[1] || '';
+                        sso = parts.slice(2).join(' | ').replace(/^sso=/i, '');
+                    } else if (last.includes('----')) {
+                        const parts = last.split('----');
+                        fileEmail = (parts[0] || '').trim();
+                        filePassword = (parts[1] || '').trim();
+                        sso = parts.slice(2).join('----').trim().replace(/^sso=/i, '');
+                    } else {
+                        sso = last.replace(/^sso=/i, '');
+                    }
+                }
             }
         } catch {
             // ignore
@@ -283,8 +300,8 @@ export class RegisterBot extends EventEmitter {
         const record: AccountRecord = {
             id: randomUUID(),
             runId,
-            email: email ?? '',
-            password: password ?? '',
+            email: email || fileEmail || '',
+            password: password || filePassword || '',
             sso,
             createdAt: new Date().toISOString()
         };
@@ -301,7 +318,15 @@ export class RegisterBot extends EventEmitter {
             const content = fs.readFileSync(ssoFile, 'utf-8');
             const lines = content.split('\n').filter(l => l.trim());
             for (const line of lines) {
-                const token = line.trim();
+                let token = line.trim();
+                if (token.includes(' | ')) {
+                    const parts = token.split(' | ').map((p) => p.trim());
+                    token = parts.slice(2).join(' | ') || parts[parts.length - 1] || '';
+                } else if (token.includes('----')) {
+                    const parts = token.split('----');
+                    token = parts.slice(2).join('----').trim() || parts[parts.length - 1] || '';
+                }
+                token = token.replace(/^sso=/i, '');
                 if (token) {
                     this.collectedTokens.push(`sso=${token}`);
                     this.push({ type: 'sso', runId, token: `sso=${token}` });

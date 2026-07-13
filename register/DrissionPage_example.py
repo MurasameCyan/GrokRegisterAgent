@@ -2127,17 +2127,21 @@ return false;
     return False
 
 
-def append_sso_to_txt(sso_value, output_path=DEFAULT_SSO_FILE):
-    # 按用户要求，一行写一个 sso 值，持续追加。
+def append_sso_to_txt(sso_value, output_path=DEFAULT_SSO_FILE, email="", password=""):
+    # 一行：邮箱 | 密码 | sso（号池导入与导出一致）
     normalized = str(sso_value or "").strip()
     if not normalized:
         raise Exception("待写入的 sso 为空")
 
+    email_s = str(email or "").strip()
+    password_s = str(password or "").strip()
+    line = f"{email_s} | {password_s} | {normalized}"
+
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     with open(output_path, "a", encoding="utf-8") as file:
-        file.write(normalized + "\n")
+        file.write(line + "\n")
 
-    print(f"[*] 已追加写入 sso 到文件: {output_path}")
+    print(f"[*] 已追加写入 邮箱|密码|sso 到文件: {output_path}")
 
 
 def push_sso_to_api(new_tokens: list):
@@ -2205,7 +2209,8 @@ def run_single_registration(output_path=DEFAULT_SSO_FILE, extract_numbers=False)
     if not wait_for_grok_com_landing():
         print("[Warn] 未能落到 grok.com 登录态，sso 质量可能受影响")
     sso_value = wait_for_sso_cookie()
-    append_sso_to_txt(sso_value, output_path)
+    password = str(profile.get("password", "") or "")
+    append_sso_to_txt(sso_value, output_path, email=email, password=password)
 
     if extract_numbers:
         extract_visible_numbers()

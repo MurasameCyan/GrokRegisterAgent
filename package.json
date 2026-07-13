@@ -1,6 +1,6 @@
 {
   "name": "grok-register-agent",
-  "version": "0.1.2",
+  "version": "1.0.0",
   "description": "Grok Register Agent — 可自部署的 Grok 注册机 Web 控制台，支持 Docker、DrissionPage、邮件后端与本地号池。",
   "keywords": [
     "grok",
