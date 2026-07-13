@@ -1,14 +1,18 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  Check,
+  CheckSquare,
+  ChevronLeft,
+  ChevronRight,
   Copy,
   Database,
   Eye,
   EyeOff,
   FileDown,
   KeyRound,
+  ListChecks,
   RefreshCcw,
-  ShieldCheck
+  ShieldCheck,
+  Square
 } from 'lucide-react';
 import { Button } from '@renderer/components/ui/Button';
 import { AccountDetailDrawer } from '@renderer/components/domain/AccountDetailDrawer';
@@ -19,6 +23,8 @@ import { cn } from '@renderer/lib/cn';
 import { fmtBeijing, fmtBeijingTime } from '@renderer/lib/time';
 import type { AccountRecord } from '@shared/runEvents';
 import type { SsoCheckResult } from '@shared/ipc';
+
+const PAGE_SIZE = 12;
 
 function stamp(): string {
   const d = new Date();
@@ -49,6 +55,7 @@ export function PoolPage() {
   const [verifying, setVerifying] = useState(false);
   const [lastRefresh, setLastRefresh] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
 
   const doReload = async () => {
     await reload();
@@ -65,12 +72,34 @@ export function PoolPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase]);
 
+  // 列表变化时清理无效选中，并纠正页码
+  useEffect(() => {
+    const ids = new Set(accounts.map((a) => a.id));
+    setSelected((prev) => {
+      const next = new Set([...prev].filter((id) => ids.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+    const totalPages = Math.max(1, Math.ceil(accounts.length / PAGE_SIZE));
+    setPage((p) => Math.min(p, totalPages));
+  }, [accounts]);
+
   const ssoCount = useMemo(() => accounts.filter((a) => a.sso).length, [accounts]);
   const aliveCount = useMemo(
     () => [...ssoMap.values()].filter((r) => r.alive).length,
     [ssoMap]
   );
+
+  const totalPages = Math.max(1, Math.ceil(accounts.length / PAGE_SIZE) || 1);
+  const currentPage = Math.min(page, totalPages);
+  const pageStart = (currentPage - 1) * PAGE_SIZE;
+  const pageAccounts = useMemo(
+    () => accounts.slice(pageStart, pageStart + PAGE_SIZE),
+    [accounts, pageStart]
+  );
+
   const allSelected = accounts.length > 0 && selected.size === accounts.length;
+  const pageAllSelected =
+    pageAccounts.length > 0 && pageAccounts.every((a) => selected.has(a.id));
 
   const toggle = (id: string) =>
     setSelected((prev) => {
@@ -80,8 +109,27 @@ export function PoolPage() {
       return next;
     });
 
-  const toggleAll = () =>
-    setSelected((prev) => (prev.size === accounts.length ? new Set() : new Set(accounts.map((a) => a.id))));
+  /** 全选：所有分页中的全部账号 */
+  const selectAll = () => {
+    if (accounts.length === 0) return;
+    setSelected(
+      allSelected ? new Set() : new Set(accounts.map((a) => a.id))
+    );
+  };
+
+  /** 本页：仅当前页 */
+  const selectPage = () => {
+    if (pageAccounts.length === 0) return;
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (pageAllSelected) {
+        for (const a of pageAccounts) next.delete(a.id);
+      } else {
+        for (const a of pageAccounts) next.add(a.id);
+      }
+      return next;
+    });
+  };
 
   const exportSso = (records: AccountRecord[]) => {
     const lines = records.map((r) => r.sso).filter(Boolean);
@@ -134,6 +182,8 @@ export function PoolPage() {
 
   const picked = accounts.filter((a) => selected.has(a.id));
   const openAccount = accounts.find((a) => a.id === openId) ?? null;
+  const rangeFrom = accounts.length === 0 ? 0 : pageStart + 1;
+  const rangeTo = Math.min(pageStart + PAGE_SIZE, accounts.length);
 
   return (
     <div className="space-y-5">
@@ -153,15 +203,35 @@ export function PoolPage() {
           <div className="min-w-0">
             <p className="page-kicker">号池</p>
             <h3 className="mt-0.5 text-[17px] font-semibold tracking-[-0.02em]">账号列表</h3>
-            {lastRefresh && (
-              <p className="mt-0.5 text-[12px] text-muted-foreground">
-                刷新于 {fmtBeijingTime(lastRefresh)}
-              </p>
-            )}
+            <p className="mt-0.5 text-[12px] text-muted-foreground">
+              {selected.size > 0 ? `已选 ${selected.size} 项` : '未选择'}
+              {lastRefresh ? ` · 刷新于 ${fmtBeijingTime(lastRefresh)}` : ''}
+            </p>
           </div>
           <div className="flex flex-wrap items-center gap-1.5">
-            <Button variant="ghost" size="sm" onClick={toggleAll} disabled={accounts.length === 0}>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={selectAll}
+              disabled={accounts.length === 0}
+              title="选择所有分页中的全部账号"
+            >
+              {allSelected ? (
+                <CheckSquare className="h-3.5 w-3.5" />
+              ) : (
+                <Square className="h-3.5 w-3.5" />
+              )}
               {allSelected ? '取消全选' : '全选'}
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={selectPage}
+              disabled={pageAccounts.length === 0}
+              title="仅选择当前页"
+            >
+              <ListChecks className="h-3.5 w-3.5" />
+              {pageAllSelected ? '取消本页' : '本页'}
             </Button>
             <Button size="sm" onClick={() => void verifyBatch()} disabled={verifying || accounts.length === 0}>
               <ShieldCheck className={cn('h-3.5 w-3.5', verifying && 'animate-pulse')} />
@@ -170,11 +240,13 @@ export function PoolPage() {
             <Button
               variant="secondary"
               size="sm"
-              onClick={() => exportSso(picked)}
-              disabled={picked.length === 0}
+              onClick={() => exportSso(picked.length > 0 ? picked : accounts)}
+              disabled={accounts.length === 0}
+              title={picked.length > 0 ? '导出已选账号的 SSO' : '导出全部 SSO'}
             >
               <FileDown className="h-3.5 w-3.5" />
-              选中 SSO
+              导出SSO
+              {picked.length > 0 ? `(${picked.filter((a) => a.sso).length})` : ''}
             </Button>
             <Button
               variant="secondary"
@@ -184,10 +256,6 @@ export function PoolPage() {
             >
               <FileDown className="h-3.5 w-3.5" />
               选中账号
-            </Button>
-            <Button size="sm" onClick={() => exportSso(accounts)} disabled={accounts.length === 0}>
-              <FileDown className="h-3.5 w-3.5" />
-              全部 SSO
             </Button>
             <Button size="sm" onClick={() => exportAccounts(accounts)} disabled={accounts.length === 0}>
               <FileDown className="h-3.5 w-3.5" />
@@ -206,18 +274,29 @@ export function PoolPage() {
           还没有账号。到「注册机」跑一轮任务即可出现在这里。
         </div>
       ) : (
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-          {accounts.map((a) => (
-            <AccountCard
-              key={a.id}
-              account={a}
-              checked={selected.has(a.id)}
-              ssoResult={ssoMap.get(a.id)}
-              onToggle={() => toggle(a.id)}
-              onOpen={() => setOpenId(a.id)}
-            />
-          ))}
-        </div>
+        <>
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {pageAccounts.map((a) => (
+              <AccountCard
+                key={a.id}
+                account={a}
+                checked={selected.has(a.id)}
+                ssoResult={ssoMap.get(a.id)}
+                onToggle={() => toggle(a.id)}
+                onOpen={() => setOpenId(a.id)}
+              />
+            ))}
+          </div>
+
+          <PaginationBar
+            page={currentPage}
+            totalPages={totalPages}
+            rangeFrom={rangeFrom}
+            rangeTo={rangeTo}
+            total={accounts.length}
+            onChange={setPage}
+          />
+        </>
       )}
 
       <AccountDetailDrawer
@@ -227,6 +306,61 @@ export function PoolPage() {
         ssoResult={openId ? ssoMap.get(openId) : undefined}
         onSsoResult={(r) => applyResults([r])}
       />
+    </div>
+  );
+}
+
+function PaginationBar({
+  page,
+  totalPages,
+  rangeFrom,
+  rangeTo,
+  total,
+  onChange
+}: {
+  page: number;
+  totalPages: number;
+  rangeFrom: number;
+  rangeTo: number;
+  total: number;
+  onChange(page: number): void;
+}) {
+  if (totalPages <= 1) {
+    return (
+      <div className="flex items-center justify-center text-[12px] text-muted-foreground">
+        共 {total} 条 · 每页 {PAGE_SIZE} 条
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col items-center justify-between gap-3 sm:flex-row">
+      <p className="text-[12px] text-muted-foreground">
+        第 {rangeFrom}–{rangeTo} 条 · 共 {total} 条
+      </p>
+      <div className="flex items-center gap-1.5">
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => onChange(Math.max(1, page - 1))}
+          disabled={page <= 1}
+        >
+          <ChevronLeft className="h-3.5 w-3.5" />
+          上一页
+        </Button>
+        <span className="min-w-[4.5rem] text-center text-[13px] font-medium tabular-nums">
+          {page} / {totalPages}
+        </span>
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => onChange(Math.min(totalPages, page + 1))}
+          disabled={page >= totalPages}
+        >
+          下一页
+          <ChevronRight className="h-3.5 w-3.5" />
+        </Button>
+      </div>
     </div>
   );
 }
@@ -258,7 +392,6 @@ function AccountCard({
     }
   };
 
-  // 阻止卡片内交互控件冒泡到卡片点击
   const stop = (e: React.MouseEvent) => e.stopPropagation();
 
   return (
