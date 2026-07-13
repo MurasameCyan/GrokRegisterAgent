@@ -19,7 +19,10 @@ export function RegisterPage({ onOpenSettings }: { onOpenSettings(): void }) {
     status.total > 0 ? Math.min(100, Math.round((status.success / status.total) * 100)) : 0;
 
   const ready = useMemo(
-    () => !!settings?.mail.apiBase && !!settings?.mail.adminAuth && !!settings?.mail.domain,
+    () =>
+      !!settings?.mail.apiBase &&
+      !!settings?.mail.adminAuth &&
+      !!(settings?.mail.domain || settings?.mailDomains?.trim()),
     [settings]
   );
 
@@ -83,7 +86,7 @@ export function RegisterPage({ onOpenSettings }: { onOpenSettings(): void }) {
               <div className="rounded-xl bg-warn/10 p-4 text-[13px] leading-5 text-warn">
                 <div className="flex items-start gap-2">
                   <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />
-                  <span>启动前请到「配置」页补齐邮箱后端。</span>
+                  <span>启动前请到「配置」页补齐邮箱后端与域名（或域名池）。</span>
                 </div>
                 <Button className="mt-3" variant="secondary" size="sm" onClick={onOpenSettings}>
                   打开配置
@@ -93,12 +96,19 @@ export function RegisterPage({ onOpenSettings }: { onOpenSettings(): void }) {
 
             <div className="grid gap-3 sm:grid-cols-2">
               <InfoBox label="轮数" value={String(settings?.runCount ?? '--')} />
-              <InfoBox label="代理" value={settings?.proxy || '直接连接'} />
+              <InfoBox
+                label="代理"
+                value={
+                  settings?.proxyPool?.trim()
+                    ? '代理池'
+                    : settings?.proxy || '直接连接'
+                }
+              />
             </div>
           </div>
         </section>
 
-        <RuntimeSettingsPanel />
+        <RuntimeSettingsPanel onOpenSettings={onOpenSettings} />
       </div>
 
       <LogPanel />
@@ -106,7 +116,7 @@ export function RegisterPage({ onOpenSettings }: { onOpenSettings(): void }) {
   );
 }
 
-function RuntimeSettingsPanel() {
+function RuntimeSettingsPanel({ onOpenSettings }: { onOpenSettings(): void }) {
   const data = useSettingsStore((s) => s.data);
   const reload = useSettingsStore((s) => s.reload);
   const push = useToastStore((s) => s.push);
@@ -117,6 +127,10 @@ function RuntimeSettingsPanel() {
     if (data && !draft) setDraft(data);
   }, [data, draft]);
 
+  useEffect(() => {
+    if (data) setDraft(data);
+  }, [data]);
+
   if (!draft) {
     return (
       <section className="ios-group">
@@ -125,14 +139,18 @@ function RuntimeSettingsPanel() {
     );
   }
 
-  const dirty = !!data && JSON.stringify(data) !== JSON.stringify(draft);
+  const dirty =
+    !!data &&
+    (data.runCount !== draft.runCount || data.proxy !== draft.proxy);
   const update = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) =>
     setDraft({ ...draft, [key]: value });
 
   const save = async () => {
     setSaving(true);
     try {
-      await window.api.saveSettings(draft);
+      // 只更新运行相关字段，其余保持服务端当前值
+      const next = { ...data!, runCount: draft.runCount, proxy: draft.proxy };
+      await window.api.saveSettings(next);
       await reload();
       push({ tone: 'ok', title: '运行参数已保存' });
     } catch (err) {
@@ -166,32 +184,20 @@ function RuntimeSettingsPanel() {
             </div>
           </div>
 
-          <div className="rounded-xl bg-muted/70 p-4">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <div className="field-label">人机验证自动等待上限</div>
-                <div className="mt-1 text-[12px] text-muted-foreground">
-                  每次随机等待 30～{draft.turnstileAutoWaitMax ?? 60}s，再尝试点击
-                </div>
-              </div>
-              <span className="chip tabular-nums">{draft.turnstileAutoWaitMax ?? 60}s</span>
-            </div>
-            <div className="mt-3">
-              <Slider
-                min={30}
-                max={180}
-                value={draft.turnstileAutoWaitMax ?? 60}
-                onValueChange={(v) => update('turnstileAutoWaitMax', v)}
-              />
-            </div>
-          </div>
-
-          <Field label="HTTP 代理（可选）" hint="例如 http://127.0.0.1:7890">
+          <Field label="HTTP 代理（可选）" hint="例如 http://127.0.0.1:7890；代理池请在「配置」页设置">
             <Input value={draft.proxy} onChange={(e) => update('proxy', e.target.value)} />
           </Field>
 
           <p className="text-[12px] leading-5 text-muted-foreground">
-            Python 路径与注册脚本目录请在「配置」页修改。
+            人机验证、域名池、代理池、指纹与 Auth 导出请在{' '}
+            <button
+              type="button"
+              className="font-medium text-primary underline-offset-2 hover:underline"
+              onClick={onOpenSettings}
+            >
+              配置
+            </button>{' '}
+            页修改。
           </p>
         </div>
 

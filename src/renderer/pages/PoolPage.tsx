@@ -12,7 +12,8 @@ import {
   ListChecks,
   RefreshCcw,
   ShieldCheck,
-  Square
+  Square,
+  Wand2
 } from 'lucide-react';
 import { Button } from '@renderer/components/ui/Button';
 import { AccountDetailDrawer } from '@renderer/components/domain/AccountDetailDrawer';
@@ -67,6 +68,7 @@ export function PoolPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [ssoMap, setSsoMap] = useState<Map<string, SsoCheckResult>>(new Map());
   const [verifying, setVerifying] = useState(false);
+  const [minting, setMinting] = useState(false);
   const [lastRefresh, setLastRefresh] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
   const [page, setPage] = useState(1);
@@ -229,6 +231,54 @@ export function PoolPage() {
     }
   };
 
+  /** 号池 SSO → 预检存活后 CPA auth 补 mint（写入 auth 目录） */
+  const mintAuthFromSso = async () => {
+    const targets = (selected.size > 0 ? accounts.filter((a) => selected.has(a.id)) : accounts).filter(
+      (a) => a.sso
+    );
+    if (targets.length === 0) {
+      push({ tone: 'warn', title: '没有可 mint 的 SSO' });
+      return;
+    }
+    if (targets.length > 50) {
+      push({ tone: 'warn', title: '单次最多 50 个', description: '请缩小选择范围后再试' });
+      return;
+    }
+    setMinting(true);
+    try {
+      const r = await window.api.mintCpaAuthFromSso({
+        items: targets.map((a) => ({ sso: a.sso, email: a.email }))
+      });
+      const noXai = r.results.filter((x) => x.ok && x.xai === false).length;
+      const skipped = r.skipped ?? r.results.filter((x) => x.skipped).length;
+      const banned = r.banned ?? r.results.filter((x) => x.verdict === 'banned').length;
+      const probeDead = r.results.filter((x) => x.probeAction === 'dead' || x.probeDeleted).length;
+      const probeOk = r.results.filter((x) => x.probeAction === 'ok').length;
+      const parts = [
+        `成功 ${r.ok}`,
+        `失败 ${r.failed}`,
+        skipped ? `预检跳过 ${skipped}` : '',
+        banned ? `封禁 ${banned}` : '',
+        probeOk ? `CPA测活OK ${probeOk}` : '',
+        probeDead ? `CPA测活挂 ${probeDead}` : '',
+        noXai ? `无 xai ${noXai}` : r.ok > 0 ? '均含 xai' : ''
+      ].filter(Boolean);
+      push({
+        tone: r.failed > 0 || banned > 0 || probeDead > 0 ? 'warn' : r.ok > 0 ? 'ok' : 'warn',
+        title: 'SSO 补 mint 完成（预检+CPA测活）',
+        description: parts.join(' · ')
+      });
+    } catch (err) {
+      push({
+        tone: 'danger',
+        title: '补 mint 失败',
+        description: err instanceof Error ? err.message : String(err)
+      });
+    } finally {
+      setMinting(false);
+    }
+  };
+
   const picked = accounts.filter((a) => selected.has(a.id));
   const openAccount = accounts.find((a) => a.id === openId) ?? null;
   const rangeFrom = accounts.length === 0 ? 0 : pageStart + 1;
@@ -282,9 +332,27 @@ export function PoolPage() {
               <ListChecks className="h-3.5 w-3.5" />
               {pageAllSelected ? '取消本页' : '本页'}
             </Button>
-            <Button size="sm" onClick={() => void verifyBatch()} disabled={verifying || accounts.length === 0}>
+            <Button size="sm" onClick={() => void verifyBatch()} disabled={verifying || minting || accounts.length === 0}>
               <ShieldCheck className={cn('h-3.5 w-3.5', verifying && 'animate-pulse')} />
               {verifying ? '验活中…' : selected.size > 0 ? `验活(${selected.size})` : '验活全部'}
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => void mintAuthFromSso()}
+              disabled={minting || verifying || accounts.length === 0}
+              title={
+                selected.size > 0
+                  ? '先验活/封禁预检，仅存活 SSO 转 CPA Auth'
+                  : '先验活/封禁预检，仅存活 SSO 转 CPA Auth（最多 50）'
+              }
+            >
+              <Wand2 className={cn('h-3.5 w-3.5', minting && 'animate-pulse')} />
+              {minting
+                ? 'Mint 中…'
+                : selected.size > 0
+                  ? `补 Auth(${picked.filter((a) => a.sso).length})`
+                  : '补 Auth'}
             </Button>
             <Button
               variant="secondary"

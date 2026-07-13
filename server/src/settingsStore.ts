@@ -5,12 +5,16 @@
  */
 import { promises as fsp, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { type AppSettings, DEFAULT_SETTINGS } from '@shared/settings';
+import { type AppSettings, type PoolMode, DEFAULT_SETTINGS } from '@shared/settings';
 
 const DATA_DIR = resolve(process.env.DATA_DIR || '/data');
 const CONFIG_PATH = join(DATA_DIR, 'config.json');
 
 let cache: AppSettings | null = null;
+
+function asPoolMode(v: unknown, fallback: PoolMode): PoolMode {
+  return v === 'random' || v === 'round_robin' ? v : fallback;
+}
 
 function applyEnvOverrides(s: AppSettings, source: Partial<AppSettings>): AppSettings {
   // Docker 友好：允许通过环境变量覆盖关键字段（首次启动空白容器时也能直接跑）
@@ -30,6 +34,7 @@ function applyEnvOverrides(s: AppSettings, source: Partial<AppSettings>): AppSet
     proxy: env.HTTP_PROXY || s.proxy,
     browserProxy: env.BROWSER_PROXY || s.browserProxy,
     browserPath: env.BROWSER_PATH || s.browserPath,
+    authDir: env.AUTH_DIR || env.CPA_AUTH_DIR || s.authDir,
     mail: {
       ...s.mail,
       apiBase: env.MAIL_API_BASE || s.mail.apiBase,
@@ -44,7 +49,18 @@ function merge(partial: unknown): AppSettings {
   const merged: AppSettings = {
     ...DEFAULT_SETTINGS,
     ...p,
-    mail: { ...DEFAULT_SETTINGS.mail, ...(p.mail ?? {}) }
+    mail: { ...DEFAULT_SETTINGS.mail, ...(p.mail ?? {}) },
+    mailDomains: typeof p.mailDomains === 'string' ? p.mailDomains : DEFAULT_SETTINGS.mailDomains,
+    mailDomainMode: asPoolMode(p.mailDomainMode, DEFAULT_SETTINGS.mailDomainMode),
+    proxyPool: typeof p.proxyPool === 'string' ? p.proxyPool : DEFAULT_SETTINGS.proxyPool,
+    proxyMode: asPoolMode(p.proxyMode, DEFAULT_SETTINGS.proxyMode),
+    randomFingerprint:
+      typeof p.randomFingerprint === 'boolean'
+        ? p.randomFingerprint
+        : DEFAULT_SETTINGS.randomFingerprint,
+    autoAuthExport:
+      typeof p.autoAuthExport === 'boolean' ? p.autoAuthExport : DEFAULT_SETTINGS.autoAuthExport,
+    authDir: typeof p.authDir === 'string' ? p.authDir : DEFAULT_SETTINGS.authDir
   };
   // 旧配置无此字段时回落到默认 60
   if (

@@ -127,6 +127,12 @@ const webApi: RendererApi = {
       items
     }).then((r) => r.results),
 
+  listCpaAuth: () => http('GET', '/api/cpa-auth'),
+  resignCpaAuth: (input) => http('POST', '/api/cpa-auth/resign', input),
+  resignCpaAuthBatch: (input) => http('POST', '/api/cpa-auth/resign-batch', input),
+  mintCpaAuthFromSso: (input) => http('POST', '/api/cpa-auth/mint', input),
+  probeCpaAuthBatch: (input) => http('POST', '/api/cpa-auth/probe-batch', input),
+
   getTheme: async () => {
     const stored = (localStorage.getItem('theme') as ThemeMode | null) ?? 'system';
     const dark = window.matchMedia('(prefers-color-scheme: dark)').matches;

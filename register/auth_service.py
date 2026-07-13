@@ -21,6 +21,7 @@ from cpa_schema import (
     random_client_headers,
 )
 from sso_to_auth import sso_to_token, write_cpa_auth, token_to_cpa_record
+from cpa_probe import probe_and_cleanup
 
 LogFn = Callable[[str], None]
 
@@ -90,6 +91,36 @@ def sso_to_cpa_auth(
 
     path = write_cpa_auth(out_dir, payload)
     log(f"[auth] wrote {path}")
+
+    # mint 后 cehuo 风格 /responses 测活；401/402/403 删文件
+    probe = probe_and_cleanup(path, proxy=proxy or "", delete_on_dead=True)
+    log(
+        f"[auth] probe action={probe.get('action')} http={probe.get('http_status')} "
+        f"deleted={probe.get('deleted')} {probe.get('summary') or probe.get('error') or ''}"
+    )
+    if probe.get("action") == "dead":
+        return {
+            "ok": False,
+            "error": f"cpa probe dead HTTP {probe.get('http_status')}",
+            "email": payload.get("email") or email,
+            "path": str(path),
+            "filename": path.name,
+            "probe": probe,
+            "deleted": bool(probe.get("deleted")),
+        }
+    if probe.get("action") == "error":
+        # 网络错误保留文件，但标记 probe 失败（不强制 ok=false，避免误删）
+        return {
+            "ok": True,
+            "email": payload.get("email") or email,
+            "path": str(path),
+            "filename": path.name,
+            "sub": payload.get("sub") or "",
+            "agent_id": (headers or {}).get("x-grok-agent-id", ""),
+            "probe": probe,
+            "probe_warn": probe.get("error") or "probe error",
+        }
+
     return {
         "ok": True,
         "email": payload.get("email") or email,
@@ -97,6 +128,7 @@ def sso_to_cpa_auth(
         "filename": path.name,
         "sub": payload.get("sub") or "",
         "agent_id": (headers or {}).get("x-grok-agent-id", ""),
+        "probe": probe,
     }
 
 
@@ -188,8 +220,33 @@ def resign_auth_file(
             tmp = p.with_suffix(p.suffix + ".tmp")
             tmp.write_text(json.dumps(new_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             os.replace(tmp, p)
-            log(f"[auth] resign ok (refresh) → {p}")
-            return {"ok": True, "mode": "refresh", "path": str(p), "email": email, "filename": p.name}
+            log(f"[auth] resign wrote (refresh) → {p}")
+            # refresh 成功后 cehuo 风格测活；dead 删文件并 ok=false
+            probe = probe_and_cleanup(p, proxy=proxy or "", delete_on_dead=True)
+            log(
+                f"[auth] resign probe action={probe.get('action')} http={probe.get('http_status')} "
+                f"deleted={probe.get('deleted')} {probe.get('summary') or probe.get('error') or ''}"
+            )
+            if probe.get("action") == "dead":
+                return {
+                    "ok": False,
+                    "mode": "refresh",
+                    "error": f"cpa probe dead HTTP {probe.get('http_status')}",
+                    "path": str(p),
+                    "email": email,
+                    "filename": p.name,
+                    "probe": probe,
+                    "deleted": bool(probe.get("deleted")),
+                }
+            return {
+                "ok": True,
+                "mode": "refresh",
+                "path": str(p),
+                "email": email,
+                "filename": p.name,
+                "probe": probe,
+                "deleted": bool(probe.get("deleted")),
+            }
         log(f"[auth] refresh failed: {token}")
 
     # 2) sso re-mint
@@ -207,7 +264,21 @@ def resign_auth_file(
         if r.get("ok"):
             r["mode"] = "sso"
             return r
-        return {"ok": False, "error": r.get("error") or "sso resign failed", "email": email}
+        out = {
+            "ok": False,
+            "error": r.get("error") or "sso resign failed",
+            "email": email,
+            "mode": "sso",
+        }
+        if r.get("probe") is not None:
+            out["probe"] = r.get("probe")
+        if "deleted" in r:
+            out["deleted"] = r.get("deleted")
+        if r.get("path"):
+            out["path"] = r.get("path")
+        if r.get("filename"):
+            out["filename"] = r.get("filename")
+        return out
 
     return {
         "ok": False,

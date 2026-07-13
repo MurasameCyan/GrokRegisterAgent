@@ -3,6 +3,7 @@ import {
   Activity,
   Database,
   Github,
+  KeyRound,
   LayoutDashboard,
   LogOut,
   PlayCircle,
@@ -12,6 +13,7 @@ import {
 import { DashboardPage } from '@renderer/pages/DashboardPage';
 import { RegisterPage } from '@renderer/pages/RegisterPage';
 import { PoolPage } from '@renderer/pages/PoolPage';
+import { AuthPage } from '@renderer/pages/AuthPage';
 import { SettingsPage } from '@renderer/pages/SettingsPage';
 import { ThemeToggle } from '@renderer/components/ui/ThemeToggle';
 import { ToastViewport } from '@renderer/components/ui/Toast';
@@ -25,12 +27,13 @@ import { useAccountsStore } from '@renderer/store/accountsStore';
 import { useToastStore } from '@renderer/store/toastStore';
 import type { AuthState, ChangeCredentialsInput } from '@shared/ipc';
 
-type Tab = 'dashboard' | 'register' | 'pool' | 'settings';
+type Tab = 'dashboard' | 'register' | 'pool' | 'auth' | 'settings';
 
 const tabs: { id: Tab; label: string; Icon: typeof LayoutDashboard }[] = [
   { id: 'dashboard', label: '仪表盘', Icon: LayoutDashboard },
   { id: 'register', label: '注册机', Icon: PlayCircle },
   { id: 'pool', label: '号池', Icon: Database },
+  { id: 'auth', label: 'Auth', Icon: KeyRound },
   { id: 'settings', label: '配置', Icon: Settings2 }
 ];
 
@@ -226,6 +229,7 @@ export default function App() {
         {tab === 'dashboard' && <DashboardPage username={auth.username ?? 'admin'} />}
         {tab === 'register' && <RegisterPage onOpenSettings={() => setTab('settings')} />}
         {tab === 'pool' && <PoolPage />}
+        {tab === 'auth' && <AuthPage />}
         {tab === 'settings' && (
           <SettingsPage
             username={auth.username ?? 'admin'}

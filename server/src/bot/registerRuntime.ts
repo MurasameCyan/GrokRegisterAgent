@@ -41,6 +41,22 @@ function normalizeRegisterPath(value?: string): string {
   return resolved;
 }
 
+/** 多行 / 逗号分隔 → 去重列表 */
+function parseList(raw?: string): string[] {
+  if (!raw || !String(raw).trim()) return [];
+  const text = String(raw).replace(/\r\n/g, '\n').replace(/,/g, '\n');
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const line of text.split('\n')) {
+    const it = line.trim();
+    if (!it || it.startsWith('#')) continue;
+    if (seen.has(it)) continue;
+    seen.add(it);
+    out.push(it);
+  }
+  return out;
+}
+
 export function findRegisterScript(registerDir: string): string | null {
   for (const name of REGISTER_SCRIPT_NAMES) {
     const scriptPath = path.join(registerDir, name);
@@ -103,15 +119,47 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
   config.mail_admin_auth = settings.mail?.adminAuth || '';
   config.mail_domain = settings.mail?.domain || '';
 
+  const domains = parseList(settings.mailDomains);
+  if (domains.length > 0) {
+    config.mail_domains = domains;
+  } else {
+    delete config.mail_domains;
+  }
+  config.mail_domain_mode = settings.mailDomainMode || 'round_robin';
+  config.email_domain_mode = settings.mailDomainMode || 'round_robin';
+
   config.proxy = settings.proxy || '';
+  const proxies = parseList(settings.proxyPool);
+  if (proxies.length > 0) {
+    config.proxy_pool = proxies;
+  } else {
+    delete config.proxy_pool;
+  }
+  config.proxy_mode = settings.proxyMode || 'round_robin';
+
   config.browser_proxy = settings.browserProxy || settings.proxy || '';
   config.browser_path = settings.browserPath || '';
+
+  config.random_fingerprint =
+    settings.randomFingerprint === undefined ? true : !!settings.randomFingerprint;
+  config.auto_auth_export =
+    settings.autoAuthExport === undefined ? true : !!settings.autoAuthExport;
+
+  const authDir = String(settings.authDir || '').trim();
+  if (authDir) {
+    config.auth_dir = authDir;
+    config.cpa_auth_dir = authDir;
+  } else {
+    // 让 Python 走 DATA_DIR/auth 或默认 /data/auth
+    delete config.auth_dir;
+    delete config.cpa_auth_dir;
+  }
 
   if (typeof count === 'number') {
     config.run = { ...(config.run || {}), count };
   }
 
-  // Turnstile 自动通过等待上限（秒）；Python 在 [30, max] 内随机
+  // 人机验证自动通过等待上限（秒）；Python 在 [30, max] 内随机
   const autoMax = Number(settings.turnstileAutoWaitMax);
   if (Number.isFinite(autoMax) && autoMax >= 30) {
     config.turnstile = {

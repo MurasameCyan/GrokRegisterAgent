@@ -22,6 +22,13 @@ import {
   login,
   logout
 } from './authStore.js';
+import {
+  listCpaAuth,
+  mintCpaAuthFromSso,
+  probeCpaAuthBatch,
+  resignCpaAuth,
+  resignCpaAuthBatch
+} from './cpaAuthStore.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 6657);
@@ -130,6 +137,72 @@ app.post('/api/accounts/resync', async (_req, res) => {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ error: message });
+  }
+});
+
+/** CPA auth 文件列表（data/auth 或 settings.authDir） */
+app.get('/api/cpa-auth', async (_req, res) => {
+  try {
+    res.json(await listCpaAuth());
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: message });
+  }
+});
+
+/** 重签单个 CPA auth（refresh 优先，失败可带 sso） */
+app.post('/api/cpa-auth/resign', async (req: Request, res: Response) => {
+  try {
+    const body = (req.body ?? {}) as { filename?: string; path?: string; sso?: string };
+    res.json(await resignCpaAuth(body));
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(400).json({ error: message });
+  }
+});
+
+/** 批量重签 CPA auth */
+app.post('/api/cpa-auth/resign-batch', async (req: Request, res: Response) => {
+  try {
+    const body = (req.body ?? {}) as {
+      filenames?: string[];
+      paths?: string[];
+      concurrency?: number;
+    };
+    res.json(await resignCpaAuthBatch(body));
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(400).json({ error: message });
+  }
+});
+
+/** 号池 SSO → CPA auth 补 mint */
+app.post('/api/cpa-auth/mint', async (req: Request, res: Response) => {
+  try {
+    const body = (req.body ?? {}) as {
+      items?: { sso: string; email?: string }[];
+      concurrency?: number;
+    };
+    res.json(await mintCpaAuthFromSso({ items: body.items || [], concurrency: body.concurrency }));
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(400).json({ error: message });
+  }
+});
+
+/** 批量 CPA 测活（cehuo /responses；401/402/403 默认删文件） */
+app.post('/api/cpa-auth/probe-batch', async (req: Request, res: Response) => {
+  try {
+    const body = (req.body ?? {}) as {
+      filenames?: string[];
+      paths?: string[];
+      concurrency?: number;
+      deleteOnDead?: boolean;
+    };
+    res.json(await probeCpaAuthBatch(body));
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(400).json({ error: message });
   }
 });
 

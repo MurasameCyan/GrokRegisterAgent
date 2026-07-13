@@ -1,0 +1,215 @@
+# -*- coding: utf-8 -*-
+"""CPA auth 测活（对齐 cehuo.py）。
+
+对 xai-*.json 调 cli-chat-proxy /v1/responses：
+  2xx → ok
+  401/402/403 → dead（默认删除候选）
+  其他/网络 → keep / error
+"""
+from __future__ import annotations
+
+import json
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+from cpa_schema import DEFAULT_BASE_URL, GROK_CLIENT_VERSION
+
+# 与 cehuo.py 默认 delete-statuses 一致
+DEFAULT_DEAD_STATUSES = frozenset({401, 402, 403})
+
+
+def _opener(proxy: str = ""):
+    handlers: list[Any] = []
+    p = (proxy or "").strip()
+    if p:
+        handlers.append(urllib.request.ProxyHandler({"http": p, "https": p}))
+    return urllib.request.build_opener(*handlers) if handlers else urllib.request.build_opener()
+
+
+def probe_cpa_auth(
+    path_or_doc: str | Path | dict[str, Any],
+    *,
+    proxy: str = "",
+    model: str = "grok-4.5",
+    prompt: str = "ping",
+    max_output_tokens: int = 1,
+    timeout: float = 20.0,
+    dead_statuses: set[int] | frozenset[int] | None = None,
+) -> dict[str, Any]:
+    """测活单个 CPA auth 文件或已解析的 dict。
+
+    返回:
+      ok / dead / error
+      http_status, elapsed_ms, summary, email, action
+    """
+    started = time.time()
+    dead_statuses = dead_statuses or DEFAULT_DEAD_STATUSES
+    path: Path | None = None
+    doc: dict[str, Any]
+
+    if isinstance(path_or_doc, dict):
+        doc = path_or_doc
+    else:
+        path = Path(path_or_doc)
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as e:
+            return {
+                "ok": False,
+                "alive": False,
+                "action": "error",
+                "error": f"read failed: {e}",
+                "path": str(path),
+                "elapsed_ms": int((time.time() - started) * 1000),
+            }
+
+    access = str(doc.get("access_token") or "").strip()
+    email = str(doc.get("email") or "")
+    base = str(doc.get("base_url") or DEFAULT_BASE_URL).rstrip("/")
+    if not access:
+        return {
+            "ok": False,
+            "alive": False,
+            "action": "error",
+            "error": "missing access_token",
+            "email": email,
+            "path": str(path) if path else "",
+            "elapsed_ms": int((time.time() - started) * 1000),
+        }
+
+    endpoint = f"{base}/responses"
+    body = json.dumps(
+        {
+            "model": model,
+            "input": prompt,
+            "max_output_tokens": max_output_tokens,
+            "store": False,
+        }
+    ).encode("utf-8")
+
+    headers: dict[str, str] = {
+        "Authorization": f"Bearer {access}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "x-grok-client-version": GROK_CLIENT_VERSION,
+    }
+    # 合并文件内 headers（cehuo 主要设 version；完整 client headers 更贴近真实）
+    file_headers = doc.get("headers")
+    if isinstance(file_headers, dict):
+        for k, v in file_headers.items():
+            if v is None:
+                continue
+            key = str(k)
+            # 不覆盖 Authorization / Content-Type
+            if key.lower() in ("authorization", "content-type"):
+                continue
+            headers[key] = str(v)
+
+    req = urllib.request.Request(endpoint, data=body, headers=headers, method="POST")
+    opener = _opener(proxy)
+    try:
+        with opener.open(req, timeout=timeout) as resp:
+            status = getattr(resp, "status", 200) or 200
+            raw = resp.read().decode("utf-8", errors="replace")[:2048]
+            summary = " ".join(raw.replace("\r", "").split())
+            if len(summary) > 300:
+                summary = summary[:300] + "..."
+            elapsed = int((time.time() - started) * 1000)
+            if 200 <= status < 300:
+                return {
+                    "ok": True,
+                    "alive": True,
+                    "action": "ok",
+                    "http_status": status,
+                    "summary": summary or "ok",
+                    "email": email,
+                    "path": str(path) if path else "",
+                    "elapsed_ms": elapsed,
+                }
+            if status in dead_statuses:
+                return {
+                    "ok": False,
+                    "alive": False,
+                    "action": "dead",
+                    "http_status": status,
+                    "summary": summary,
+                    "email": email,
+                    "path": str(path) if path else "",
+                    "elapsed_ms": elapsed,
+                    "error": f"HTTP {status}",
+                }
+            return {
+                "ok": False,
+                "alive": False,
+                "action": "keep",
+                "http_status": status,
+                "summary": summary,
+                "email": email,
+                "path": str(path) if path else "",
+                "elapsed_ms": elapsed,
+                "error": f"HTTP {status}",
+            }
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8", errors="replace")[:2048] if e.fp else ""
+        summary = " ".join(raw.replace("\r", "").split())
+        if len(summary) > 300:
+            summary = summary[:300] + "..."
+        status = int(e.code or 0)
+        elapsed = int((time.time() - started) * 1000)
+        if status in dead_statuses:
+            return {
+                "ok": False,
+                "alive": False,
+                "action": "dead",
+                "http_status": status,
+                "summary": summary,
+                "email": email,
+                "path": str(path) if path else "",
+                "elapsed_ms": elapsed,
+                "error": f"HTTP {status}",
+            }
+        return {
+            "ok": False,
+            "alive": False,
+            "action": "keep",
+            "http_status": status,
+            "summary": summary,
+            "email": email,
+            "path": str(path) if path else "",
+            "elapsed_ms": elapsed,
+            "error": f"HTTP {status}",
+        }
+    except Exception as e:
+        return {
+            "ok": False,
+            "alive": False,
+            "action": "error",
+            "http_status": 0,
+            "summary": str(e)[:300],
+            "email": email,
+            "path": str(path) if path else "",
+            "elapsed_ms": int((time.time() - started) * 1000),
+            "error": str(e)[:300],
+        }
+
+
+def probe_and_cleanup(
+    path: str | Path,
+    *,
+    proxy: str = "",
+    delete_on_dead: bool = True,
+) -> dict[str, Any]:
+    """测活；若 dead 且 delete_on_dead 则删除文件。"""
+    path = Path(path)
+    r = probe_cpa_auth(path, proxy=proxy)
+    r["deleted"] = False
+    if r.get("action") == "dead" and delete_on_dead and path.is_file():
+        try:
+            path.unlink()
+            r["deleted"] = True
+        except Exception as e:
+            r["delete_error"] = str(e)
+    return r

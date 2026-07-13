@@ -63,6 +63,89 @@ export interface SsoCheckResult {
   error?: string;
 }
 
+/** CPA auth 文件列表项 */
+export interface CpaAuthItem {
+  filename: string;
+  path: string;
+  email: string;
+  sub: string;
+  expired: string;
+  disabled: boolean;
+  hasRefresh: boolean;
+  mtime: number;
+  /** 文件名以 xai- 开头 */
+  xaiFilename: boolean;
+  /** JSON 内 type === "xai" */
+  xaiType: boolean;
+  /** 文件名或 type 任一为 xai */
+  xai: boolean;
+  authType: string;
+}
+
+export interface CpaAuthListResult {
+  dir: string;
+  items: CpaAuthItem[];
+}
+
+export interface CpaAuthResignInput {
+  filename?: string;
+  path?: string;
+  sso?: string;
+}
+
+export type CpaAuthResignResult = Record<string, unknown> & {
+  ok?: boolean;
+  error?: string;
+  mode?: string;
+  email?: string;
+  filename?: string;
+  path?: string;
+  xai?: boolean;
+  xaiFilename?: boolean;
+  xaiType?: boolean;
+};
+
+export interface CpaAuthBatchResultItem {
+  filename?: string;
+  email?: string;
+  ok: boolean;
+  error?: string;
+  mode?: string;
+  path?: string;
+  xai?: boolean;
+  xaiFilename?: boolean;
+  xaiType?: boolean;
+  /** mint 预检：alive | dead | banned | unknown */
+  verdict?: string;
+  skipped?: boolean;
+  /** cehuo /responses 测活 */
+  probeAction?: string;
+  probeHttp?: number;
+  probeDeleted?: boolean;
+}
+
+export interface CpaAuthBatchResult {
+  total: number;
+  ok: number;
+  failed: number;
+  /** mint 预检跳过（dead/banned） */
+  skipped?: number;
+  /** 通过预检进入 mint 的数量 */
+  alive?: number;
+  /** 预检判 banned */
+  banned?: number;
+  /** 批量 CPA 测活：dead / 已删 / keep */
+  dead?: number;
+  deleted?: number;
+  keep?: number;
+  results: CpaAuthBatchResultItem[];
+}
+
+export interface CpaAuthMintItem {
+  sso: string;
+  email?: string;
+}
+
 export interface AuthState {
   authenticated: boolean;
   username: string | null;
@@ -123,6 +206,26 @@ export interface RendererApi {
   // mail & sso
   getMailCode(address: string): Promise<MailCodeResult>;
   checkSso(items: SsoCheckItem[]): Promise<SsoCheckResult[]>;
+
+ // CPA auth（与登录 /api/auth 区分）
+  listCpaAuth(): Promise<CpaAuthListResult>;
+  resignCpaAuth(input: CpaAuthResignInput): Promise<CpaAuthResignResult>;
+  resignCpaAuthBatch(input: {
+    filenames?: string[];
+    paths?: string[];
+    concurrency?: number;
+  }): Promise<CpaAuthBatchResult>;
+  mintCpaAuthFromSso(input: {
+    items: CpaAuthMintItem[];
+    concurrency?: number;
+  }): Promise<CpaAuthBatchResult>;
+  /** 批量 CPA 测活（cehuo /responses） */
+  probeCpaAuthBatch(input: {
+    filenames?: string[];
+    paths?: string[];
+    concurrency?: number;
+    deleteOnDead?: boolean;
+  }): Promise<CpaAuthBatchResult>;
 
   // theme
   getTheme(): Promise<ThemeState>;
