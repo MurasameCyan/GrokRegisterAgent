@@ -48,6 +48,7 @@ export function PoolPage() {
   const accounts = useAccountsStore((s) => s.accounts);
   const loading = useAccountsStore((s) => s.loading);
   const reload = useAccountsStore((s) => s.reload);
+  const resync = useAccountsStore((s) => s.resync);
   const phase = useRunStore((s) => s.status.phase);
   const push = useToastStore((s) => s.push);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -57,9 +58,29 @@ export function PoolPage() {
   const [openId, setOpenId] = useState<string | null>(null);
   const [page, setPage] = useState(1);
 
-  const doReload = async () => {
-    await reload();
-    setLastRefresh(new Date().toISOString());
+  const doReload = async (scanHistory = false) => {
+    try {
+      if (scanHistory) {
+        const r = await resync();
+        if (r.imported > 0) {
+          push({
+            tone: 'ok',
+            title: '已导入历史',
+            description: `新增 ${r.imported} 条，合计 ${r.total}`
+          });
+        }
+      } else {
+        await reload();
+      }
+    } catch (err) {
+      push({
+        tone: 'danger',
+        title: '加载号池失败',
+        description: err instanceof Error ? err.message : String(err)
+      });
+    } finally {
+      setLastRefresh(new Date().toISOString());
+    }
   };
 
   useEffect(() => {
@@ -261,7 +282,13 @@ export function PoolPage() {
               <FileDown className="h-3.5 w-3.5" />
               全部账号
             </Button>
-            <Button variant="secondary" size="sm" onClick={() => void doReload()} disabled={loading}>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => void doReload(true)}
+              disabled={loading}
+              title="重新扫描 /data/sso 历史文件并刷新列表"
+            >
               <RefreshCcw className={cn('h-3.5 w-3.5', loading && 'animate-spin')} />
               刷新
             </Button>

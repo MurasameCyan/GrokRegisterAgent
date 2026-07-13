@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { FolderCode, Github, Save, Server, ShieldCheck, Terminal } from 'lucide-react';
+import { FolderCode, Github, Save, Terminal } from 'lucide-react';
 import { Card, CardBody, CardHeader } from '@renderer/components/ui/Card';
 import { Button } from '@renderer/components/ui/Button';
 import { Input } from '@renderer/components/ui/Input';
 import { PasswordInput } from '@renderer/components/ui/PasswordInput';
-import { ThemeToggle } from '@renderer/components/ui/ThemeToggle';
 import { ConnectionTestButton } from '@renderer/components/domain/ConnectionTestButton';
 import { useSettingsStore } from '@renderer/store/settingsStore';
 import { useToastStore } from '@renderer/store/toastStore';
@@ -74,7 +73,6 @@ export function SettingsForm() {
 
   const dirty = !!data && JSON.stringify(data) !== JSON.stringify(draft);
   const valid = Object.keys(errors).length === 0;
-  const origin = typeof window === 'undefined' ? 'http://127.0.0.1:8098' : window.location.origin;
   const updateMail = <K extends keyof AppSettings['mail']>(key: K, value: AppSettings['mail'][K]) =>
     setDraft({ ...draft, mail: { ...draft.mail, [key]: value } });
   const update = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) =>
@@ -95,19 +93,6 @@ export function SettingsForm() {
 
   return (
     <div className="space-y-5">
-      <Card>
-        <CardHeader
-          title="WebUI"
-          description="账号密码 + HttpOnly Cookie 登录"
-          right={<ThemeToggle />}
-        />
-        <CardBody className="grid gap-3 md:grid-cols-3">
-          <InfoTile Icon={Server} label="访问地址" value={origin} />
-          <InfoTile Icon={ShieldCheck} label="登录方式" value="Cookie Session" />
-          <InfoTile Icon={ShieldCheck} label="反向代理" value="未启用" />
-        </CardBody>
-      </Card>
-
       <Card>
         <CardHeader
           title="邮件后端"
@@ -197,26 +182,6 @@ export function SettingsForm() {
           </Button>
         </div>
       </div>
-    </div>
-  );
-}
-
-function InfoTile({
-  Icon,
-  label,
-  value
-}: {
-  Icon: typeof Server;
-  label: string;
-  value: string;
-}) {
-  return (
-    <div className="rounded-[14px] bg-muted/60 p-3.5">
-      <div className="flex items-center gap-2 text-muted-foreground">
-        <Icon className="h-4 w-4" />
-        <span className="field-label">{label}</span>
-      </div>
-      <div className="mt-2 break-all text-[13px] font-medium tracking-tight">{value}</div>
     </div>
   );
 }

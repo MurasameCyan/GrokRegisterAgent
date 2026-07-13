@@ -10,7 +10,7 @@ import type { AppSettings } from '@shared/settings';
 import type { RunEvent } from '@shared/runEvents';
 import { loadSettings, saveSettings, dataDir } from './settingsStore.js';
 import { registerBot } from './bot/registerBot.js';
-import { listAccounts } from './accountStore.js';
+import { listAccounts, resyncAccountsFromDisk } from './accountStore.js';
 import { checkForUpdate, currentVersion } from './updateCheck.js';
 import { fetchEmails, extractVerificationCode, fetchLatestCodeByAddress } from './api/emailApi.js';
 import { checkSso } from './ssoCheck.js';
@@ -121,6 +121,16 @@ app.post('/api/run/stop', async (_req, res) => {
 
 app.get('/api/accounts', async (_req, res) => {
   res.json(await listAccounts());
+});
+
+/** 从 DATA_DIR/sso 与旧路径重新扫描导入历史账号 */
+app.post('/api/accounts/resync', async (_req, res) => {
+  try {
+    res.json(await resyncAccountsFromDisk());
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: message });
+  }
 });
 
 app.get('/api/mail/code', async (req: Request, res: Response) => {

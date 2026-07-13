@@ -117,6 +117,8 @@ export interface RendererApi {
 
   // accounts
   listAccounts(): Promise<AccountRecord[]>;
+  /** 从 DATA_DIR/sso 与旧路径重新扫描导入历史 */
+  resyncAccounts(): Promise<{ total: number; imported: number }>;
 
   // mail & sso
   getMailCode(address: string): Promise<MailCodeResult>;

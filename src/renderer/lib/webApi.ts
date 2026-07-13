@@ -117,6 +117,8 @@ const webApi: RendererApi = {
   },
 
   listAccounts: () => http('GET', '/api/accounts'),
+  resyncAccounts: () =>
+    http<{ total: number; imported: number }>('POST', '/api/accounts/resync'),
 
   getMailCode: (address) =>
     http('GET', `/api/mail/code?address=${encodeURIComponent(address)}`),
