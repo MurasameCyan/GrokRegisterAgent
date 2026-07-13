@@ -1,6 +1,6 @@
 import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
-import { spawn, ChildProcess } from 'child_process';
+import { spawn, execFile, ChildProcess } from 'child_process';
 import { loadSettings } from '../settingsStore.js';
 import { appendAccount } from '../accountStore.js';
 import type { AccountRecord, LogLevel, RunEvent, RunStatus } from '@shared/runEvents';
@@ -18,6 +18,10 @@ export class RegisterBot extends EventEmitter {
     private currentRunId: string | null = null;
     private shouldStop: boolean = false;
     private childProcess: ChildProcess | null = null;
+    /** 子进程是否以独立进程组启动（便于 stop 时整树杀掉 Chrome） */
+    private childDetached = false;
+    private killEscalationTimer: ReturnType<typeof setTimeout> | null = null;
+    private killHardTimer: ReturnType<typeof setTimeout> | null = null;
     private replayBuffer: RunEvent[] = [];
     private static readonly REPLAY_LIMIT = 1000;
     private collectedTokens: string[] = [];
@@ -95,15 +99,114 @@ export class RegisterBot extends EventEmitter {
 
     async stop(): Promise<void> {
         this.shouldStop = true;
-        if (this.childProcess) {
+        const runId = this.currentRunId;
+        if (!this.childProcess && !runId) return;
+
+        if (runId) {
+            this.log(runId, '收到停止指令，正在强制终止注册进程（含浏览器子进程）…');
+            // 立刻反映到 UI，不必等当前轮跑完
+            this.status.phase = 'killed';
+        }
+
+        this.clearKillTimers();
+        // 先整树 SIGTERM，再短延时 SIGKILL，避免只杀 Python 留下 Chrome
+        this.killChildTree('SIGTERM');
+        this.killEscalationTimer = setTimeout(() => {
+            if (this.childProcess) {
+                if (runId) this.log(runId, '进程未退出，升级为 SIGKILL…');
+                this.killChildTree('SIGKILL');
+            }
+        }, 800);
+        // 兜底：若 close 事件仍未到，强制收尾，避免 UI 一直转圈
+        this.killHardTimer = setTimeout(() => {
+            if (!this.childProcess) return;
+            if (runId) this.error(runId, '强制停止超时，直接结束任务状态');
             try {
-                this.childProcess.kill('SIGTERM');
-            } catch (e) {}
+                this.childProcess.kill('SIGKILL');
+            } catch {
+                // ignore
+            }
+            this.childProcess = null;
+            if (runId && this.currentRunId === runId) {
+                this.finalizeRun(runId, true);
+            }
+        }, 2500);
+    }
+
+    private clearKillTimers() {
+        if (this.killEscalationTimer) {
+            clearTimeout(this.killEscalationTimer);
+            this.killEscalationTimer = null;
+        }
+        if (this.killHardTimer) {
+            clearTimeout(this.killHardTimer);
+            this.killHardTimer = null;
+        }
+    }
+
+    /**
+     * 杀掉 Python 及其拉起的 Chromium 整棵进程树。
+     * Unix：优先杀进程组（spawn detached 时 pid 为组 leader）；
+     * Windows：taskkill /T /F。
+     */
+    private killChildTree(signal: NodeJS.Signals = 'SIGKILL') {
+        const child = this.childProcess;
+        if (!child?.pid) return;
+        const pid = child.pid;
+
+        if (process.platform === 'win32') {
+            try {
+                execFile(
+                    'taskkill',
+                    ['/pid', String(pid), '/T', '/F'],
+                    { windowsHide: true },
+                    () => undefined
+                );
+            } catch {
+                try {
+                    child.kill(signal);
+                } catch {
+                    // ignore
+                }
+            }
+            return;
+        }
+
+        // 进程组负 pid（仅 detached 子进程可靠）
+        if (this.childDetached) {
+            try {
+                process.kill(-pid, signal);
+                return;
+            } catch {
+                // fall through
+            }
+        }
+
+        // 尽力清理 chrom(ium) 子进程，再杀 python
+        try {
+            execFile(
+                'pkill',
+                ['-P', String(pid)],
+                { timeout: 1500 },
+                () => undefined
+            );
+        } catch {
+            // pkill 可能不存在，忽略
+        }
+        try {
+            child.kill(signal);
+        } catch {
+            try {
+                process.kill(pid, signal);
+            } catch {
+                // ignore
+            }
         }
     }
 
     private finalizeRun(runId: string, success: boolean) {
         if (this.currentRunId !== runId) return;
+        this.clearKillTimers();
         this.status.phase = this.shouldStop ? 'killed' : (success ? 'done' : 'error');
         this.status.finishedAt = Date.now();
         this.push({
@@ -114,6 +217,7 @@ export class RegisterBot extends EventEmitter {
             killed: this.shouldStop
         });
         this.currentRunId = null;
+        this.childDetached = false;
     }
 
     private async runPython(runId: string, count: number, settings: any) {
@@ -150,7 +254,9 @@ export class RegisterBot extends EventEmitter {
 
         const args = ['-u', scriptPath, '--count', String(count), '--output', ssoFile];
 
-        await new Promise<void>((resolve, reject) => {
+        await new Promise<void>((resolve) => {
+            // Unix 下 detached 使 Python 成为新进程组 leader，stop 时可 process.kill(-pid) 整树杀掉 Chrome
+            const useDetach = process.platform !== 'win32';
             const child = spawn(pythonPath, args, {
                 cwd: registerDir,
                 env: {
@@ -158,10 +264,16 @@ export class RegisterBot extends EventEmitter {
                     PYTHONIOENCODING: 'utf-8',
                     PYTHONUNBUFFERED: '1',
                 },
-                stdio: ['pipe', 'pipe', 'pipe']
+                stdio: ['pipe', 'pipe', 'pipe'],
+                detached: useDetach
             });
 
             this.childProcess = child;
+            this.childDetached = useDetach;
+            // 把子进程 pid 暴露给前端状态
+            if (child.pid) {
+                this.status.pid = child.pid;
+            }
 
             child.stdout?.on('data', (data: Buffer) => {
                 const text = data.toString('utf-8').trim();
@@ -185,6 +297,7 @@ export class RegisterBot extends EventEmitter {
 
             child.on('close', (code) => {
                 this.childProcess = null;
+                this.clearKillTimers();
 
                 // 读取 SSO 文件，提取 token
                 this.extractSsoFromFile(runId, ssoFile);
@@ -200,6 +313,7 @@ export class RegisterBot extends EventEmitter {
 
             child.on('error', (err) => {
                 this.childProcess = null;
+                this.clearKillTimers();
                 this.error(runId, `Python 进程启动失败: ${err.message}`);
                 this.finalizeRun(runId, false);
                 resolve();

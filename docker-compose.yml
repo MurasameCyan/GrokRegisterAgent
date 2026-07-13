@@ -1,5 +1,5 @@
 services:
-  grok-agent:
+  grok-register-agent:
     image: ghcr.io/murasamecyan/grokregisteragent:beta
     build:
       context: .
