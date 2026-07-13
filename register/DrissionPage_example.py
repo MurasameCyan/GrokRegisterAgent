@@ -2399,69 +2399,135 @@ function isVisible(n) {
     return r.width > 0 && r.height > 0;
 }
 
-function setNativeValue(el, value) {
-    const isTextarea = el.tagName === 'TEXTAREA';
-    const proto = isTextarea ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
-    const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-    const tracker = el._valueTracker;
-    if (tracker) tracker.setValue('');
-    if (nativeSetter) {
-        nativeSetter.call(el, '');
-        nativeSetter.call(el, value);
-    } else if (el.isContentEditable) {
-        el.focus();
-        el.textContent = value;
-        el.dispatchEvent(new InputEvent('input', { bubbles: true, data: value, inputType: 'insertText' }));
-        return (el.innerText || el.textContent || '').includes(value) || (el.innerText || el.textContent || '').trim().length > 0;
-    } else {
-        el.value = value;
-    }
-    el.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, data: value, inputType: 'insertText' }));
-    el.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, data: value, inputType: 'insertText' }));
-    el.dispatchEvent(new Event('change', { bubbles: true }));
-    return true;
+function isEditableBox(n) {
+    if (!n) return false;
+    if (n.disabled || n.readOnly) return false;
+    const tag = (n.tagName || '').toUpperCase();
+    if (tag === 'TEXTAREA' || tag === 'INPUT') return true;
+    if (n.isContentEditable) return true;
+    if (String(n.getAttribute('contenteditable') || '').toLowerCase() === 'true') return true;
+    if (String(n.getAttribute('role') || '').toLowerCase() === 'textbox') return true;
+    return false;
 }
 
-// 优先 textarea / contenteditable 聊天输入
-const candidates = Array.from(document.querySelectorAll(
-    'textarea, [contenteditable="true"], input[type="text"], div[role="textbox"]'
-)).filter((n) => isVisible(n) && !n.disabled && !n.readOnly);
+/** 写入聊天框：contenteditable div 绝不能走 Input.value setter（会 Illegal invocation） */
+function fillChatInput(el, value) {
+    const tag = (el.tagName || '').toUpperCase();
+    const isNativeField = tag === 'TEXTAREA' || tag === 'INPUT';
+    const isCE = !!(el.isContentEditable || String(el.getAttribute('contenteditable') || '').toLowerCase() === 'true'
+        || (String(el.getAttribute('role') || '').toLowerCase() === 'textbox' && !isNativeField));
 
-// 排除年龄弹窗里的年份框
-const input = candidates.find((n) => {
-    const meta = [n.placeholder, n.getAttribute('aria-label'), n.getAttribute('data-testid'), n.name].join(' ');
-    if (/year|birth|年龄|出生/i.test(meta)) return false;
+    el.focus();
+    try { el.click(); } catch (e) {}
+
+    if (isNativeField) {
+        const proto = tag === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+        const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+        const tracker = el._valueTracker;
+        if (tracker) {
+            try { tracker.setValue(''); } catch (e) {}
+        }
+        if (nativeSetter) {
+            nativeSetter.call(el, '');
+            nativeSetter.call(el, value);
+        } else {
+            el.value = value;
+        }
+        el.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, data: value, inputType: 'insertText' }));
+        el.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, data: value, inputType: 'insertText' }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        return String(el.value || '') === String(value);
+    }
+
+    // contenteditable / role=textbox（Grok 主输入是 HTMLDivElement）
+    try {
+        const sel = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        sel.removeAllRanges();
+        sel.addRange(range);
+    } catch (e) {}
+
+    let ok = false;
+    // 1) execCommand 最接近真实输入，React/ProseMirror 常能接到
+    try {
+        if (document.execCommand) {
+            document.execCommand('selectAll', false, null);
+            document.execCommand('insertText', false, value);
+            ok = (el.innerText || el.textContent || '').includes(value)
+                || (el.innerText || el.textContent || '').trim().length > 0;
+        }
+    } catch (e) {}
+
+    // 2) 直接写 DOM + 事件
+    if (!ok) {
+        try {
+            el.textContent = '';
+            el.textContent = value;
+            // 部分编辑器吃 innerHTML
+            if (!(el.innerText || el.textContent || '').trim()) {
+                el.innerHTML = '';
+                el.appendChild(document.createTextNode(value));
+            }
+            el.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, data: value, inputType: 'insertText' }));
+            el.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, data: value, inputType: 'insertText' }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            ok = (el.innerText || el.textContent || '').includes(value)
+                || (el.innerText || el.textContent || '').trim().length > 0;
+        } catch (e) {
+            return false;
+        }
+    }
+    return ok;
+}
+
+// 候选：textarea / input 优先，再 contenteditable / role=textbox
+const raw = Array.from(document.querySelectorAll(
+    'textarea, input[type="text"], input:not([type]), [contenteditable="true"], [contenteditable=""], div[role="textbox"], [role="textbox"]'
+)).filter((n) => isVisible(n) && isEditableBox(n));
+
+const scored = raw.map((n) => {
+    const meta = [n.placeholder, n.getAttribute('aria-label'), n.getAttribute('data-testid'), n.name, n.id].join(' ');
+    if (/year|birth|年龄|出生/i.test(meta)) return null;
     const r = n.getBoundingClientRect();
-    // 聊天框通常较宽
-    return r.width >= 120 && r.height >= 24;
-}) || null;
+    if (r.width < 100 || r.height < 20) return null;
+    const tag = (n.tagName || '').toUpperCase();
+    let score = r.width * r.height;
+    if (tag === 'TEXTAREA') score += 1e7;
+    if (tag === 'INPUT') score += 5e6;
+    if (n.isContentEditable || String(n.getAttribute('role') || '') === 'textbox') score += 1e6;
+    // 页面下半部的输入框更像主聊天框
+    score += (r.top / Math.max(window.innerHeight, 1)) * 1e5;
+    return { n, score };
+}).filter(Boolean);
+
+scored.sort((a, b) => b.score - a.score);
+const input = scored.length ? scored[0].n : null;
 
 if (!input) {
     return 'no-input';
 }
 
-input.focus();
-input.click();
-const ok = setNativeValue(input, msg);
+const ok = fillChatInput(input, msg);
 if (!ok) return 'fill-failed';
 
-// Enter 发送；部分 UI 需要点发送按钮
+// Enter 发送
 const enterOpts = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true };
 input.dispatchEvent(new KeyboardEvent('keydown', enterOpts));
 input.dispatchEvent(new KeyboardEvent('keypress', enterOpts));
 input.dispatchEvent(new KeyboardEvent('keyup', enterOpts));
 
-// 再尝试点发送按钮
+// 发送按钮
 const buttons = Array.from(document.querySelectorAll('button, [role="button"]')).filter(isVisible);
 const sendBtn = buttons.find((n) => {
-    const text = (n.innerText || n.textContent || n.getAttribute('aria-label') || '').replace(/\s+/g, '');
-    const t = text.toLowerCase();
-    return t === 'send' || text === '发送' || text.includes('发送')
+    const label = (n.innerText || n.textContent || n.getAttribute('aria-label') || n.getAttribute('data-testid') || '').replace(/\s+/g, '');
+    const t = label.toLowerCase();
+    return t === 'send' || label === '发送' || label.includes('发送')
         || /send/i.test(n.getAttribute('aria-label') || '')
         || /send/i.test(n.getAttribute('data-testid') || '');
 });
-if (sendBtn && !sendBtn.disabled) {
-    sendBtn.click();
+if (sendBtn && !sendBtn.disabled && sendBtn.getAttribute('aria-disabled') !== 'true') {
+    try { sendBtn.click(); } catch (e) {}
     return 'sent-click';
 }
 return 'sent-enter';
