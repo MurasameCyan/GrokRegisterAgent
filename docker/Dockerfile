@@ -54,9 +54,15 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 # 内置 Python 注册机及其依赖(DrissionPage / curl_cffi / requests)
+# /app/register = 运行目录；/opt/register-seed = 启动时恢复用种子（防空挂载覆盖）
 COPY register /app/register
+COPY register /opt/register-seed
+# pip 依赖 + rsync（entrypoint 热同步宿主 register 用）
 RUN python -m pip install --upgrade pip \
- && python -m pip install -r /app/register/requirements.txt
+ && python -m pip install -r /app/register/requirements.txt \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends rsync \
+ && rm -rf /var/lib/apt/lists/*
 
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
 COPY --from=node-runtime /usr/local/lib/node_modules /usr/local/lib/node_modules
@@ -69,9 +75,13 @@ COPY --from=builder /app/package.json /app/package.json
 
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh \
- && mkdir -p /data /data/sso /app/register/sso /app/register/logs
+ && mkdir -p /data /data/sso /app/register/sso /app/register/logs \
+ && mkdir -p /opt/register-host /opt/register-seed
 
 EXPOSE 6657
 VOLUME ["/data"]
+
+# 可选：把宿主 ./register 挂到 /opt/register-host，entrypoint 会自动同步到 /app/register
+# 切勿把空目录直接挂到 /app/register
 
 ENTRYPOINT ["dumb-init", "--", "/usr/local/bin/entrypoint.sh"]

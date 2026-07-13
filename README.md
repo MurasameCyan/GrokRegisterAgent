@@ -44,6 +44,32 @@ docker logs grok-reg-tool
 
 首次登录后请修改默认用户名和密码。直接用 `http://服务器IP:6657` 访问时，`COOKIE_SECURE` 请留空；仅 HTTPS 反代时建议 `COOKIE_SECURE=1`。
 
+## 热更新注册脚本（自动同步）
+
+compose 会把宿主机 `./register` **只读挂载到** `/opt/register-host`（**不是**直接盖 `/app/register`）。
+
+容器启动时 `entrypoint` 会：
+
+1. 若 `/opt/register-host` 含 `runner.py` 或 `DrissionPage_example.py` → **自动 rsync 到** `/app/register`
+2. 若宿主目录为空/不完整 → **跳过同步**，继续用镜像内置脚本
+3. 若 `/app/register` 被破坏 → 尝试从镜像种子 `/opt/register-seed` 恢复
+
+保留：`logs/`、`sso/`、`config.json`（不会被覆盖）。
+
+```bash
+# 改完本地 register/ 后重启即可同步进运行目录
+docker compose restart
+docker logs grok-gegister-agent 2>&1 | head -n 30
+# 应看到类似：
+# [entrypoint] syncing register from host:/opt/register-host -> /app/register
+# [entrypoint] register sync done from host:...
+```
+
+注意：
+
+- 不要把空的 `register` 目录直接挂到 `/app/register`
+- 使用 GHCR 预构建镜像时，若镜像尚无新版 entrypoint，需先 `docker compose build` 或等 GHCR 更新后再享受自动同步；也可先把完整 `register/` 放到项目目录再 `restart`
+
 ## 本地从源码构建
 
 ```bash
@@ -77,7 +103,9 @@ docker compose up -d --build
 
 | 用途                           | 路径                                  |
 | ------------------------------ | ------------------------------------- |
-| 容器内注册脚本                 | `/app/register`                     |
+| 容器内注册脚本（运行目录）     | `/app/register`                     |
+| 宿主机脚本挂载（热更新源）     | `./register` → `/opt/register-host` |
+| 镜像种子（防空挂载恢复）       | `/opt/register-seed`                |
 | Python 入口                    | `/app/register/runner.py`           |
 | 容器内数据目录                 | `/data`                             |
 | 宿主机数据目录（GHCR compose） | `./data`                            |
