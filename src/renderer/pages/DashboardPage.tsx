@@ -89,7 +89,7 @@ export function DashboardPage({ username }: { username: string }) {
 
         {/* 右：号池最近（与左侧同宽同高） */}
         <section className="ios-group flex h-full min-h-0 flex-col">
-          <div className="flex items-center justify-between border-b border-border/70 px-4 py-3">
+          <div className="flex items-center justify-between border-b border-border/70 px-4 pb-3 pt-4 sm:pt-5">
             <div>
               <p className="page-kicker">号池</p>
               <h3 className="mt-0.5 text-[16px] font-semibold tracking-[-0.02em]">最近</h3>
@@ -159,10 +159,10 @@ function MiniStat({
 
 function InfoRow({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex h-11 items-center gap-3 px-3.5">
+    <div className="flex min-h-[48px] flex-1 items-center gap-3 px-4 py-3">
       <span className="shrink-0 text-[13px] text-foreground">{label}</span>
       <span
-        className="ml-auto max-w-[62%] truncate text-right text-[13px] text-muted-foreground"
+        className="ml-auto max-w-[65%] truncate text-right text-[13px] text-muted-foreground"
         title={value}
       >
         {value}
