@@ -148,10 +148,10 @@ export function PoolPage() {
         />
       </section>
 
-      <div className="shell-window">
-        <div className="flex flex-col gap-3 border-b border-border/80 px-4 py-3.5 sm:flex-row sm:items-center sm:justify-between">
+      <div className="ios-group">
+        <div className="flex flex-col gap-3 border-b border-border/70 px-4 py-3.5 sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0">
-            <div className="brand-subtitle">号池</div>
+            <p className="page-kicker">号池</p>
             <h3 className="mt-0.5 text-[17px] font-semibold tracking-[-0.02em]">账号列表</h3>
             {lastRefresh && (
               <p className="mt-0.5 text-[12px] text-muted-foreground">
@@ -278,10 +278,10 @@ function AccountCard({
           className="mt-1 h-4 w-4 shrink-0 accent-[hsl(var(--primary))]"
         />
         <div className="min-w-0 flex-1">
-          <div className="break-all font-mono text-sm font-semibold leading-5">
+          <div className="break-all text-sm font-semibold leading-5 tracking-tight">
             {account.email || '(无邮箱)'}
           </div>
-          <div className="mt-1 font-mono text-[11px] text-muted-foreground">
+          <div className="mt-1 text-[11px] text-muted-foreground">
             {fmtBeijing(account.createdAt)}
           </div>
         </div>
@@ -310,7 +310,7 @@ function AccountCard({
             </button>
           </div>
         </div>
-        <div className="mt-1 break-all font-mono text-xs">
+        <div className="mt-1 break-all text-xs tabular-nums">
           {showPw ? account.password || '(无)' : '••••••••••'}
         </div>
       </div>
@@ -339,7 +339,7 @@ function AccountCard({
         </div>
         <div
           className={cn(
-            'mt-1 font-mono text-xs',
+            'mt-1 text-xs',
             showSso ? 'break-all' : 'truncate text-muted-foreground'
           )}
         >

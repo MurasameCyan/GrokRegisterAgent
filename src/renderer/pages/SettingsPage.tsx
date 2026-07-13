@@ -75,16 +75,16 @@ function SecurityPanel({
   };
 
   return (
-    <form onSubmit={submit} className="terminal-card">
-      <div className="terminal-card-header">
+    <form onSubmit={submit} className="ios-group">
+      <div className="flex items-center justify-between border-b border-border/70 px-4 py-3.5">
         <div>
-          <div className="brand-subtitle">安全</div>
+          <p className="page-kicker">安全</p>
           <h3 className="mt-0.5 text-[17px] font-semibold tracking-[-0.02em]">账号与密码</h3>
         </div>
         <ShieldCheck className="h-4 w-4 text-ok" />
       </div>
-      <div className="terminal-card-body space-y-4">
-        <div className="rounded-[14px] bg-muted/60 p-3.5 text-[13px] leading-5 text-muted-foreground">
+      <div className="space-y-4 p-4">
+        <div className="rounded-xl bg-muted/70 p-3.5 text-[13px] leading-5 text-muted-foreground">
           当前账号 <span className="font-medium text-foreground">{username}</span>
           。请勿长期使用默认密码；修改后会更新当前会话。
         </div>

@@ -83,7 +83,7 @@ function phaseTone(phase: RunStatus['phase']) {
   switch (phase) {
     case 'idle':
       return {
-        kicker: 'run state',
+        kicker: '状态',
         label: '待命',
         pill: 'status-pill-idle',
         Icon: Pause,
@@ -95,7 +95,7 @@ function phaseTone(phase: RunStatus['phase']) {
     case 'starting':
     case 'running':
       return {
-        kicker: 'run state',
+        kicker: '状态',
         label: phase === 'starting' ? '启动中' : '运行中',
         pill: 'status-pill-warn',
         Icon: Loader2,
@@ -106,7 +106,7 @@ function phaseTone(phase: RunStatus['phase']) {
       };
     case 'done':
       return {
-        kicker: 'run state',
+        kicker: '状态',
         label: '已完成',
         pill: 'status-pill-ok',
         Icon: CheckCircle2,
@@ -128,7 +128,7 @@ function phaseTone(phase: RunStatus['phase']) {
       };
     case 'error':
       return {
-        kicker: 'run state',
+        kicker: '状态',
         label: '已出错',
         pill: 'status-pill-danger',
         Icon: AlertCircle,

@@ -1,17 +1,10 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import {
-  Play,
-  Save,
-  SlidersHorizontal,
-  StopCircle,
-  TriangleAlert
-} from 'lucide-react';
+import { Play, Save, SlidersHorizontal, StopCircle, TriangleAlert } from 'lucide-react';
 import { Button } from '@renderer/components/ui/Button';
 import { Input } from '@renderer/components/ui/Input';
 import { Slider } from '@renderer/components/ui/Slider';
 import { StatusCard } from '@renderer/components/domain/StatusCard';
 import { LogPanel } from '@renderer/components/domain/LogPanel';
-import { ConnectionTestButton } from '@renderer/components/domain/ConnectionTestButton';
 import { useRunStore } from '@renderer/store/runStore';
 import { useSettingsStore } from '@renderer/store/settingsStore';
 import { useToastStore } from '@renderer/store/toastStore';
@@ -22,13 +15,11 @@ export function RegisterPage({ onOpenSettings }: { onOpenSettings(): void }) {
   const settings = useSettingsStore((s) => s.data);
   const push = useToastStore((s) => s.push);
   const running = status.phase === 'starting' || status.phase === 'running';
-  const progress = status.total > 0 ? Math.min(100, Math.round((status.success / status.total) * 100)) : 0;
+  const progress =
+    status.total > 0 ? Math.min(100, Math.round((status.success / status.total) * 100)) : 0;
 
   const ready = useMemo(
-    () =>
-      !!settings?.mail.apiBase &&
-      !!settings?.mail.adminAuth &&
-      !!settings?.mail.domain,
+    () => !!settings?.mail.apiBase && !!settings?.mail.adminAuth && !!settings?.mail.domain,
     [settings]
   );
 
@@ -51,31 +42,29 @@ export function RegisterPage({ onOpenSettings }: { onOpenSettings(): void }) {
 
   return (
     <div className="space-y-5">
-      <div className="pane-grid">
-        <section className="terminal-card">
-          <div className="terminal-card-header">
+      <div className="grid gap-4 lg:grid-cols-[1.3fr_0.9fr]">
+        <section className="ios-group">
+          <div className="flex items-center justify-between border-b border-border/70 px-4 py-3.5">
             <div>
-              <div className="brand-subtitle">控制</div>
+              <p className="page-kicker">控制</p>
               <h3 className="mt-0.5 text-[17px] font-semibold tracking-[-0.02em]">注册机</h3>
             </div>
-            <div className="flex flex-wrap items-center gap-2">
-              {running ? (
-                <Button variant="danger" size="md" onClick={stop}>
-                  <StopCircle className="h-4 w-4" />
-                  停止
-                </Button>
-              ) : (
-                <Button size="md" onClick={start} disabled={!ready}>
-                  <Play className="h-4 w-4" />
-                  开始
-                </Button>
-              )}
-            </div>
+            {running ? (
+              <Button variant="danger" size="md" onClick={stop}>
+                <StopCircle className="h-4 w-4" />
+                停止
+              </Button>
+            ) : (
+              <Button size="md" onClick={start} disabled={!ready}>
+                <Play className="h-4 w-4" />
+                开始
+              </Button>
+            )}
           </div>
-          <div className="terminal-card-body space-y-4">
+          <div className="space-y-4 p-4">
             <StatusCard status={status} />
 
-            <div className="rounded-[14px] bg-muted/60 p-4">
+            <div className="rounded-xl bg-muted/70 p-4">
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <div className="field-label">进度</div>
@@ -83,9 +72,7 @@ export function RegisterPage({ onOpenSettings }: { onOpenSettings(): void }) {
                     成功 {status.success} / 计划 {status.total || settings?.runCount || 0}
                   </div>
                 </div>
-                <div className="text-[22px] font-semibold tabular-nums tracking-tight">
-                  {progress}%
-                </div>
+                <div className="text-[22px] font-bold tabular-nums tracking-tight">{progress}%</div>
               </div>
               <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-border">
                 <div
@@ -96,7 +83,7 @@ export function RegisterPage({ onOpenSettings }: { onOpenSettings(): void }) {
             </div>
 
             {!ready && (
-              <div className="rounded-[14px] bg-warn/10 p-4 text-[13px] leading-5 text-warn">
+              <div className="rounded-xl bg-warn/10 p-4 text-[13px] leading-5 text-warn">
                 <div className="flex items-start gap-2">
                   <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />
                   <span>启动前请到「配置」页补齐邮箱后端。</span>
@@ -135,8 +122,8 @@ function RuntimeSettingsPanel() {
 
   if (!draft) {
     return (
-      <section className="terminal-card">
-        <div className="terminal-card-body text-sm text-muted-foreground">正在加载运行参数…</div>
+      <section className="ios-group">
+        <div className="p-6 text-sm text-muted-foreground">正在加载运行参数…</div>
       </section>
     );
   }
@@ -159,25 +146,23 @@ function RuntimeSettingsPanel() {
   };
 
   return (
-    <section className="terminal-card flex flex-col">
-      <div className="terminal-card-header">
+    <section className="ios-group flex flex-col">
+      <div className="flex items-center justify-between border-b border-border/70 px-4 py-3.5">
         <div>
-          <div className="brand-subtitle">参数</div>
+          <p className="page-kicker">参数</p>
           <h3 className="mt-0.5 text-[17px] font-semibold tracking-[-0.02em]">运行设置</h3>
         </div>
         <SlidersHorizontal className="h-4 w-4 text-muted-foreground" />
       </div>
-      <div className="terminal-card-body flex flex-1 flex-col justify-between space-y-4">
+      <div className="flex flex-1 flex-col justify-between space-y-4 p-4">
         <div className="space-y-4">
-          <div className="rounded-[14px] bg-muted/60 p-4">
+          <div className="rounded-xl bg-muted/70 p-4">
             <div className="flex items-center justify-between gap-3">
               <div>
                 <div className="field-label">轮数</div>
-                <div className="mt-1 text-[12px] leading-5 text-muted-foreground">
-                  单次 1–50，保存后下次启动生效
-                </div>
+                <div className="mt-1 text-[12px] text-muted-foreground">单次 1–50，保存后下次启动生效</div>
               </div>
-              <div className="shell-chip tabular-nums">{draft.runCount}</div>
+              <span className="chip tabular-nums">{draft.runCount}</span>
             </div>
             <div className="mt-3">
               <Slider min={1} max={50} value={draft.runCount} onValueChange={(v) => update('runCount', v)} />
@@ -205,26 +190,16 @@ function RuntimeSettingsPanel() {
           </Field>
         </div>
 
-        <div className="pt-2">
-          <Button onClick={save} disabled={!dirty || saving} className="w-full">
-            <Save className="h-4 w-4" />
-            {saving ? '保存中…' : '保存'}
-          </Button>
-        </div>
+        <Button onClick={save} disabled={!dirty || saving} className="w-full">
+          <Save className="h-4 w-4" />
+          {saving ? '保存中…' : '保存'}
+        </Button>
       </div>
     </section>
   );
 }
 
-function Field({
-  label,
-  hint,
-  children
-}: {
-  label: string;
-  hint?: string;
-  children: ReactNode;
-}) {
+function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
   return (
     <div className="space-y-1.5">
       <div>
@@ -238,9 +213,9 @@ function Field({
 
 function InfoBox({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-[14px] bg-muted/60 p-3.5">
+    <div className="rounded-xl bg-muted/70 p-3.5">
       <div className="field-label">{label}</div>
-      <div className="mt-1.5 break-all text-[13px] font-medium tracking-tight">{value}</div>
+      <div className="mt-1.5 break-all text-[13px] font-medium">{value}</div>
     </div>
   );
 }

@@ -2,7 +2,7 @@
 @tailwind components;
 @tailwind utilities;
 
-/* iOS 简约风：系统字体 + 低开销色板，无网格/重阴影/外链字体 */
+/* Grok Agent · iOS Settings 风：系统字体、分组列表、纯色底、零网格/红绿灯 */
 @layer base {
   :root {
     --background: 240 5% 96%;
@@ -16,41 +16,37 @@
     --accent: 240 5% 94%;
     --accent-foreground: 240 6% 10%;
     --border: 240 6% 90%;
-    --input: 240 6% 90%;
+    --input: 240 5% 92%;
     --ring: 211 100% 50%;
     --warn: 36 100% 47%;
     --danger: 4 90% 58%;
     --info: 199 89% 48%;
     --tip: 174 62% 36%;
     --ok: 142 71% 35%;
-    --radius: 0.875rem;
-    --ios-fill: 240 5% 96%;
-    --ios-separator: 240 6% 90%;
-    --ios-shadow: 0 1px 2px rgba(0, 0, 0, 0.04), 0 4px 16px rgba(0, 0, 0, 0.04);
+    --radius: 0.75rem;
+    --ios-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
   }
 
   .dark {
-    --background: 240 6% 7%;
-    --foreground: 240 5% 96%;
-    --card: 240 5% 11%;
-    --card-foreground: 240 5% 96%;
-    --muted: 240 4% 16%;
-    --muted-foreground: 240 5% 64%;
-    --primary: 211 100% 55%;
+    --background: 0 0% 0%;
+    --foreground: 0 0% 98%;
+    --card: 240 4% 10%;
+    --card-foreground: 0 0% 98%;
+    --muted: 240 4% 14%;
+    --muted-foreground: 240 5% 60%;
+    --primary: 211 100% 52%;
     --primary-foreground: 0 0% 100%;
     --accent: 240 4% 16%;
-    --accent-foreground: 240 5% 96%;
-    --border: 240 4% 18%;
-    --input: 240 4% 18%;
-    --ring: 211 100% 55%;
+    --accent-foreground: 0 0% 98%;
+    --border: 240 4% 16%;
+    --input: 240 4% 14%;
+    --ring: 211 100% 52%;
     --warn: 36 100% 55%;
     --danger: 4 84% 62%;
     --info: 199 89% 55%;
     --tip: 174 50% 48%;
     --ok: 142 60% 48%;
-    --ios-fill: 240 5% 11%;
-    --ios-separator: 240 4% 18%;
-    --ios-shadow: 0 1px 2px rgba(0, 0, 0, 0.2), 0 8px 24px rgba(0, 0, 0, 0.25);
+    --ios-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
   }
 
   * {
@@ -65,11 +61,9 @@
 
   body {
     @apply bg-background font-sans text-foreground antialiased;
-    /* 纯色底，无渐变网格，降低 GPU/合成开销 */
     background-color: hsl(var(--background));
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    font-feature-settings: 'kern' 1;
   }
 
   ::selection {
@@ -77,8 +71,8 @@
   }
 
   ::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
+    width: 5px;
+    height: 5px;
   }
 
   ::-webkit-scrollbar-track {
@@ -86,92 +80,179 @@
   }
 
   ::-webkit-scrollbar-thumb {
-    @apply rounded-full bg-muted-foreground/25;
-  }
-
-  ::-webkit-scrollbar-thumb:hover {
-    @apply bg-muted-foreground/40;
+    @apply rounded-full bg-muted-foreground/20;
   }
 }
 
 @layer components {
-  .app-frame {
-    @apply mx-auto flex min-h-full w-full max-w-[1280px] flex-col gap-4 px-3 py-3 sm:px-4 sm:py-4 lg:flex-row lg:gap-5 lg:px-6 lg:py-6;
+  /* 布局 */
+  .app-shell {
+    @apply mx-auto flex min-h-full w-full max-w-[1200px] flex-col gap-0 px-0 sm:px-3 sm:py-3 lg:flex-row lg:gap-4 lg:px-5 lg:py-5;
   }
 
-  .side-rail {
-    @apply z-10 w-full shrink-0 lg:sticky lg:top-5 lg:h-[calc(100vh-2.5rem)] lg:w-[240px];
+  .app-nav {
+    @apply w-full shrink-0 border-b border-border bg-card lg:sticky lg:top-5 lg:h-[calc(100vh-2.5rem)] lg:w-[220px] lg:rounded-2xl lg:border lg:border-border lg:shadow-[var(--ios-shadow)];
   }
 
-  .main-stage {
-    @apply min-w-0 flex-1 pb-8 lg:pl-0;
+  .app-main {
+    @apply min-w-0 flex-1 px-4 py-4 sm:px-2 lg:px-1 lg:py-0;
   }
 
-  .side-nav-item {
-    @apply flex w-full items-center gap-3 rounded-[12px] px-3 py-2.5 text-left text-[15px] font-medium text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground;
+  /* 导航 */
+  .nav-brand {
+    @apply flex items-center gap-3 px-4 py-4;
   }
 
-  .side-nav-item-active {
-    @apply bg-primary/10 text-primary hover:bg-primary/12 hover:text-primary;
+  .nav-logo {
+    @apply flex h-10 w-10 items-center justify-center rounded-[11px] bg-primary text-[17px] font-bold tracking-tight text-primary-foreground;
   }
 
-  .login-stage {
-    @apply flex min-h-full items-center justify-center px-4 py-10;
-    background: hsl(var(--background));
+  .nav-title {
+    @apply text-[17px] font-semibold tracking-[-0.02em] text-foreground;
   }
 
-  .login-card {
-    @apply shell-window w-full max-w-[400px] p-7;
+  .nav-sub {
+    @apply text-[12px] font-medium text-muted-foreground;
   }
 
-  .hero-panel {
-    @apply relative overflow-hidden rounded-[16px] border border-border bg-card p-5 shadow-[var(--ios-shadow)] md:p-6;
+  .nav-link {
+    @apply flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-[15px] font-medium text-muted-foreground transition-colors duration-100 active:opacity-70;
   }
 
-  .hero-panel::before {
-    content: none;
+  .nav-link:hover {
+    @apply bg-accent text-foreground;
   }
 
-  .hero-panel > * {
-    position: relative;
+  .nav-link-active {
+    background: hsl(var(--primary) / 0.12);
+    color: hsl(var(--primary));
   }
 
-  .hero-stamp {
-    @apply absolute right-4 top-4 inline-flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-1 text-xs font-medium text-muted-foreground;
+  .nav-link-active:hover {
+    background: hsl(var(--primary) / 0.16);
+    color: hsl(var(--primary));
   }
 
-  .shell-window {
-    @apply overflow-hidden rounded-[16px] border border-border bg-card shadow-[var(--ios-shadow)];
+  /* 页面标题 */
+  .page-kicker {
+    @apply text-[13px] font-medium text-muted-foreground;
   }
 
-  .shell-bar {
-    @apply flex items-center justify-between border-b border-border/80 bg-muted/40 px-4 py-2.5;
+  .page-heading {
+    @apply text-[28px] font-bold tracking-[-0.03em] text-foreground sm:text-[32px];
   }
 
-  .shell-dots {
-    @apply hidden;
+  /* iOS 分组卡片 */
+  .ios-group {
+    @apply overflow-hidden rounded-2xl border border-border bg-card shadow-[var(--ios-shadow)];
   }
 
-  .shell-dot {
-    @apply hidden;
+  .ios-group-header {
+    @apply flex items-center justify-between gap-3 px-4 pb-1 pt-4;
   }
 
-  .shell-dot-rose,
-  .shell-dot-amber,
-  .shell-dot-mint {
-    @apply hidden;
+  .ios-group-title {
+    @apply text-[13px] font-medium uppercase tracking-[0.04em] text-muted-foreground;
   }
 
-  .shell-label {
-    @apply text-[11px] font-semibold uppercase tracking-[0.06em] text-muted-foreground;
+  .ios-group-body {
+    @apply p-0;
   }
 
-  .shell-chip {
+  .ios-row {
+    @apply flex items-center gap-3 border-b border-border/70 px-4 py-3.5 last:border-b-0;
+  }
+
+  .ios-row-label {
+    @apply text-[15px] text-foreground;
+  }
+
+  .ios-row-value {
+    @apply ml-auto text-[15px] text-muted-foreground;
+  }
+
+  /* 指标卡 */
+  .stat-card {
+    @apply rounded-2xl border border-border bg-card p-4 shadow-[var(--ios-shadow)];
+  }
+
+  .stat-label {
+    @apply text-[13px] font-medium text-muted-foreground;
+  }
+
+  .stat-value {
+    @apply mt-1.5 text-[28px] font-bold tabular-nums tracking-[-0.03em] text-foreground;
+  }
+
+  .stat-note {
+    @apply mt-1 text-[12px] text-muted-foreground;
+  }
+
+  /* 欢迎区 */
+  .welcome-card {
+    @apply relative overflow-hidden rounded-2xl border border-border bg-card p-5 shadow-[var(--ios-shadow)] sm:p-6;
+  }
+
+  /* 胶囊 / 状态 */
+  .chip {
     @apply inline-flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-1 text-[12px] font-medium text-muted-foreground;
   }
 
+  .pill {
+    @apply inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] font-semibold;
+  }
+
+  .pill-ok {
+    background: hsl(var(--ok) / 0.12);
+    color: hsl(var(--ok));
+  }
+
+  .pill-warn {
+    background: hsl(var(--warn) / 0.12);
+    color: hsl(var(--warn));
+  }
+
+  .pill-idle {
+    @apply bg-muted text-muted-foreground;
+  }
+
+  .pill-danger {
+    background: hsl(var(--danger) / 0.12);
+    color: hsl(var(--danger));
+  }
+
+  /* 表单 */
+  .field-label {
+    @apply text-[13px] font-medium text-muted-foreground;
+  }
+
+  .field-hint {
+    @apply text-[12px] leading-5 text-muted-foreground;
+  }
+
+  /* 登录 */
+  .login-wrap {
+    @apply flex min-h-full items-center justify-center px-4 py-12;
+    background: hsl(var(--background));
+  }
+
+  .login-panel {
+    @apply w-full max-w-[380px] rounded-2xl border border-border bg-card p-7 shadow-[var(--ios-shadow)];
+  }
+
+  /* 日志表面：仅此处保留等宽 */
+  .log-surface {
+    @apply rounded-xl bg-muted/70 font-mono text-[12px];
+  }
+
+  .dark .log-surface {
+    @apply bg-muted/50;
+  }
+
+  /* 兼容旧类名 → 映射到新体系，避免漏改页面 */
+  .shell-window,
   .terminal-card {
-    @apply shell-window;
+    @apply ios-group;
   }
 
   .terminal-card-header {
@@ -179,106 +260,133 @@
   }
 
   .terminal-card-body {
-    @apply p-4 sm:p-5;
+    @apply p-4;
   }
 
-  .terminal-title {
-    @apply text-[12px] font-semibold tracking-[0.02em] text-muted-foreground;
-  }
-
-  .terminal-heading {
-    @apply text-lg font-semibold tracking-[-0.02em] text-foreground;
-  }
-
-  .terminal-copy {
-    @apply text-sm leading-6 text-muted-foreground;
-  }
-
-  .terminal-grid {
-    @apply grid gap-3 sm:grid-cols-2 xl:grid-cols-4;
-  }
-
-  .metric-panel {
-    @apply rounded-[14px] border border-border bg-card p-4 shadow-[var(--ios-shadow)];
-  }
-
-  .metric-kicker {
+  .shell-chip,
+  .brand-subtitle {
     @apply text-[12px] font-medium text-muted-foreground;
-  }
-
-  .metric-value {
-    @apply mt-2 text-2xl font-semibold tracking-[-0.03em] text-foreground;
-  }
-
-  .metric-note {
-    @apply mt-1.5 text-xs leading-5 text-muted-foreground;
-  }
-
-  .pane-grid {
-    @apply grid gap-4 lg:grid-cols-[1.35fr_0.9fr];
-  }
-
-  .status-pill {
-    @apply inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] font-medium;
-  }
-
-  .status-pill-ok {
-    @apply bg-ok/12 text-ok;
-  }
-
-  .status-pill-warn {
-    @apply bg-warn/12 text-warn;
-  }
-
-  .status-pill-idle {
-    @apply bg-muted text-muted-foreground;
-  }
-
-  .status-pill-danger {
-    @apply bg-danger/12 text-danger;
-  }
-
-  .field-label {
-    @apply text-[13px] font-medium text-muted-foreground;
-  }
-
-  .field-hint {
-    @apply text-xs leading-5 text-muted-foreground;
-  }
-
-  .ghost-divider {
-    @apply border-t border-border;
-  }
-
-  .console-surface {
-    @apply rounded-[12px] border border-border bg-muted/50 text-[13px];
-  }
-
-  .dark .console-surface {
-    @apply bg-muted/40;
-  }
-
-  .brand-mark {
-    @apply flex h-9 w-9 items-center justify-center rounded-[11px] bg-primary text-[15px] font-semibold tracking-tight text-primary-foreground;
   }
 
   .brand-title {
     @apply text-[17px] font-semibold tracking-[-0.02em] text-foreground;
   }
 
-  .brand-subtitle {
-    @apply text-[12px] font-medium text-muted-foreground;
+  .brand-mark {
+    @apply nav-logo;
   }
 
   .page-title {
-    @apply text-[28px] font-semibold tracking-[-0.03em] text-foreground sm:text-[32px];
+    @apply page-heading;
   }
 
-  .ios-list {
-    @apply overflow-hidden rounded-[14px] border border-border bg-card shadow-[var(--ios-shadow)];
+  .metric-panel {
+    @apply stat-card;
   }
 
-  .ios-list-row {
-    @apply flex items-center justify-between gap-3 border-b border-border/70 px-4 py-3 last:border-b-0;
+  .metric-kicker {
+    @apply stat-label;
+  }
+
+  .metric-value {
+    @apply stat-value;
+  }
+
+  .metric-note {
+    @apply stat-note;
+  }
+
+  .hero-panel {
+    @apply welcome-card;
+  }
+
+  .hero-stamp {
+    @apply absolute right-4 top-4 chip;
+  }
+
+  .terminal-grid {
+    @apply grid gap-3 sm:grid-cols-2 xl:grid-cols-3;
+  }
+
+  .pane-grid {
+    @apply grid gap-4 lg:grid-cols-[1.3fr_0.9fr];
+  }
+
+  .status-pill {
+    @apply pill;
+  }
+
+  .status-pill-ok {
+    @apply pill-ok;
+  }
+
+  .status-pill-warn {
+    @apply pill-warn;
+  }
+
+  .status-pill-idle {
+    @apply pill-idle;
+  }
+
+  .status-pill-danger {
+    @apply pill-danger;
+  }
+
+  .console-surface {
+    @apply log-surface;
+  }
+
+  .side-nav-item {
+    @apply nav-link;
+  }
+
+  .side-nav-item-active {
+    @apply nav-link-active;
+  }
+
+  .side-rail {
+    @apply app-nav;
+  }
+
+  .main-stage {
+    @apply app-main;
+  }
+
+  .app-frame {
+    @apply app-shell;
+  }
+
+  .login-stage {
+    @apply login-wrap;
+  }
+
+  .login-card {
+    @apply login-panel;
+  }
+
+  .ghost-divider {
+    @apply mx-4 border-t border-border;
+  }
+
+  .shell-bar,
+  .shell-dots,
+  .shell-dot,
+  .shell-dot-rose,
+  .shell-dot-amber,
+  .shell-dot-mint,
+  .shell-label {
+    @apply hidden;
+  }
+
+  .terminal-title {
+    @apply text-[12px] font-medium text-muted-foreground;
+  }
+
+  .terminal-heading {
+    @apply text-[17px] font-semibold tracking-[-0.02em];
+  }
+
+  .terminal-copy {
+    @apply text-sm text-muted-foreground;
   }
 }

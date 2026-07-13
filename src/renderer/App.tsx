@@ -129,90 +129,89 @@ export default function App() {
     );
   }
 
+  const phasePill =
+    status.phase === 'running' || status.phase === 'starting'
+      ? 'pill-warn'
+      : status.phase === 'error'
+        ? 'pill-danger'
+        : status.phase === 'done'
+          ? 'pill-ok'
+          : 'pill-idle';
+
   return (
-    <div className="app-frame">
-      <aside className="side-rail">
-        <div className="shell-window h-full">
-          <div className="space-y-5 p-4">
-            <div className="flex items-center gap-3">
-              <div className="brand-mark" aria-hidden>
-                G
-              </div>
-              <div className="min-w-0">
-                <h1 className="brand-title">Grok Agent</h1>
-                <p className="brand-subtitle">注册控制台</p>
-              </div>
+    <div className="app-shell">
+      <aside className="app-nav">
+        <div className="flex h-full flex-col">
+          <div className="nav-brand">
+            <div className="nav-logo" aria-hidden>
+              G
             </div>
+            <div className="min-w-0">
+              <div className="nav-title">Grok Agent</div>
+              <div className="nav-sub">注册控制台</div>
+            </div>
+          </div>
 
-            <nav className="space-y-1">
-              {tabs.map(({ id, label, Icon }) => (
-                <button
-                  key={id}
-                  type="button"
-                  onClick={() => setTab(id)}
-                  className={cn('side-nav-item', tab === id && 'side-nav-item-active')}
-                >
-                  <Icon className="h-4 w-4 shrink-0 opacity-90" />
-                  <span>{label}</span>
-                </button>
-              ))}
-            </nav>
+          <nav className="flex gap-1 overflow-x-auto px-3 pb-3 lg:flex-col lg:overflow-visible">
+            {tabs.map(({ id, label, Icon }) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setTab(id)}
+                className={cn('nav-link shrink-0', tab === id && 'nav-link-active')}
+              >
+                <Icon className="h-4 w-4 shrink-0" />
+                <span>{label}</span>
+              </button>
+            ))}
+          </nav>
 
-            <div className="ghost-divider" />
-
-            <div className="space-y-3">
-              <div className="flex items-center justify-between gap-2 rounded-[14px] bg-muted/70 px-3 py-2.5">
-                <div className="flex min-w-0 items-center gap-2">
-                  <ShieldCheck className="h-4 w-4 shrink-0 text-ok" />
-                  <span className="truncate text-[13px] font-medium">{auth.username}</span>
-                </div>
-                <Button variant="ghost" size="sm" onClick={logout} title="退出登录">
-                  <LogOut className="h-3.5 w-3.5" />
-                  退出
-                </Button>
+          <div className="mt-auto space-y-3 border-t border-border p-3">
+            <div className="flex items-center justify-between gap-2 rounded-xl bg-muted px-3 py-2.5">
+              <div className="flex min-w-0 items-center gap-2">
+                <ShieldCheck className="h-4 w-4 shrink-0 text-ok" />
+                <span className="truncate text-[13px] font-medium">{auth.username}</span>
               </div>
-              <div className="flex items-center justify-between gap-2">
-                <ThemeToggle />
-                <a
-                  href="https://github.com/MurasameCyan/GrokRegisterAgent"
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex h-9 w-9 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                  title="GitHub"
-                >
-                  <Github className="h-4 w-4" />
-                </a>
-              </div>
+              <button
+                type="button"
+                onClick={logout}
+                className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[12px] font-medium text-primary active:opacity-70"
+                title="退出登录"
+              >
+                <LogOut className="h-3.5 w-3.5" />
+                退出
+              </button>
+            </div>
+            <div className="flex items-center justify-between gap-2">
+              <ThemeToggle />
+              <a
+                href="https://github.com/MurasameCyan/GrokRegisterAgent"
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex h-9 w-9 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                title="GitHub"
+              >
+                <Github className="h-4 w-4" />
+              </a>
             </div>
           </div>
         </div>
       </aside>
 
-      <main className="main-stage">
-        <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+      <main className="app-main">
+        <header className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <p className="brand-subtitle mb-1">Grok Agent</p>
-            <h2 className="page-title">
-              {tabs.find((item) => item.id === tab)?.label}
-            </h2>
+            <p className="page-kicker mb-0.5">Grok Agent</p>
+            <h1 className="page-heading">{tabs.find((item) => item.id === tab)?.label}</h1>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <span
-              className={cn(
-                'status-pill',
-                status.phase === 'running' || status.phase === 'starting'
-                  ? 'status-pill-warn'
-                  : status.phase === 'error'
-                    ? 'status-pill-danger'
-                    : 'status-pill-idle'
-              )}
-            >
+            <span className={cn('pill', phasePill)}>
               <Activity className="h-3.5 w-3.5" />
               {status.phase}
             </span>
-            <span className="shell-chip">{new Date().toLocaleDateString('zh-CN')}</span>
+            <span className="chip">{new Date().toLocaleDateString('zh-CN')}</span>
           </div>
-        </div>
+        </header>
 
         {tab === 'dashboard' && <DashboardPage username={auth.username ?? 'admin'} />}
         {tab === 'register' && <RegisterPage onOpenSettings={() => setTab('settings')} />}
@@ -241,18 +240,14 @@ export default function App() {
 
 function BootScreen() {
   return (
-    <div className="flex min-h-full items-center justify-center p-6">
-      <div className="shell-window max-w-sm p-6">
-        <div className="flex items-center gap-3">
-          <div className="brand-mark" aria-hidden>
-            G
-          </div>
-          <div>
-            <div className="brand-subtitle">Grok Agent</div>
-            <div className="mt-0.5 text-[15px] font-semibold tracking-[-0.01em]">
-              正在检查登录状态…
-            </div>
-          </div>
+    <div className="login-wrap">
+      <div className="flex items-center gap-3 rounded-2xl border border-border bg-card px-6 py-5 shadow-[var(--ios-shadow)]">
+        <div className="nav-logo" aria-hidden>
+          G
+        </div>
+        <div>
+          <div className="nav-sub">Grok Agent</div>
+          <div className="text-[15px] font-semibold tracking-[-0.01em]">正在检查登录状态…</div>
         </div>
       </div>
     </div>
@@ -279,23 +274,21 @@ function LoginScreen({ onAuthed }: { onAuthed(next: AuthState): void }) {
   };
 
   return (
-    <div className="login-stage">
-      <form onSubmit={submit} className="login-card">
-        <div className="mb-6 flex items-center gap-3">
-          <div className="brand-mark" aria-hidden>
+    <div className="login-wrap">
+      <form onSubmit={submit} className="login-panel">
+        <div className="mb-7 flex items-center gap-3">
+          <div className="nav-logo" aria-hidden>
             G
           </div>
           <div>
-            <div className="brand-title">Grok Agent</div>
-            <p className="brand-subtitle">注册控制台</p>
+            <div className="nav-title">Grok Agent</div>
+            <div className="nav-sub">注册控制台</div>
           </div>
         </div>
-        <div className="space-y-1.5">
-          <h1 className="text-[28px] font-semibold tracking-[-0.03em]">登录</h1>
-          <p className="text-[13px] leading-5 text-muted-foreground">
-            默认账号 admin/admin（见启动日志），首次登录后需修改。
-          </p>
-        </div>
+        <h1 className="text-[28px] font-bold tracking-[-0.03em]">登录</h1>
+        <p className="mt-1.5 text-[13px] leading-5 text-muted-foreground">
+          默认账号 admin / admin，首次登录后需修改。
+        </p>
         <div className="mt-6 space-y-4">
           <label className="block space-y-1.5">
             <span className="field-label">用户名</span>
@@ -306,9 +299,7 @@ function LoginScreen({ onAuthed }: { onAuthed(next: AuthState): void }) {
             <PasswordInput value={password} onChange={(e) => setPassword(e.target.value)} />
           </label>
           {error && (
-            <div className="rounded-[12px] bg-danger/10 px-3.5 py-3 text-[13px] text-danger">
-              {error}
-            </div>
+            <div className="rounded-xl bg-danger/10 px-3.5 py-3 text-[13px] text-danger">{error}</div>
           )}
           <Button type="submit" size="lg" className="w-full" disabled={busy}>
             {busy ? '登录中…' : '继续'}
@@ -353,8 +344,8 @@ function ChangeCredentialsModal({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/25 p-4">
-      <form onSubmit={submit} className="shell-window w-full max-w-md p-6">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4 backdrop-blur-[2px]">
+      <form onSubmit={submit} className="w-full max-w-md rounded-2xl border border-border bg-card p-6 shadow-[var(--ios-shadow)]">
         <div className="mb-5 flex items-start gap-3">
           <div className="flex h-10 w-10 items-center justify-center rounded-full bg-ok/12 text-ok">
             <ShieldCheck className="h-5 w-5" />
@@ -396,9 +387,7 @@ function ChangeCredentialsModal({
             />
           </label>
           {error && (
-            <div className="rounded-[12px] bg-danger/10 px-3.5 py-3 text-[13px] text-danger">
-              {error}
-            </div>
+            <div className="rounded-xl bg-danger/10 px-3.5 py-3 text-[13px] text-danger">{error}</div>
           )}
           <Button type="submit" size="lg" className="w-full" disabled={busy}>
             {busy ? '保存中…' : '保存并继续'}

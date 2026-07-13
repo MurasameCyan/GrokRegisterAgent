@@ -42,14 +42,14 @@ export function LogPanel() {
   };
 
   return (
-    <div className="terminal-card flex h-[min(520px,60vh)] flex-col overflow-hidden">
-      <div className="terminal-card-header">
+    <div className="ios-group flex h-[min(520px,60vh)] flex-col overflow-hidden">
+      <div className="flex items-center justify-between border-b border-border/70 px-4 py-3.5">
         <div>
-          <div className="brand-subtitle">输出</div>
+          <p className="page-kicker">输出</p>
           <div className="mt-0.5 text-[17px] font-semibold tracking-[-0.02em]">实时日志</div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <span className={cn('status-pill', autoScroll ? 'status-pill-ok' : 'status-pill-warn')}>
+          <span className={cn('pill', autoScroll ? 'pill-ok' : 'pill-warn')}>
             {autoScroll ? '自动滚动' : '已暂停'}
           </span>
           <Button variant="ghost" size="sm" onClick={copyAll}>
@@ -65,17 +65,17 @@ export function LogPanel() {
       <div
         ref={ref}
         onScroll={onScroll}
-        className="console-surface m-3 flex-1 overflow-y-auto px-3 py-2.5 font-mono text-[12px] leading-6"
+        className="log-surface m-3 flex-1 overflow-y-auto px-3 py-2.5 leading-6"
       >
         {logs.length === 0 ? (
-          <div className="mt-16 text-center text-[13px] text-muted-foreground">
+          <div className="mt-16 text-center font-sans text-[13px] text-muted-foreground">
             尚无日志。开始注册后将实时显示输出。
           </div>
         ) : (
           logs.map((l) => (
             <div
               key={l.id}
-              className="grid grid-cols-[72px_18px_minmax(0,1fr)] gap-3 border-b border-border/40 py-1.5 last:border-b-0"
+              className="grid grid-cols-[72px_minmax(0,1fr)] gap-3 border-b border-border/40 py-1.5 last:border-b-0"
             >
               <span className="text-[11px] text-muted-foreground">
                 {new Date(l.ts).toLocaleTimeString('zh-CN', {
@@ -84,7 +84,6 @@ export function LogPanel() {
                   second: '2-digit'
                 })}
               </span>
-              <span className={cn('text-center', colorByLevel[l.level])}>›</span>
               <span className={cn('whitespace-pre-wrap break-words', colorByLevel[l.level])}>
                 {l.text}
               </span>
