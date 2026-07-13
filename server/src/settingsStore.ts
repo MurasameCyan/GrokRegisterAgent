@@ -17,7 +17,8 @@ function asPoolMode(v: unknown, fallback: PoolMode): PoolMode {
 }
 
 function applyEnvOverrides(s: AppSettings, source: Partial<AppSettings>): AppSettings {
-  // Docker 友好：允许通过环境变量覆盖关键字段（首次启动空白容器时也能直接跑）
+  // Docker 友好：环境变量仅作「空字段 bootstrap」，不得覆盖 UI/config 已保存的值。
+  // 旧逻辑 env || saved 会导致：compose 里设了 MAIL_API_BASE 后，设置页保存再读回仍被 env 盖掉。
   const env = process.env;
   const envRunCount = env.RUN_COUNT ? Number(env.RUN_COUNT) : undefined;
   const useEnvRunCount =
@@ -26,20 +27,32 @@ function applyEnvOverrides(s: AppSettings, source: Partial<AppSettings>): AppSet
     (envRunCount as number) >= 1 &&
     (envRunCount as number) <= 50;
 
+  const pick = (saved: string, envVal?: string, fallback = ''): string => {
+    const v = (saved || '').trim();
+    if (v) return saved;
+    const e = (envVal || '').trim();
+    if (e) return envVal as string;
+    return fallback;
+  };
+
   return {
     ...s,
-    pythonPath: env.PYTHON_PATH || s.pythonPath || (process.platform === 'win32' ? 'python' : '/usr/local/bin/python3'),
-    registerDir: env.REGISTER_DIR || s.registerDir || '',
+    pythonPath: pick(
+      s.pythonPath,
+      env.PYTHON_PATH,
+      process.platform === 'win32' ? 'python' : '/usr/local/bin/python3'
+    ),
+    registerDir: pick(s.registerDir, env.REGISTER_DIR, ''),
     runCount: useEnvRunCount ? (envRunCount as number) : s.runCount,
-    proxy: env.HTTP_PROXY || s.proxy,
-    browserProxy: env.BROWSER_PROXY || s.browserProxy,
-    browserPath: env.BROWSER_PATH || s.browserPath,
-    authDir: env.AUTH_DIR || env.CPA_AUTH_DIR || s.authDir,
+    proxy: pick(s.proxy, env.HTTP_PROXY),
+    browserProxy: pick(s.browserProxy, env.BROWSER_PROXY),
+    browserPath: pick(s.browserPath, env.BROWSER_PATH),
+    authDir: pick(s.authDir, env.AUTH_DIR || env.CPA_AUTH_DIR),
     mail: {
       ...s.mail,
-      apiBase: env.MAIL_API_BASE || s.mail.apiBase,
-      adminAuth: env.MAIL_ADMIN_AUTH || s.mail.adminAuth,
-      domain: env.MAIL_DOMAIN || s.mail.domain
+      apiBase: pick(s.mail.apiBase, env.MAIL_API_BASE),
+      adminAuth: pick(s.mail.adminAuth, env.MAIL_ADMIN_AUTH),
+      domain: pick(s.mail.domain, env.MAIL_DOMAIN)
     }
   };
 }
