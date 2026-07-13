@@ -79,6 +79,14 @@ fi
 
 if register_is_complete "$REGISTER_DIR"; then
   echo "[entrypoint] register ready: $(ls -1 "${REGISTER_DIR}" | tr '\n' ' ')"
+  # 检查热修文件是否在（便于确认宿主机同步）
+  for f in proxy_auth_ext.py proxy_local_forward.py pools.py; do
+    if [[ -f "${REGISTER_DIR}/${f}" ]]; then
+      echo "[entrypoint] OK ${f}"
+    else
+      echo "[entrypoint] MISSING ${f} — 带密码代理/池轮换可能失效，请检查 ./register 挂载"
+    fi
+  done
 else
   echo "[entrypoint] ERROR: ${REGISTER_DIR} still incomplete — registration will fail"
 fi

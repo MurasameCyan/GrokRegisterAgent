@@ -45,6 +45,7 @@
     "https-proxy-agent": "^9.0.0",
     "jsonwebtoken": "^9.0.3",
     "lucide-react": "0.453.0",
+    "socks-proxy-agent": "^8.0.5",
     "tailwind-merge": "2.5.4",
     "ws": "8.18.0",
     "zustand": "4.5.5"

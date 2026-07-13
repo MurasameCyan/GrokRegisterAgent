@@ -236,16 +236,20 @@ export interface RendererApi {
   testMail(block: MailSettings): Promise<TestResult>;
   /** 单条代理测活（经代理访问公网 IP） */
   testProxy(proxy: string): Promise<TestResult & { exitIp?: string; latencyMs?: number }>;
-  /** 批量并发代理测活 */
+  /** 批量并发代理测活（大批量请前端分块调用，避免反向代理 524） */
   testProxyBatch(input: {
     proxies: string[];
     concurrency?: number;
+    timeoutMs?: number;
   }): Promise<{
     total: number;
     ok: number;
     fail: number;
     concurrency: number;
-    results: Array<TestResult & { proxy?: string; exitIp?: string; latencyMs?: number }>;
+    timeoutMs?: number;
+    results: Array<
+      TestResult & { proxy?: string; scheme?: string; exitIp?: string; latencyMs?: number }
+    >;
   }>;
 
   // system

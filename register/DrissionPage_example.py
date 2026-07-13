@@ -194,7 +194,10 @@ try:
         _browser_proxy = str(_cfg.get("browser_proxy", "") or _cfg.get("proxy", "") or "")
         _browser_path_cfg = str(_cfg.get("browser_path", "") or "")
         _auto_auth_export = bool(_cfg.get("auto_auth_export", True))
-        _proxy_prefer_local_forward = bool(_cfg.get("proxy_prefer_local_forward", False))
+        # 默认 True：带密码代理走本地转发，避免 set_proxy 静默直连
+        _proxy_prefer_local_forward = bool(
+            _cfg.get("proxy_prefer_local_forward", True)
+        )
 except Exception:
     pass
 
@@ -212,9 +215,23 @@ except Exception:
 
 try:
     from proxy_auth_ext import apply_proxy_to_chromium_options, parse_proxy_url
-except Exception:
+except Exception as _proxy_auth_import_err:
     apply_proxy_to_chromium_options = None
     parse_proxy_url = None
+    print(f"[Warn] proxy_auth_ext 导入失败（带密码代理将无法生效）: {_proxy_auth_import_err}")
+
+try:
+    from proxy_local_forward import stop_local_forward as _stop_local_forward_early
+except Exception:
+    _stop_local_forward_early = None
+
+# 启动自检：新代码是否在容器内
+_REGISTER_BUILD = "proxy-auth-local+pool-idx-2026-07-13"
+print(f"[*] register build: {_REGISTER_BUILD}")
+if apply_proxy_to_chromium_options is None:
+    print("[Warn] 缺少 proxy_auth_ext —— 请确认 ./register 已挂载并重启容器")
+else:
+    print("[*] proxy_auth_ext: OK（支持带密码 HTTP 代理：扩展/本地转发）")
 
 try:
     from fingerprint import build_fingerprint, apply_to_chromium_options, stealth_js
@@ -633,12 +650,32 @@ def start_browser():
                 else:
                     print(f"[*] 浏览器代理(本轮): {log_proxy}")
             else:
-                # 无 proxy_auth_ext 时退回 set_proxy（账号密码会失败）
+                # 无 proxy_auth_ext：绝不能 set_proxy(user:pass)，会静默直连
                 try:
-                    co.set_proxy(picked)
-                    print(f"[*] 浏览器代理(本轮/set_proxy): {log_proxy}")
+                    from proxy_local_forward import start_local_forward
+
+                    fr = start_local_forward(picked)
+                    if fr.get("ok"):
+                        try:
+                            co.set_proxy(fr["local_proxy"])
+                        except Exception:
+                            co.set_argument("--proxy-server", fr["local_proxy"])
+                        print(
+                            f"[*] 浏览器代理(本轮/本地转发-noext): {fr.get('local_proxy')} → {log_proxy}"
+                        )
+                        proxy_apply_result = {
+                            "mode": "local_forward",
+                            "local_proxy": fr.get("local_proxy"),
+                            "proxy": log_proxy,
+                        }
+                    else:
+                        print(
+                            f"[Warn] 无 proxy_auth_ext 且本地转发失败，将直连: {fr.get('error')}"
+                        )
                 except Exception as e:
-                    print(f"[Warn] set_proxy 失败: {e} | {log_proxy}")
+                    print(
+                        f"[Warn] 带密码代理无法配置（缺模块）: {e} — 请同步 register/ 并重启容器"
+                    )
         else:
             print("[*] 浏览器代理: 直接连接")
     except Exception as e:

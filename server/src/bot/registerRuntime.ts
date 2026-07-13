@@ -119,7 +119,11 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
     .replace(/^@+/, '');
 
   // 域名池开关：开=写入 mail_domains；关=只用 mail_domain
-  const mailPoolOn = settings.mailDomainPoolEnabled === true;
+  // 兼容：若未显式开池但 mailDomains 有内容，仍写入池（避免 UI 开了却未持久化开关）
+  const domainsText = String(settings.mailDomains || '').trim();
+  const mailPoolOn =
+    settings.mailDomainPoolEnabled === true ||
+    (settings.mailDomainPoolEnabled !== false && domainsText.length > 0);
   const domains = mailPoolOn ? parseList(settings.mailDomains) : [];
   if (domains.length > 0) {
     config.mail_domains = domains;
@@ -130,8 +134,14 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
   config.email_domain_mode = settings.mailDomainMode || 'round_robin';
 
   // 代理总开关 / 池开关
-  const proxyOn = settings.proxyEnabled === true;
-  const proxyPoolOn = proxyOn && settings.proxyPoolEnabled === true;
+  const proxyText = String(settings.proxyPool || settings.proxy || '').trim();
+  const proxyOn =
+    settings.proxyEnabled === true ||
+    (settings.proxyEnabled !== false && proxyText.length > 0);
+  const proxyPoolOn =
+    proxyOn &&
+    (settings.proxyPoolEnabled === true ||
+      (settings.proxyPoolEnabled !== false && String(settings.proxyPool || '').trim().length > 0));
   if (!proxyOn) {
     config.proxy = '';
     config.browser_proxy = '';
@@ -160,8 +170,11 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
   }
 
   config.browser_path = settings.browserPath || '';
-  // 带认证代理：优先本地转发（可选）
-  config.proxy_prefer_local_forward = settings.proxyPreferLocalForward === true;
+  // 带认证代理：默认优先本地转发（settings 默认 true）
+  config.proxy_prefer_local_forward =
+    settings.proxyPreferLocalForward === undefined
+      ? true
+      : settings.proxyPreferLocalForward === true;
 
   config.random_fingerprint =
     settings.randomFingerprint === undefined ? true : !!settings.randomFingerprint;

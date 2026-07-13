@@ -115,7 +115,15 @@ def create_proxy_auth_extension(
     pwd = parsed["password"]
 
     # chrome.proxy 的 scheme: http | https | socks4 | socks5 | quic
-    proxy_scheme = scheme if scheme in ("http", "https", "socks4", "socks5", "quic") else "http"
+    # socks4a → socks4；socks / socks5h → socks5
+    if scheme in ("socks", "socks5h"):
+        proxy_scheme = "socks5"
+    elif scheme in ("socks4a",):
+        proxy_scheme = "socks4"
+    elif scheme in ("http", "https", "socks4", "socks5", "quic"):
+        proxy_scheme = scheme
+    else:
+        proxy_scheme = "http"
 
     background_js = f"""
 // Auto-generated proxy auth extension — do not edit
@@ -240,30 +248,64 @@ def apply_proxy_to_chromium_options(
                 "fallback_reason": reason,
             }
 
-    # 配置强制本地转发，或环境变量 PROXY_AUTH_MODE=local
+    # 有认证：绝不能 co.set_proxy(user:pass)（DrissionPage 会丢弃并直连）。
+    # 策略：prefer_local_forward / PROXY_AUTH_MODE 控制先后；默认本地转发更稳。
     env_mode = (os.environ.get("PROXY_AUTH_MODE") or "").strip().lower()
-    if prefer_local_forward or env_mode in ("local", "forward", "local_forward"):
-        return _try_local_forward("prefer_local_forward")
+    force_ext = env_mode in ("extension", "ext", "mv3")
+    force_local = prefer_local_forward or env_mode in (
+        "local",
+        "forward",
+        "local_forward",
+    )
 
-    # 有认证：先试扩展
-    try:
+    def _try_extension() -> dict[str, Any]:
         try:
-            co.set_proxy("")
-        except Exception:
             try:
-                co.remove_argument("--proxy-server")
+                co.set_proxy("")
             except Exception:
-                pass
-        ext_path, p = create_proxy_auth_extension(proxy_url, parent_dir=work_dir)
-        co.add_extension(ext_path)
-        return {
-            "mode": "auth_extension",
-            "path": ext_path,
-            "parsed": p,
-            "proxy": f"{p['scheme']}://{p['username']}:***@{p['host']}:{p['port']}",
-            # 供调用方在出口 IP 探测失败时 fallback
-            "upstream_url": proxy_url,
-            "can_fallback_local": True,
-        }
-    except Exception as e:
-        return _try_local_forward(f"extension_error:{e}")
+                try:
+                    co.remove_argument("--proxy-server")
+                except Exception:
+                    pass
+            ext_path, p = create_proxy_auth_extension(proxy_url, parent_dir=work_dir)
+            co.add_extension(ext_path)
+            return {
+                "mode": "auth_extension",
+                "path": ext_path,
+                "parsed": p,
+                "proxy": f"{p['scheme']}://{p['username']}:***@{p['host']}:{p['port']}",
+                "upstream_url": proxy_url,
+                "can_fallback_local": True,
+            }
+        except Exception as e:
+            return {
+                "mode": "error",
+                "error": str(e),
+                "parsed": parsed,
+                "upstream_url": proxy_url,
+                "can_fallback_local": True,
+            }
+
+    if force_ext:
+        r = _try_extension()
+        if r.get("mode") == "auth_extension":
+            return r
+        print(f"[Warn] 认证扩展失败，改试本地转发: {r.get('error')}")
+        return _try_local_forward(f"extension_error:{r.get('error')}")
+
+    if force_local:
+        r = _try_local_forward("prefer_local_forward")
+        if r.get("mode") == "local_forward":
+            return r
+        print(f"[Warn] 本地转发失败，改试认证扩展: {r.get('error')}")
+        r2 = _try_extension()
+        if r2.get("mode") == "auth_extension":
+            return r2
+        return r
+
+    # 默认（prefer_local_forward=False）：扩展 → 本地
+    r = _try_extension()
+    if r.get("mode") == "auth_extension":
+        return r
+    print(f"[Warn] 认证扩展失败，改试本地转发: {r.get('error')}")
+    return _try_local_forward(f"extension_error:{r.get('error')}")

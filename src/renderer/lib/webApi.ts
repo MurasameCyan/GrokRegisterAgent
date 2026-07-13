@@ -22,6 +22,15 @@ async function http<T>(method: string, path: string, body?: unknown): Promise<T>
     } catch {
       /* ignore */
     }
+    // Cloudflare 524 等会返回整页 HTML，避免把巨型 body 塞进 Error
+    if (res.status === 524) {
+      throw new Error(
+        `${method} ${path} → HTTP 524 源站超时（测活块过大或过慢；已请用分块测活）`
+      );
+    }
+    if (detail.length > 240 || /<!DOCTYPE html/i.test(detail)) {
+      detail = detail.replace(/\s+/g, ' ').slice(0, 180) + '…';
+    }
     throw new Error(`${method} ${path} → HTTP ${res.status}: ${detail}`);
   }
   if (res.status === 204) return undefined as T;
@@ -164,7 +173,8 @@ const webApi: RendererApi = {
   testProxyBatch: (input) =>
     http('POST', '/api/test/proxy-batch', {
       proxies: input.proxies,
-      concurrency: input.concurrency
+      concurrency: input.concurrency,
+      timeoutMs: input.timeoutMs
     }),
 
   getSystemHealth: () => http('GET', '/api/system/health'),

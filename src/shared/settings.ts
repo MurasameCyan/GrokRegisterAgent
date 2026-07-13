@@ -103,7 +103,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   proxyMode: 'round_robin',
   proxyProbeConcurrency: 8,
   proxyAutoSaveOnRemoveFailed: false,
-  proxyPreferLocalForward: false,
+  /** 默认开：带密码代理走本地转发，避免 DrissionPage set_proxy 丢弃凭据 */
+  proxyPreferLocalForward: true,
   browserProxy: '',
   browserPath: '',
   randomFingerprint: true,

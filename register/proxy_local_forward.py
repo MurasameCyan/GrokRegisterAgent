@@ -163,6 +163,14 @@ def start_local_forward(upstream_proxy_url: str) -> dict[str, Any]:
     if not parsed.get("has_auth"):
         return {"ok": False, "error": "上游无认证，无需本地转发"}
     scheme = (parsed.get("scheme") or "http").lower()
+    if scheme in ("socks", "socks5h", "socks4", "socks4a", "socks5"):
+        return {
+            "ok": False,
+            "error": (
+                f"本地 HTTP 转发不支持 SOCKS 上游({scheme})；"
+                "浏览器侧请用认证扩展(scheme=socks5/socks4)，测活已支持 SOCKS"
+            ),
+        }
     if scheme not in ("http", "https"):
         return {
             "ok": False,
@@ -220,9 +228,9 @@ def verify_exit_ip(
 ) -> dict[str, Any]:
     """
     经代理（或直连）访问 api.ipify.org，返回出口 IP。
+    支持 http(s)/socks4/socks5 + user:pass（SOCKS 需 PySocks）。
     proxy_url 空 = 直连。
     """
-    import urllib.error
     import urllib.request
 
     url = "https://api.ipify.org?format=json"
@@ -230,20 +238,71 @@ def verify_exit_ip(
     if proxy_url:
         p = parse_proxy_url(proxy_url)
         if p:
-            if p.get("has_auth"):
-                # urllib 支持 user:pass@host
-                proxy_handler_url = (
-                    f"{p['scheme']}://{p['username']}:{p['password']}"
-                    f"@{p['host']}:{p['port']}"
-                )
+            scheme = (p.get("scheme") or "http").lower()
+            if scheme in ("socks", "socks5h"):
+                scheme = "socks5"
+            if scheme in ("socks4", "socks4a", "socks5"):
+                # 使用 PySocks 的 sockshandler
+                try:
+                    import socks  # type: ignore  # noqa: F401
+                    from urllib.request import build_opener
+
+                    # requests 风格：通过 ProxyHandler 不一定支持 socks；用 pysocks 全局或 sockshandler
+                    try:
+                        from sockshandler import SocksiPyHandler  # type: ignore
+
+                        socks_type = (
+                            socks.SOCKS5
+                            if scheme.startswith("socks5")
+                            else socks.SOCKS4
+                        )
+                        handlers.append(
+                            SocksiPyHandler(
+                                socks_type,
+                                p["host"],
+                                int(p["port"]),
+                                username=p.get("username") or None,
+                                password=p.get("password") or None,
+                            )
+                        )
+                    except Exception:
+                        # 回退：设置默认 proxy 环境（进程级，测完清）
+                        import socks as _socks
+
+                        _socks.set_default_proxy(
+                            _socks.SOCKS5 if scheme.startswith("socks5") else _socks.SOCKS4,
+                            p["host"],
+                            int(p["port"]),
+                            username=p.get("username") or None,
+                            password=p.get("password") or None,
+                        )
+                        # monkeypatch socket — 仅用于本探测，结束后重置
+                        _socks.wrapmodule(urllib.request)
+                except Exception as e:
+                    return {
+                        "ok": False,
+                        "ip": "",
+                        "error": f"SOCKS 探测需要 PySocks: {e}",
+                        "via": proxy_url,
+                    }
             else:
-                proxy_handler_url = f"{p['scheme']}://{p['host']}:{p['port']}"
-            handlers.append(
-                urllib.request.ProxyHandler(
-                    {"http": proxy_handler_url, "https": proxy_handler_url}
+                if p.get("has_auth"):
+                    proxy_handler_url = (
+                        f"{scheme}://{p['username']}:{p['password']}"
+                        f"@{p['host']}:{p['port']}"
+                    )
+                else:
+                    proxy_handler_url = f"{scheme}://{p['host']}:{p['port']}"
+                handlers.append(
+                    urllib.request.ProxyHandler(
+                        {"http": proxy_handler_url, "https": proxy_handler_url}
+                    )
                 )
-            )
-    opener = urllib.request.build_opener(*handlers) if handlers else urllib.request.build_opener()
+    opener = (
+        urllib.request.build_opener(*handlers)
+        if handlers
+        else urllib.request.build_opener()
+    )
     req = urllib.request.Request(url, headers={"User-Agent": "grok-register-agent/ip-check"})
     try:
         with opener.open(req, timeout=timeout) as resp:

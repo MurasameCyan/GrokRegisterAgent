@@ -2,3 +2,5 @@ DrissionPage==4.1.0.9
 curl_cffi>=0.7.0
 requests>=2.32.0
 pyvirtualdisplay>=3.0
+# HTTP/SOCKS 代理测活与 urllib 出网（带 user:pass）
+PySocks>=1.7.1

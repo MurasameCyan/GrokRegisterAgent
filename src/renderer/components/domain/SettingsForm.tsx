@@ -308,39 +308,80 @@ export function SettingsForm() {
     const loadingMap: Record<string, ProxyProbeUi> = {};
     for (const e of proxyPoolEntries) loadingMap[e.proxy] = { status: 'loading' };
     setProxyProbes((prev) => ({ ...prev, ...loadingMap }));
+
+    // 分块测活：避免一次 200+ 条卡死反代（Cloudflare 524 ~100s）
+    const CHUNK = 24;
+    const conc = Math.max(1, Math.min(12, Number(draft.proxyProbeConcurrency) || 8));
+    const timeoutMs = 6000;
+    const proxies = proxyPoolEntries.map((e) => e.proxy);
+    let totalOk = 0;
+    let totalFail = 0;
+    let hardError: string | null = null;
+
     try {
-      const proxies = proxyPoolEntries.map((e) => e.proxy);
-      const conc = Math.max(
-        1,
-        Math.min(20, Number(draft.proxyProbeConcurrency) || 8)
-      );
-      const batch = await window.api.testProxyBatch({
-        proxies,
-        concurrency: conc
-      });
-      // 服务端 results 与请求 proxies 同序
-      setProxyProbes((prev) => {
-        const next = { ...prev };
-        for (let i = 0; i < proxies.length; i++) {
-          const proxy = proxies[i];
-          const r = batch.results[i];
-          next[proxy] = {
-            status: r?.ok ? 'ok' : 'fail',
-            message: r?.message || (r?.ok ? 'OK' : '失败')
-          };
+      for (let offset = 0; offset < proxies.length; offset += CHUNK) {
+        const chunk = proxies.slice(offset, offset + CHUNK);
+        const chunkNo = Math.floor(offset / CHUNK) + 1;
+        const chunkTotal = Math.ceil(proxies.length / CHUNK);
+        try {
+          const batch = await window.api.testProxyBatch({
+            proxies: chunk,
+            concurrency: conc,
+            timeoutMs
+          });
+          setProxyProbes((prev) => {
+            const next = { ...prev };
+            for (let i = 0; i < chunk.length; i++) {
+              const proxy = chunk[i];
+              const r = batch.results[i];
+              next[proxy] = {
+                status: r?.ok ? 'ok' : 'fail',
+                message: r?.message || (r?.ok ? 'OK' : '失败')
+              };
+            }
+            return next;
+          });
+          totalOk += batch.ok || 0;
+          totalFail += batch.fail || 0;
+          // 进度 toast 每 3 块或最后一块
+          if (chunkNo === chunkTotal || chunkNo % 3 === 0) {
+            push({
+              tone: 'ok',
+              title: `测活进度 ${chunkNo}/${chunkTotal}`,
+              description: `已完成 ${Math.min(offset + chunk.length, proxies.length)}/${proxies.length} · 成功 ${totalOk} · 失败 ${totalFail}`
+            });
+          }
+        } catch (err) {
+          // 单块失败：该块全部标 fail，继续下一块
+          const msg = String(err);
+          hardError = msg;
+          setProxyProbes((prev) => {
+            const next = { ...prev };
+            for (const proxy of chunk) {
+              next[proxy] = {
+                status: 'fail',
+                message: msg.includes('524')
+                  ? '请求超时(524)，已跳过本块'
+                  : msg.slice(0, 120)
+              };
+            }
+            return next;
+          });
+          totalFail += chunk.length;
         }
-        return next;
-      });
+      }
       push({
-        tone: batch.fail > 0 ? 'warn' : 'ok',
+        tone: totalFail > 0 ? 'warn' : 'ok',
         title: '代理池测活完成',
-        description: `共 ${batch.total} · 成功 ${batch.ok} · 失败 ${batch.fail}（并发 ${batch.concurrency}）`
+        description: `共 ${proxies.length} · 成功 ${totalOk} · 失败 ${totalFail}（分块 ${CHUNK} · 并发 ${conc}${hardError ? ' · 含块错误' : ''}）`
       });
     } catch (err) {
       setProxyProbes((prev) => {
         const next = { ...prev };
         for (const e of proxyPoolEntries) {
-          next[e.proxy] = { status: 'fail', message: String(err) };
+          if (next[e.proxy]?.status === 'loading') {
+            next[e.proxy] = { status: 'fail', message: String(err) };
+          }
         }
         return next;
       });
@@ -557,7 +598,7 @@ export function SettingsForm() {
                   <div className="lg:col-span-2">
                     <Field
                       label="代理池"
-                      hint="每行一条；支持行尾 #备注，保存时自动剥离。例：http://user:pass@ip:port#香港-02"
+                      hint="每行一条；支持 http/https/socks4/socks5 + 账号密码；行尾 #备注。例：socks5://u:p@ip:port#香港-02"
                       error={errors.proxyPool}
                     >
                       <textarea

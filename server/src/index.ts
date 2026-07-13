@@ -302,8 +302,11 @@ app.post('/api/test/proxy', async (req, res) => {
   }
 });
 
-/** 代理池批量并发测活 */
+/** 代理池批量并发测活（单次建议 ≤48 条；大批量由前端分块，避免 CF 524） */
 app.post('/api/test/proxy-batch', async (req, res) => {
+  // 防止反代/客户端过早断开时 Node 仍傻等
+  req.setTimeout(90_000);
+  res.setTimeout(90_000);
   try {
     const raw = req.body?.proxies;
     const proxies = Array.isArray(raw)
@@ -315,14 +318,17 @@ app.post('/api/test/proxy-batch', async (req, res) => {
         ok: 0,
         fail: 0,
         concurrency: 0,
+        timeoutMs: 0,
         results: [],
         message: 'proxies 为空'
       });
     }
     const concurrency = Number(req.body?.concurrency);
+    const timeoutMs = Number(req.body?.timeoutMs);
     const result = await probeProxyBatch(
       proxies,
-      Number.isFinite(concurrency) ? concurrency : 8
+      Number.isFinite(concurrency) ? concurrency : 8,
+      Number.isFinite(timeoutMs) ? timeoutMs : 6000
     );
     return res.json(result);
   } catch (e: any) {
@@ -331,6 +337,7 @@ app.post('/api/test/proxy-batch', async (req, res) => {
       ok: 0,
       fail: 0,
       concurrency: 0,
+      timeoutMs: 0,
       results: [],
       message: `批量测活异常: ${e?.message || e}`
     });

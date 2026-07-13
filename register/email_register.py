@@ -183,22 +183,29 @@ def create_temp_email() -> Tuple[str, str, str]:
     session, use_cffi = _create_session()
     create_url = f"{MAIL_API_BASE}/admin/new_address"
     print(f"[*] 邮件 API: {MAIL_API_BASE} → POST /admin/new_address")
+    print(f"[*] email_register build: pool-idx+domain-log")
 
     # 域名池状态（便于确认轮换是否生效）
     try:
         from pools import peek_status as _peek_mail_pools
 
         _st = _peek_mail_pools()
-        _doms = _st.get("domains") or []
+        _doms = list(_st.get("domains") or [])
+        _idx = _st.get("domain_idx", "?")
         if _doms:
             print(
                 f"[*] 邮箱域名池: {len(_doms)} 个 mode={_st.get('domain_mode') or '?'} "
-                f"→ {', '.join(_doms[:8])}{'…' if len(_doms) > 8 else ''}"
+                f"next_idx={_idx} → {', '.join(_doms[:8])}{'…' if len(_doms) > 8 else ''}"
             )
         else:
-            print(f"[*] 邮箱域名: 单域名 {MAIL_DOMAIN or '(未设置)'}（未配置 mail_domains 池）")
-    except Exception:
-        pass
+            # 再直接读 config 一眼，避免 pools 未加载
+            _raw_pool = _conf.get("mail_domains") or _conf.get("mail_domain_pool")
+            print(
+                f"[*] 邮箱域名: 单域名 {MAIL_DOMAIN or '(未设置)'} "
+                f"（config.mail_domains={_raw_pool!r}）"
+            )
+    except Exception as e:
+        print(f"[Warn] 域名池状态读取失败: {e}")
 
     last_err = ""
     for _ in range(5):
