@@ -28,6 +28,8 @@ ENV NODE_ENV=production \
 
 WORKDIR /app
 
+# chromium + xvfb：无 GUI 下用“有头 Chrome + 虚拟显示”过 Turnstile
+# 附带字体/GL 相关库，减少 canvas/WebGL 指纹残缺
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       chromium \
@@ -35,6 +37,19 @@ RUN apt-get update \
       ca-certificates \
       dumb-init \
       fonts-noto-cjk \
+      fonts-liberation \
+      fonts-dejavu-core \
+      libnss3 \
+      libatk-bridge2.0-0 \
+      libgtk-3-0 \
+      libx11-xcb1 \
+      libxcomposite1 \
+      libxdamage1 \
+      libxrandr2 \
+      libgbm1 \
+      libasound2 \
+      libpangocairo-1.0-0 \
+      libxshmfence1 \
  && rm -rf /var/lib/apt/lists/*
 
 # 内置 Python 注册机及其依赖(DrissionPage / curl_cffi / requests)

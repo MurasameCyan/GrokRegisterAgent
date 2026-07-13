@@ -83,27 +83,122 @@ def warn_runtime_compatibility():
 ensure_stable_python_runtime()
 warn_runtime_compatibility()
 
-# 仅在 Linux 无头服务器自动启用 Xvfb 虚拟显示器
+# ------------------------------------------------------------
+# Linux 无 GUI 服务器：强制 Xvfb 有头模式（不要用 Chrome headless）
+# Turnstile 在 headless / 无 WebGL 环境下几乎必出 failure 反馈页。
+# ------------------------------------------------------------
+import shutil
+import glob as _glob_mod
+
 _virtual_display = None
-if platform.system() == "Linux" and (not os.environ.get("DISPLAY") or os.environ.get("USE_XVFB") == "1"):
+_IS_LINUX = platform.system() == "Linux"
+_WINDOW_W, _WINDOW_H = 1920, 1080
+
+
+def _display_is_usable(display: str) -> bool:
+    """粗检 DISPLAY 是否可用（Xvfb/真实 X 是否在听）。"""
+    if not display:
+        return False
+    # 允许 :99 或 localhost:99.0
+    name = display.split("/")[-1]
+    if name.startswith(":"):
+        try:
+            num = int(name[1:].split(".")[0])
+        except Exception:
+            return False
+        sock = f"/tmp/.X11-unix/X{num}"
+        return os.path.exists(sock)
+    return True
+
+
+def _ensure_virtual_display():
+    """
+    无 GUI Linux：确保有可用 DISPLAY。
+    - 已有可用 DISPLAY（如 docker entrypoint 起的 Xvfb）则复用
+    - 否则用 pyvirtualdisplay / 直接 Xvfb 拉起
+    """
+    global _virtual_display
+    if not _IS_LINUX:
+        return
+
+    force_xvfb = os.environ.get("USE_XVFB", "").strip() in ("1", "true", "yes")
+    current = (os.environ.get("DISPLAY") or "").strip()
+    if current and _display_is_usable(current) and not force_xvfb:
+        print(f"[*] 复用已有 DISPLAY={current}（无 GUI 服务器 / Xvfb）")
+        return
+
+    # 已设置但不可用：清掉后重建
+    if current and not _display_is_usable(current):
+        print(f"[Warn] DISPLAY={current} 不可用，将重新启动 Xvfb")
+        os.environ.pop("DISPLAY", None)
+
     try:
         from pyvirtualdisplay import Display
-        _virtual_display = Display(visible=0, size=(1920, 1080))
+        _virtual_display = Display(visible=0, size=(_WINDOW_W, _WINDOW_H), color_depth=24)
         _virtual_display.start()
-        print(f"[*] Xvfb 虚拟显示器已启动: {os.environ.get('DISPLAY')}")
+        print(f"[*] Xvfb 虚拟显示器已启动: DISPLAY={os.environ.get('DISPLAY')} size={_WINDOW_W}x{_WINDOW_H}")
+        return
     except Exception as e:
-        print(f"[Warn] Xvfb 启动失败: {e}，将尝试直接运行")
+        print(f"[Warn] pyvirtualdisplay 启动失败: {e}")
+
+    # 兜底：系统 Xvfb 命令
+    try:
+        import subprocess
+        disp = os.environ.get("XVFB_DISPLAY", ":99")
+        # 若占用则换号
+        for n in range(99, 120):
+            cand = f":{n}"
+            if not _display_is_usable(cand):
+                disp = cand
+                break
+        log_path = "/tmp/grok_xvfb.log"
+        subprocess.Popen(
+            ["Xvfb", disp, "-screen", "0", f"{_WINDOW_W}x{_WINDOW_H}x24", "-ac", "+extension", "GLX", "+render", "-noreset"],
+            stdout=open(log_path, "a", encoding="utf-8"),
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        time.sleep(0.6)
+        os.environ["DISPLAY"] = disp
+        if _display_is_usable(disp):
+            print(f"[*] 系统 Xvfb 已启动: DISPLAY={disp}（日志 {log_path}）")
+        else:
+            print(f"[Warn] Xvfb 已拉起但 socket 未就绪: DISPLAY={disp}")
+    except Exception as e:
+        print(f"[Warn] Xvfb 启动失败: {e}。无 DISPLAY 时 Chrome 可能无法过 Turnstile。")
+
+
+_ensure_virtual_display()
 
 co = ChromiumOptions()
 co.auto_port()
+# 明确有头模式：Xvfb 下跑“真窗口”，不要 headless=new
+try:
+    co.headless(False)
+except Exception:
+    pass
 co.set_argument("--no-sandbox")
 co.set_argument("--disable-dev-shm-usage")
-# 避免过度关闭 GPU/光栅化：Turnstile 会读 WebGL/canvas 指纹，硬关 GPU 反而更像机器人。
-# 仅在 Linux 无显示环境保留 disable-gpu，Windows 有头模式不设置。
-if platform.system() == "Linux" and (not os.environ.get("DISPLAY") or os.environ.get("USE_XVFB") == "1"):
-    co.set_argument("--disable-gpu")
+co.set_argument(f"--window-size={_WINDOW_W},{_WINDOW_H}")
+co.set_argument("--window-position=0,0")
 co.set_argument("--disable-blink-features=AutomationControlled")
 co.set_argument("--lang=en-US,en")
+co.set_argument("--accept-lang=en-US,en")
+# 无 GPU 服务器：用软件 GL，保留 canvas/WebGL 能力（Turnstile 会读这些）
+# 切勿只 disable-gpu 却不给 swiftshader，否则指纹残缺极易 failure
+if _IS_LINUX:
+    co.set_argument("--disable-gpu-compositing")
+    # angle/swiftshader 在不同 chromium 版本上可用性不一，多写几个兼容
+    co.set_argument("--use-gl=angle")
+    co.set_argument("--use-angle=swiftshader-webgl")
+    co.set_argument("--enable-webgl")
+    co.set_argument("--ignore-gpu-blocklist")
+    co.set_argument("--enable-features=NetworkService,NetworkServiceInProcess")
+    # 无音频设备时减少报错噪音
+    co.set_argument("--mute-audio")
+    co.set_argument("--disable-background-networking")
+    co.set_argument("--no-first-run")
+    co.set_argument("--no-default-browser-check")
 try:
     co.set_pref("credentials_enable_service", False)
     co.set_pref("profile.password_manager_enabled", False)
@@ -130,27 +225,46 @@ if _browser_path_cfg and os.path.isfile(_browser_path_cfg):
     co.set_browser_path(_browser_path_cfg)
     print(f"[*] 浏览器路径: {_browser_path_cfg}")
 
-# Linux 服务器自动检测 chromium 路径
-import platform
-import shutil
-import glob as _glob_mod
-if platform.system() == "Linux":
-    # 优先用 playwright 装的 chromium（无 AppArmor 限制）
-    _pw_chromes = _glob_mod.glob(os.path.expanduser("~/.cache/ms-playwright/chromium-*/chrome-linux*/chrome"))
-    if _pw_chromes:
-        co.set_browser_path(_pw_chromes[0])
+# Linux 服务器自动检测 chrome/chromium 路径
+# 优先 google-chrome（指纹更接近真实用户），再系统 chromium，再 playwright
+if _IS_LINUX and not (_browser_path_cfg and os.path.isfile(_browser_path_cfg)):
+    _linux_candidates = [
+        "/usr/bin/google-chrome-stable",
+        "/usr/bin/google-chrome",
+        "/opt/google/chrome/chrome",
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+        "/snap/bin/chromium",
+    ]
+    _pw_chromes = sorted(
+        _glob_mod.glob(os.path.expanduser("~/.cache/ms-playwright/chromium-*/chrome-linux*/chrome")),
+        reverse=True,
+    )
+    _picked = ""
+    for _candidate in _linux_candidates + _pw_chromes:
+        if _candidate and os.path.isfile(_candidate) and os.access(_candidate, os.X_OK):
+            _picked = _candidate
+            break
+    if _picked:
+        co.set_browser_path(_picked)
+        print(f"[*] Linux 浏览器: {_picked}")
     else:
-        for _candidate in ["/usr/bin/chromium-browser", "/usr/bin/chromium", "/usr/bin/google-chrome"]:
-            if os.path.isfile(_candidate):
-                co.set_browser_path(_candidate)
-                break
-    # user_data_path 在 start_browser() 每轮动态设置，此处不固定
+        print("[Warn] 未找到 chrome/chromium，将使用 DrissionPage 默认路径")
 
 co.set_timeouts(base=1)
 
-# 加载修复 MouseEvent.screenX / screenY 的扩展。
+# 加载修复 MouseEvent.screenX / screenY 的扩展（需要非 headless + 可加载 extension）
 EXTENSION_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "turnstilePatch"))
-co.add_extension(EXTENSION_PATH)
+if os.path.isdir(EXTENSION_PATH):
+    co.add_extension(EXTENSION_PATH)
+    print(f"[*] 已加载 Turnstile 扩展: {EXTENSION_PATH}")
+else:
+    print(f"[Warn] Turnstile 扩展目录不存在: {EXTENSION_PATH}")
+
+print(
+    f"[*] 运行环境: system={platform.system()} DISPLAY={os.environ.get('DISPLAY', '')!r} "
+    f"window={_WINDOW_W}x{_WINDOW_H} headless=False"
+)
 
 _chrome_temp_dir: str = ""
 browser = None
@@ -208,15 +322,182 @@ try { Object.defineProperty(navigator, 'webdriver', { get: () => undefined }); }
         pass
 
 
+def _probe_browser_version() -> str:
+    """读取已配置/正在使用的 chrome 路径版本号。"""
+    path = ""
+    try:
+        path = str(getattr(co, "browser_path", "") or "")
+    except Exception:
+        path = ""
+    if not path:
+        # DrissionPage 不同版本字段名可能不同
+        for attr in ("_browser_path", "browser_path"):
+            try:
+                path = str(getattr(co, attr, "") or "")
+            except Exception:
+                continue
+            if path:
+                break
+    if not path or not os.path.isfile(path):
+        for cand in (
+            "/usr/bin/google-chrome-stable",
+            "/usr/bin/google-chrome",
+            "/usr/bin/chromium",
+            "/usr/bin/chromium-browser",
+        ):
+            if os.path.isfile(cand):
+                path = cand
+                break
+    if not path:
+        return "unknown"
+    try:
+        import subprocess
+        out = subprocess.check_output([path, "--version"], stderr=subprocess.STDOUT, timeout=8)
+        return f"{path} | {out.decode('utf-8', 'replace').strip()}"
+    except Exception as e:
+        return f"{path} | version-fail:{e}"
+
+
+def _probe_webgl_and_ua(tab) -> dict:
+    """在浏览器内探测 UA / 平台 / WebGL，用于判断 ARM 无 GUI 指纹是否残缺。"""
+    try:
+        return tab.run_js(
+            r"""
+const nav = {
+  userAgent: navigator.userAgent || '',
+  platform: navigator.platform || '',
+  webdriver: navigator.webdriver,
+  languages: navigator.languages || [],
+  hardwareConcurrency: navigator.hardwareConcurrency || 0,
+  deviceMemory: navigator.deviceMemory || null,
+  maxTouchPoints: navigator.maxTouchPoints || 0,
+};
+let webgl = { ok: false };
+try {
+  const canvas = document.createElement('canvas');
+  const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+  if (!gl) {
+    webgl = { ok: false, error: 'no-webgl-context' };
+  } else {
+    const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+    webgl = {
+      ok: true,
+      vendor: gl.getParameter(gl.VENDOR) || '',
+      renderer: gl.getParameter(gl.RENDERER) || '',
+      unmaskedVendor: dbg ? (gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) || '') : '',
+      unmaskedRenderer: dbg ? (gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) || '') : '',
+      version: gl.getParameter(gl.VERSION) || '',
+    };
+  }
+} catch (e) {
+  webgl = { ok: false, error: String(e) };
+}
+return {
+  nav,
+  webgl,
+  screen: {
+    width: screen.width,
+    height: screen.height,
+    availWidth: screen.availWidth,
+    availHeight: screen.availHeight,
+    colorDepth: screen.colorDepth,
+    devicePixelRatio: window.devicePixelRatio || 1,
+  },
+  displayEnv: '',
+};
+            """
+        ) or {}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def log_runtime_fingerprint(tab=None, force: bool = False):
+    """
+    打印架构 / 浏览器版本 / WebGL 探测，方便确认 ARM 无 GUI 环境是否可用。
+    默认每个进程只详打一次，避免每轮刷屏。
+    """
+    global _fingerprint_logged
+    if _fingerprint_logged and not force:
+        return
+    target = tab or page
+    machine = platform.machine() or "?"
+    arch_hint = ""
+    if machine.lower() in ("aarch64", "arm64", "armv8l", "armv7l"):
+        arch_hint = "ARM 风险：Turnstile 更容易给 failure，优先考虑 x86_64 worker"
+    elif machine.lower() in ("x86_64", "amd64"):
+        arch_hint = "x86_64 相对更友好"
+    print(f"[*] 指纹探测 machine={machine} | {arch_hint}")
+    print(f"[*] 浏览器版本: {_probe_browser_version()}")
+    print(
+        f"[*] DISPLAY={os.environ.get('DISPLAY', '')!r} "
+        f"XDG_SESSION_TYPE={os.environ.get('XDG_SESSION_TYPE', '')!r} "
+        f"WAYLAND_DISPLAY={os.environ.get('WAYLAND_DISPLAY', '')!r}"
+    )
+    if target is None:
+        print("[Warn] 浏览器未就绪，跳过 WebGL/UA 探测")
+        return
+    info = _probe_webgl_and_ua(target)
+    if info.get("error"):
+        print(f"[Warn] WebGL/UA 探测失败: {info['error']}")
+        _fingerprint_logged = True
+        return
+    nav = info.get("nav") or {}
+    webgl = info.get("webgl") or {}
+    scr = info.get("screen") or {}
+    print(
+        f"[*] UA: {nav.get('userAgent', '')}"
+    )
+    print(
+        f"[*] platform={nav.get('platform')!r} webdriver={nav.get('webdriver')!r} "
+        f"hw={nav.get('hardwareConcurrency')} mem={nav.get('deviceMemory')} "
+        f"langs={nav.get('languages')}"
+    )
+    print(
+        f"[*] screen={scr.get('width')}x{scr.get('height')} "
+        f"avail={scr.get('availWidth')}x{scr.get('availHeight')} "
+        f"depth={scr.get('colorDepth')} dpr={scr.get('devicePixelRatio')}"
+    )
+    if webgl.get("ok"):
+        print(
+            f"[*] WebGL OK vendor={webgl.get('vendor')!r} renderer={webgl.get('renderer')!r}"
+        )
+        print(
+            f"[*] WebGL unmasked vendor={webgl.get('unmaskedVendor')!r} "
+            f"renderer={webgl.get('unmaskedRenderer')!r} version={webgl.get('version')!r}"
+        )
+        renderer_l = str(webgl.get("unmaskedRenderer") or webgl.get("renderer") or "").lower()
+        if any(x in renderer_l for x in ("swiftshader", "llvmpipe", "softpipe", "software")):
+            print("[Warn] WebGL 为软件渲染（SwiftShader/llvmpipe）——无独显服务器常见，Turnstile 分可能偏低")
+        if machine.lower() in ("aarch64", "arm64") and "swiftshader" in renderer_l:
+            print("[Warn] ARM + 软件 WebGL：建议换 x86_64 跑注册机，或使用住宅代理降低 failure")
+    else:
+        print(f"[Warn] WebGL 不可用: {webgl} —— Turnstile 极易 failure，请检查 Xvfb/Chromium/GL 库")
+    _fingerprint_logged = True
+
+
 def start_browser():
     # 每轮从全新浏览器开始，使用独立临时 profile 目录避免 Cookie/Session 复用。
     global browser, page, _chrome_temp_dir
+    if _IS_LINUX:
+        _ensure_virtual_display()
     _chrome_temp_dir = tempfile.mkdtemp(prefix="chrome_run_")
     co.set_user_data_path(_chrome_temp_dir)
     browser = Chromium(co)
     tabs = browser.get_tabs()
     page = tabs[-1] if tabs else browser.new_tab()
+    try:
+        # 固定视口，保证 CDP 坐标点击与 Xvfb 分辨率一致
+        page.set.window.size(_WINDOW_W, _WINDOW_H)
+    except Exception:
+        try:
+            page.run_cdp("Browser.setWindowBounds", windowId=1, bounds={
+                "left": 0, "top": 0, "width": _WINDOW_W, "height": _WINDOW_H, "windowState": "normal"
+            })
+        except Exception:
+            pass
     _apply_stealth_patches(page)
+    # 进程内首次启动时打印架构/版本/WebGL，确认 ARM 无 GUI 环境
+    log_runtime_fingerprint(page, force=False)
     return browser, page
 
 
