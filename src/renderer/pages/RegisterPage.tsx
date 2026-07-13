@@ -45,10 +45,7 @@ export function RegisterPage({ onOpenSettings }: { onOpenSettings(): void }) {
       <div className="grid gap-4 lg:grid-cols-[1.3fr_0.9fr]">
         <section className="ios-group">
           <div className="flex items-center justify-between border-b border-border/70 px-4 py-3.5">
-            <div>
-              <p className="page-kicker">控制</p>
-              <h3 className="mt-0.5 text-[17px] font-semibold tracking-[-0.02em]">注册机</h3>
-            </div>
+            <h2 className="text-[20px] font-bold tracking-[-0.02em]">实时状态</h2>
             {running ? (
               <Button variant="danger" size="md" onClick={stop}>
                 <StopCircle className="h-4 w-4" />
@@ -172,7 +169,7 @@ function RuntimeSettingsPanel() {
           <div className="rounded-xl bg-muted/70 p-4">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <div className="field-label">Turnstile 自动等待上限</div>
+                <div className="field-label">人机验证自动等待上限</div>
                 <div className="mt-1 text-[12px] text-muted-foreground">
                   每次随机等待 30～{draft.turnstileAutoWaitMax ?? 60}s，再尝试点击
                 </div>

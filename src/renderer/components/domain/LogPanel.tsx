@@ -44,10 +44,7 @@ export function LogPanel() {
   return (
     <div className="ios-group flex h-[min(520px,60vh)] flex-col overflow-hidden">
       <div className="flex items-center justify-between border-b border-border/70 px-4 py-3.5">
-        <div>
-          <p className="page-kicker">输出</p>
-          <div className="mt-0.5 text-[17px] font-semibold tracking-[-0.02em]">实时日志</div>
-        </div>
+        <h2 className="text-[20px] font-bold tracking-[-0.02em]">实时日志</h2>
         <div className="flex flex-wrap items-center gap-2">
           <span className={cn('pill', autoScroll ? 'pill-ok' : 'pill-warn')}>
             {autoScroll ? '自动滚动' : '已暂停'}

@@ -2372,10 +2372,34 @@ return 'submitted';
     return False
 
 
-def send_chat_message(text: str = "你好", timeout: float = 20) -> bool:
-    """在 grok.com 输入框发送一条消息（用于触发生日/年龄门）。"""
+# 年龄门触发用的随机英文短句（避免固定「你好」）
+_AGE_GATE_TRIGGER_MESSAGES = (
+    "hi",
+    "hello",
+    "hey",
+    "hello there",
+    "hi there",
+    "good day",
+    "how are you",
+    "what's up",
+    "hey grok",
+    "hello world",
+    "good morning",
+    "good evening",
+    "yo",
+    "greetings",
+    "hi friend",
+)
+
+
+def _random_age_gate_message() -> str:
+    return secrets.choice(_AGE_GATE_TRIGGER_MESSAGES)
+
+
+def send_chat_message(text: str | None = None, timeout: float = 20) -> bool:
+    """在 grok.com 输入框发送一条消息（用于触发生日/年龄门）。默认随机英文。"""
     global page
-    msg = str(text or "你好").strip() or "你好"
+    msg = str(text or "").strip() or _random_age_gate_message()
     deadline = time.time() + timeout
     print(f"[*] 发送聊天消息以触发年龄门: {msg!r}")
 
@@ -2559,20 +2583,22 @@ return 'sent-enter';
 
 
 def ensure_age_gate_completed(
-    trigger_message: str = "你好",
+    trigger_message: str | None = None,
     timeout: float = 45,
 ) -> dict:
     """
     注册落到 grok.com 后：
       1) 若已有年龄弹窗 → 直接填随机成年出生年
-      2) 否则先发一条消息触发弹窗，再填写
+      2) 否则先发一条随机英文短消息触发弹窗，再填写
     失败不抛异常（避免拖死整轮注册），返回状态 dict。
     """
     global page
     birth_year = _random_adult_birth_year()
+    message = (trigger_message or "").strip() or _random_age_gate_message()
     status = {
         "attempted": True,
         "triggered_by_message": False,
+        "trigger_message": message,
         "age_gate_seen": False,
         "submitted": False,
         "birth_year": birth_year,
@@ -2589,8 +2615,8 @@ def ensure_age_gate_completed(
             status["submitted"] = fill_age_gate_and_submit(birth_year, timeout=min(25, deadline - time.time()))
             return status
 
-        # 发消息触发
-        sent = send_chat_message(trigger_message, timeout=min(20, max(5, deadline - time.time())))
+        # 发随机英文消息触发
+        sent = send_chat_message(message, timeout=min(20, max(5, deadline - time.time())))
         status["triggered_by_message"] = bool(sent)
 
         # 等待弹窗出现
