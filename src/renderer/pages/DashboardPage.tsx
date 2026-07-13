@@ -52,9 +52,9 @@ export function DashboardPage({ username }: { username: string }) {
 
   return (
     <div className="space-y-4">
-      <div className="grid gap-4 lg:grid-cols-[1.15fr_0.85fr] lg:items-start">
+      <div className="grid gap-4 lg:grid-cols-2 lg:items-stretch">
         {/* 左：精简概览 */}
-        <section className="welcome-card space-y-4 !p-4 sm:!p-5">
+        <section className="welcome-card flex h-full min-h-0 flex-col space-y-4 !p-4 sm:!p-5">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <p className="page-kicker">概览</p>
@@ -69,7 +69,7 @@ export function DashboardPage({ username }: { username: string }) {
             </span>
           </div>
 
-          <div className="grid grid-cols-2 gap-2.5">
+          <div className="grid flex-1 grid-cols-2 content-start gap-2.5">
             <MiniStat
               label="账号"
               value={String(accounts.length)}
@@ -87,8 +87,8 @@ export function DashboardPage({ username }: { username: string }) {
           <VersionBadge update={update} loading={updateLoading} onCheck={() => void loadUpdate()} />
         </section>
 
-        {/* 右：号池最近 */}
-        <section className="ios-group">
+        {/* 右：号池最近（与左侧同宽同高） */}
+        <section className="ios-group flex h-full min-h-0 flex-col">
           <div className="flex items-center justify-between border-b border-border/70 px-4 py-3">
             <div>
               <p className="page-kicker">号池</p>
@@ -96,7 +96,7 @@ export function DashboardPage({ username }: { username: string }) {
             </div>
             <span className="chip">{accounts.length} 账号</span>
           </div>
-          <div className="divide-y divide-border/70">
+          <div className="flex flex-1 flex-col justify-between divide-y divide-border/70">
             <InfoRow label="邮箱后端" value={settings?.mail.apiBase || '未配置'} />
             <InfoRow label="代理" value={settings?.proxy || '直接连接'} />
             <InfoRow label="最近账号" value={latest?.email || '暂无记录'} />
@@ -159,7 +159,7 @@ function MiniStat({
 
 function InfoRow({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex items-center gap-3 px-4 py-3">
+    <div className="flex min-h-[48px] flex-1 items-center gap-3 px-4 py-3">
       <span className="shrink-0 text-[13px] text-foreground">{label}</span>
       <span
         className="ml-auto max-w-[65%] truncate text-right text-[13px] text-muted-foreground"

@@ -1,5 +1,7 @@
 # 使用 GitHub Container Registry 预构建多架构镜像（linux/amd64 + linux/arm64）
-# 镜像：ghcr.io/murasamecyan/grokregisteragent:latest
+# 开发主线分支：beta
+# 镜像：ghcr.io/murasamecyan/grokregisteragent:beta
+#      （推送 beta 时 CI 同时打 latest 标签，可用 :latest 或 :beta）
 #
 # 快速启动：
 #   cp .env.example .env
@@ -13,10 +15,10 @@
 
 services:
   grok-agent:
-    # 默认拉 GHCR；需要自动同步 register 的新 entrypoint 时可本地构建：
+    # 默认拉 GHCR beta 线；需要自动同步 register 的新 entrypoint 时可本地构建：
     #   docker compose build --pull
     #   docker compose up -d
-    image: ghcr.io/murasamecyan/grokregisteragent:latest
+    image: ghcr.io/murasamecyan/grokregisteragent:beta
     build:
       context: .
       dockerfile: docker/Dockerfile

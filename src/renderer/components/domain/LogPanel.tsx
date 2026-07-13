@@ -85,12 +85,31 @@ export function LogPanel() {
                 })}
               </span>
               <span className={cn('whitespace-pre-wrap break-words', colorByLevel[l.level])}>
-                {l.text}
+                <LogText text={l.text} />
               </span>
             </div>
           ))
         )}
       </div>
     </div>
+  );
+}
+
+/** 汇总行：成功绿 / 失败红 / 共计蓝 */
+function LogText({ text }: { text: string }) {
+  const m = text.match(/成功:\s*(\d+)\s+失败:\s*(\d+)\s+共计:\s*(\d+)/);
+  if (!m) return <>{text}</>;
+  const before = text.slice(0, m.index);
+  const after = text.slice((m.index ?? 0) + m[0].length);
+  return (
+    <>
+      {before}
+      <span className="font-semibold text-ok">成功: {m[1]}</span>
+      <span className="text-muted-foreground">{'  '}</span>
+      <span className="font-semibold text-danger">失败: {m[2]}</span>
+      <span className="text-muted-foreground">{'  '}</span>
+      <span className="font-semibold text-info">共计: {m[3]}</span>
+      {after}
+    </>
   );
 }

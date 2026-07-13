@@ -2315,7 +2315,7 @@ def main():
         print(f"")
         print(f"══════════════════════════════════════")
         print(f"  注册机运行结束")
-        print(f"  成功: {success_count}  失败: {fail_count}  共计: {current_round}")
+        print(f"成功: {success_count}  失败: {fail_count}  共计: {current_round}")
         if collected_sso:
             print(f"  SSO 已保存到: {args.output}")
         print(f"══════════════════════════════════════")

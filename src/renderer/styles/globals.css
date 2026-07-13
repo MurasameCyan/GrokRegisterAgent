@@ -202,14 +202,17 @@
     @apply nav-logo;
   }
 
-  /* 站名：三行炫彩 */
+  /* 站名：三行炫彩（与 100px 图标视觉平衡） */
   .site-name {
     display: flex;
     flex-direction: column;
-    line-height: 1.05;
+    justify-content: center;
+    line-height: 1.12;
     font-weight: 800;
-    letter-spacing: -0.04em;
-    font-size: 13px;
+    letter-spacing: -0.045em;
+    font-size: 18px;
+    gap: 2px;
+    min-width: 0;
     font-family:
       ui-rounded,
       'SF Pro Rounded',
@@ -239,9 +242,10 @@
   }
 
   .site-name-lg {
-    font-size: 18px;
+    font-size: 26px;
     letter-spacing: -0.05em;
-    gap: 1px;
+    gap: 3px;
+    line-height: 1.1;
   }
 
   .nav-sub {

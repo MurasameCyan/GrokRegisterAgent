@@ -14,14 +14,15 @@
 
 ## 快速部署（GHCR 镜像，推荐）
 
-镜像：`ghcr.io/murasamecyan/grokregisteragent:latest`（由 `main` 分支与 `v*` 标签自动构建）。
+开发主线分支：**`beta`**。镜像：`ghcr.io/murasamecyan/grokregisteragent:beta`（推送 `beta` 时 CI 同步打 `latest`；`v*` 标签打 semver）。
 
 ```bash
-git clone https://github.com/MurasameCyan/GrokRegisterAgent.git
+git clone -b beta https://github.com/MurasameCyan/GrokRegisterAgent.git
 cd GrokRegisterAgent
 cp .env.example .env
 # 按需编辑 .env 中的邮件/代理等配置
 docker compose up -d
+# 默认拉取 :beta；也可在 docker-compose.yml 改用 :latest
 ```
 
 若 GHCR 包为私有，先登录：
@@ -81,9 +82,9 @@ docker compose up -d --build
 ## GitHub Actions 镜像
 
 - 工作流：[`.github/workflows/docker-multiarch.yml`](.github/workflows/docker-multiarch.yml)
-- 触发：`push` 到 `main`、tag `v*`、手动 `workflow_dispatch`
+- 触发：`push` 到 **`beta`**、tag `v*`、手动 `workflow_dispatch`
 - 平台：`linux/amd64`、`linux/arm64`
-- 标签：`latest`（默认分支）、分支名、semver、`sha-*`
+- 标签：`beta` + `latest`（推送 beta 时）、分支名、semver、`sha-*`
 
 ## 邮件后端配置
 

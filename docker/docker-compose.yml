@@ -12,7 +12,7 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-    image: grok-agent:latest
+    image: grok-agent:beta
     container_name: grok-agent
     restart: unless-stopped
     ports:
