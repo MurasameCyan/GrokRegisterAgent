@@ -98,3 +98,51 @@ export async function probeProxy(
     latencyMs: Date.now() - started
   };
 }
+
+/** 有限并发 map */
+async function mapPool<T, R>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const n = Math.max(1, Math.min(concurrency, items.length || 1));
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  async function runOne() {
+    while (true) {
+      const i = next++;
+      if (i >= items.length) return;
+      results[i] = await worker(items[i], i);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, () => runOne()));
+  return results;
+}
+
+/**
+ * 批量并发测活。
+ * @param proxies 代理 URL 列表（可含 #备注）
+ * @param concurrency 并发数，默认 8，上限 20
+ */
+export async function probeProxyBatch(
+  proxies: string[],
+  concurrency = 8,
+  timeoutMs = 12000
+): Promise<{
+  total: number;
+  ok: number;
+  fail: number;
+  concurrency: number;
+  results: ProxyProbeResult[];
+}> {
+  const list = (proxies || []).map((p) => String(p || '').trim()).filter(Boolean);
+  const conc = Math.max(1, Math.min(20, Math.floor(concurrency) || 8));
+  const results = await mapPool(list, conc, (proxy) => probeProxy(proxy, timeoutMs));
+  let ok = 0;
+  let fail = 0;
+  for (const r of results) {
+    if (r.ok) ok++;
+    else fail++;
+  }
+  return { total: list.length, ok, fail, concurrency: conc, results };
+}

@@ -161,6 +161,11 @@ const webApi: RendererApi = {
     http<TestResult & { exitIp?: string; latencyMs?: number }>('POST', '/api/test/proxy', {
       proxy
     }),
+  testProxyBatch: (input) =>
+    http('POST', '/api/test/proxy-batch', {
+      proxies: input.proxies,
+      concurrency: input.concurrency
+    }),
 
   getSystemHealth: () => http('GET', '/api/system/health'),
   checkUpdate: () => http('GET', '/api/system/update-check')

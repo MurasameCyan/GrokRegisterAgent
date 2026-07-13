@@ -178,6 +178,40 @@ export function parseProxyPool(raw?: string): string[] {
   return parseProxyPoolEntries(raw).map((e) => e.proxy);
 }
 
+/**
+ * 从代理池原文删除指定 proxy URL 对应行（按剥离 # 后的 URL 匹配）。
+ * 保留注释行与空行（仅删除命中的数据行）。
+ */
+export function removeProxiesFromPoolText(raw: string, proxiesToRemove: string[]): string {
+  const drop = new Set(
+    proxiesToRemove.map((p) => stripProxyComment(p) || String(p || '').trim()).filter(Boolean)
+  );
+  if (drop.size === 0) return raw;
+  const text = String(raw || '').replace(/\r\n/g, '\n');
+  const kept: string[] = [];
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      // 压缩连续空行：先收集，末尾再规整
+      kept.push('');
+      continue;
+    }
+    if (trimmed.startsWith('#')) {
+      kept.push(line);
+      continue;
+    }
+    const entry = parseProxyLine(line);
+    if (entry && drop.has(entry.proxy)) continue;
+    kept.push(line);
+  }
+  // 去掉首尾空行，合并中间多余空行
+  return kept
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/^\n+/, '')
+    .replace(/\n+$/, '');
+}
+
 /** 解析通用多行/逗号列表（域名等） */
 export function parseStringList(raw?: string): string[] {
   if (!raw || !String(raw).trim()) return [];

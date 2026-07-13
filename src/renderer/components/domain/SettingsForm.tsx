@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { Activity, Github, KeyRound, Loader2, Save, Shield } from 'lucide-react';
+import { Activity, Github, KeyRound, Loader2, Save, Shield, Trash2 } from 'lucide-react';
 import { Card, CardBody, CardHeader } from '@renderer/components/ui/Card';
 import { Button } from '@renderer/components/ui/Button';
 import { Input } from '@renderer/components/ui/Input';
@@ -9,8 +9,16 @@ import { ConnectionTestButton } from '@renderer/components/domain/ConnectionTest
 import { useSettingsStore } from '@renderer/store/settingsStore';
 import { useToastStore } from '@renderer/store/toastStore';
 import type { AppSettings, PoolMode, ProxyPoolEntry } from '@shared/settings';
-import { parseProxyPoolEntries, validateSettings } from '@shared/settings';
+import {
+  parseProxyPoolEntries,
+  removeProxiesFromPoolText,
+  stripProxyComment,
+  validateSettings
+} from '@shared/settings';
 import { cn } from '@renderer/lib/cn';
+
+/** 批量测活默认并发 */
+const PROXY_PROBE_CONCURRENCY = 8;
 
 const TEXTAREA_CLASS =
   'flex min-h-[96px] w-full rounded-[12px] border border-input bg-muted/60 px-3.5 py-2.5 text-[14px] leading-5 tracking-[-0.01em] transition-colors placeholder:text-muted-foreground/70 focus-visible:border-primary/40 focus-visible:bg-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30 disabled:cursor-not-allowed disabled:opacity-50';
@@ -111,14 +119,20 @@ function ProxyPoolPreview({
   entries,
   probes,
   probingKey,
+  failCount,
   onProbeOne,
-  onProbeAll
+  onProbeAll,
+  onRemoveFailed,
+  onRemoveOne
 }: {
   entries: ProxyPoolEntry[];
   probes: Record<string, ProxyProbeUi>;
   probingKey: string | null;
+  failCount: number;
   onProbeOne: (proxy: string) => void;
   onProbeAll: () => void;
+  onRemoveFailed: () => void;
+  onRemoveOne: (proxy: string) => void;
 }) {
   if (entries.length === 0) return null;
   const busy = probingKey !== null;
@@ -126,27 +140,47 @@ function ProxyPoolPreview({
     <div className="mt-3 space-y-2 rounded-xl border border-border/60 bg-muted/40 p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-[12px] text-muted-foreground">
-          已识别 {entries.length} 条（# 后标签已解码展示）
+          已识别 {entries.length} 条
+          {failCount > 0 ? ` · 失败 ${failCount}` : ''}
+          （并发测活 · # 标签已解码）
         </p>
-        <Button
-          type="button"
-          size="sm"
-          variant="secondary"
-          disabled={busy || entries.length === 0}
-          onClick={onProbeAll}
-        >
-          {probingKey === '__all__' ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          ) : (
-            <Activity className="h-3.5 w-3.5" />
+        <div className="flex flex-wrap items-center gap-2">
+          {failCount > 0 && (
+            <Button
+              type="button"
+              size="sm"
+              variant="danger"
+              disabled={busy}
+              onClick={onRemoveFailed}
+              title="从代理池文本中删除全部测活失败项"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              删除失败 ({failCount})
+            </Button>
           )}
-          全部测活
-        </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            disabled={busy || entries.length === 0}
+            onClick={onProbeAll}
+          >
+            {probingKey === '__all__' ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Activity className="h-3.5 w-3.5" />
+            )}
+            全部测活
+          </Button>
+        </div>
       </div>
       <ul className="max-h-56 space-y-1.5 overflow-y-auto">
         {entries.map((e) => {
           const probe = probes[e.proxy] || { status: 'idle' as const };
-          const loading = probingKey === e.proxy || probingKey === '__all__';
+          const loading =
+            probe.status === 'loading' ||
+            probingKey === e.proxy ||
+            probingKey === '__all__';
           return (
             <li
               key={e.proxy}
@@ -157,11 +191,17 @@ function ProxyPoolPreview({
               ) : (
                 <span className="chip shrink-0 text-muted-foreground">无标签</span>
               )}
-              <span className="min-w-0 flex-1 truncate font-mono text-muted-foreground" title={e.proxy}>
+              <span
+                className="min-w-0 flex-1 truncate font-mono text-muted-foreground"
+                title={e.proxy}
+              >
                 {e.host}
               </span>
               {probe.status === 'ok' && (
-                <span className="max-w-[12rem] truncate text-emerald-600 dark:text-emerald-400" title={probe.message}>
+                <span
+                  className="max-w-[12rem] truncate text-emerald-600 dark:text-emerald-400"
+                  title={probe.message}
+                >
                   {probe.message || 'OK'}
                 </span>
               )}
@@ -170,19 +210,28 @@ function ProxyPoolPreview({
                   {probe.message || '失败'}
                 </span>
               )}
+              {probe.status === 'fail' && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 shrink-0 px-2 text-danger"
+                  disabled={busy}
+                  onClick={() => onRemoveOne(e.proxy)}
+                  title="从池中删除此条"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              )}
               <Button
                 type="button"
                 size="sm"
                 variant="ghost"
                 className="h-7 shrink-0 px-2"
-                disabled={loading}
+                disabled={loading || busy}
                 onClick={() => onProbeOne(e.proxy)}
               >
-                {probingKey === e.proxy ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  '测活'
-                )}
+                {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : '测活'}
               </Button>
             </li>
           );
@@ -216,6 +265,12 @@ export function SettingsForm() {
     if (!draft?.proxyPool) return [] as ProxyPoolEntry[];
     return parseProxyPoolEntries(draft.proxyPool);
   }, [draft?.proxyPool]);
+
+  const failedProxies = useMemo(() => {
+    return proxyPoolEntries
+      .filter((e) => proxyProbes[e.proxy]?.status === 'fail')
+      .map((e) => e.proxy);
+  }, [proxyPoolEntries, proxyProbes]);
 
   if (!draft) {
     return <div className="p-8 text-muted-foreground">加载设置…</div>;
@@ -253,26 +308,72 @@ export function SettingsForm() {
   const probeAll = async () => {
     if (proxyPoolEntries.length === 0) return;
     setProbingKey('__all__');
-    for (const e of proxyPoolEntries) {
-      setProxyProbes((prev) => ({ ...prev, [e.proxy]: { status: 'loading' } }));
-      try {
-        const r = await window.api.testProxy(e.proxy);
-        setProxyProbes((prev) => ({
-          ...prev,
-          [e.proxy]: {
-            status: r.ok ? 'ok' : 'fail',
-            message: r.message || (r.ok ? 'OK' : '失败')
-          }
-        }));
-      } catch (err) {
-        setProxyProbes((prev) => ({
-          ...prev,
-          [e.proxy]: { status: 'fail', message: String(err) }
-        }));
-      }
+    const loadingMap: Record<string, ProxyProbeUi> = {};
+    for (const e of proxyPoolEntries) loadingMap[e.proxy] = { status: 'loading' };
+    setProxyProbes((prev) => ({ ...prev, ...loadingMap }));
+    try {
+      const proxies = proxyPoolEntries.map((e) => e.proxy);
+      const batch = await window.api.testProxyBatch({
+        proxies,
+        concurrency: PROXY_PROBE_CONCURRENCY
+      });
+      // 服务端 results 与请求 proxies 同序
+      setProxyProbes((prev) => {
+        const next = { ...prev };
+        for (let i = 0; i < proxies.length; i++) {
+          const proxy = proxies[i];
+          const r = batch.results[i];
+          next[proxy] = {
+            status: r?.ok ? 'ok' : 'fail',
+            message: r?.message || (r?.ok ? 'OK' : '失败')
+          };
+        }
+        return next;
+      });
+      push({
+        tone: batch.fail > 0 ? 'warn' : 'ok',
+        title: '代理池测活完成',
+        description: `共 ${batch.total} · 成功 ${batch.ok} · 失败 ${batch.fail}（并发 ${batch.concurrency}）`
+      });
+    } catch (err) {
+      setProxyProbes((prev) => {
+        const next = { ...prev };
+        for (const e of proxyPoolEntries) {
+          next[e.proxy] = { status: 'fail', message: String(err) };
+        }
+        return next;
+      });
+      push({ tone: 'danger', title: '代理池测活失败', description: String(err) });
+    } finally {
+      setProbingKey(null);
     }
-    setProbingKey(null);
-    push({ tone: 'ok', title: '代理池测活完成', description: `共 ${proxyPoolEntries.length} 条` });
+  };
+
+  const removeProxiesFromDraft = (proxies: string[]) => {
+    if (!proxies.length) return;
+    const nextText = removeProxiesFromPoolText(draft.proxyPool || '', proxies);
+    setDraft({ ...draft, proxyPool: nextText });
+    setProxyProbes((prev) => {
+      const next = { ...prev };
+      for (const p of proxies) {
+        delete next[p];
+        const stripped = stripProxyComment(p);
+        if (stripped) delete next[stripped];
+      }
+      return next;
+    });
+  };
+
+  const removeFailed = () => {
+    if (failedProxies.length === 0) return;
+    const n = failedProxies.length;
+    removeProxiesFromDraft(failedProxies);
+    push({ tone: 'ok', title: '已删除失败代理', description: `已从池文本移除 ${n} 条` });
+  };
+
+  const removeOne = (proxy: string) => {
+    removeProxiesFromDraft([proxy]);
+    push({ tone: 'ok', title: '已删除', description: proxy.slice(0, 48) });
   };
 
   const save = async () => {
@@ -443,8 +544,11 @@ export function SettingsForm() {
                         entries={proxyPoolEntries}
                         probes={proxyProbes}
                         probingKey={probingKey}
+                        failCount={failedProxies.length}
                         onProbeOne={probeOne}
                         onProbeAll={probeAll}
+                        onRemoveFailed={removeFailed}
+                        onRemoveOne={removeOne}
                       />
                     )}
                   </div>

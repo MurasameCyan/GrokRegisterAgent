@@ -13,7 +13,7 @@ import { registerBot } from './bot/registerBot.js';
 import { listAccounts, resyncAccountsFromDisk } from './accountStore.js';
 import { checkForUpdate, currentVersion } from './updateCheck.js';
 import { fetchEmails, extractVerificationCode, fetchLatestCodeByAddress } from './api/emailApi.js';
-import { probeProxy } from './api/proxyApi.js';
+import { probeProxy, probeProxyBatch } from './api/proxyApi.js';
 import { checkSso } from './ssoCheck.js';
 import {
   authBootstrapInfo,
@@ -299,6 +299,41 @@ app.post('/api/test/proxy', async (req, res) => {
     return res.json(result);
   } catch (e: any) {
     return res.json({ ok: false, message: `测活异常: ${e?.message || e}` });
+  }
+});
+
+/** 代理池批量并发测活 */
+app.post('/api/test/proxy-batch', async (req, res) => {
+  try {
+    const raw = req.body?.proxies;
+    const proxies = Array.isArray(raw)
+      ? raw.map((x: unknown) => String(x || '').trim()).filter(Boolean)
+      : [];
+    if (proxies.length === 0) {
+      return res.json({
+        total: 0,
+        ok: 0,
+        fail: 0,
+        concurrency: 0,
+        results: [],
+        message: 'proxies 为空'
+      });
+    }
+    const concurrency = Number(req.body?.concurrency);
+    const result = await probeProxyBatch(
+      proxies,
+      Number.isFinite(concurrency) ? concurrency : 8
+    );
+    return res.json(result);
+  } catch (e: any) {
+    return res.status(500).json({
+      total: 0,
+      ok: 0,
+      fail: 0,
+      concurrency: 0,
+      results: [],
+      message: `批量测活异常: ${e?.message || e}`
+    });
   }
 });
 
