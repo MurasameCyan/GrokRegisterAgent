@@ -71,7 +71,7 @@ export async function checkForUpdate(): Promise<UpdateInfo> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 8000);
     const resp = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
-      headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'grok-agent' },
+      headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'grok-register-agent' },
       signal: controller.signal
     });
     clearTimeout(timer);

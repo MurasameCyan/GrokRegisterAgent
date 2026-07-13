@@ -104,11 +104,65 @@
   }
 
   .nav-logo {
-    @apply flex h-10 w-10 items-center justify-center rounded-[11px] bg-primary text-[17px] font-bold tracking-tight text-primary-foreground;
+    @apply relative flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-[11px] text-[10px] font-extrabold tracking-[-0.04em] text-white;
+    background: linear-gradient(
+      135deg,
+      #ff6b9d 0%,
+      #c44dff 22%,
+      #5b8cff 48%,
+      #2ee6a6 72%,
+      #ffd166 100%
+    );
+    background-size: 220% 220%;
+    animation: gra-iridescent 6s ease infinite;
+    box-shadow:
+      0 0 0 1px rgba(255, 255, 255, 0.12) inset,
+      0 4px 14px rgba(91, 140, 255, 0.28);
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  }
+
+  .nav-logo::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(
+      120deg,
+      transparent 30%,
+      rgba(255, 255, 255, 0.45) 48%,
+      transparent 62%
+    );
+    background-size: 200% 100%;
+    animation: gra-shine 3.2s ease-in-out infinite;
+    pointer-events: none;
+  }
+
+  @keyframes gra-iridescent {
+    0% {
+      background-position: 0% 40%;
+    }
+    50% {
+      background-position: 100% 60%;
+    }
+    100% {
+      background-position: 0% 40%;
+    }
+  }
+
+  @keyframes gra-shine {
+    0% {
+      background-position: 120% 0;
+    }
+    100% {
+      background-position: -120% 0;
+    }
   }
 
   .nav-title {
-    @apply text-[17px] font-semibold tracking-[-0.02em] text-foreground;
+    @apply text-[15px] font-semibold tracking-[-0.02em] text-foreground sm:text-[16px];
+  }
+
+  .brand-mark {
+    @apply nav-logo;
   }
 
   .nav-sub {
@@ -277,11 +331,7 @@
   }
 
   .brand-title {
-    @apply text-[17px] font-semibold tracking-[-0.02em] text-foreground;
-  }
-
-  .brand-mark {
-    @apply nav-logo;
+    @apply text-[15px] font-semibold tracking-[-0.02em] text-foreground sm:text-[16px];
   }
 
   .page-title {

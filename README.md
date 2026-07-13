@@ -1,6 +1,6 @@
-# Grok Agent
+# Grok Register Agent
 
-可自部署的 Grok 注册机 Web 控制台（Grok Agent）：Docker 多架构镜像、DrissionPage 自动化注册、邮件验证码读取、SSO 输出和本地账号号池管理。
+可自部署的 Grok 注册机 Web 控制台（Grok Register Agent）：Docker 多架构镜像、DrissionPage 自动化注册、邮件验证码读取、SSO 输出和本地账号号池管理。
 
 > 本项目与 xAI、Grok、X 没有官方关联。请仅在合法、合规、获得许可的研究、学习或自托管实验环境中使用。
 

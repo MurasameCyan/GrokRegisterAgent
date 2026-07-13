@@ -24,7 +24,20 @@ import { fmtBeijing, fmtBeijingTime } from '@renderer/lib/time';
 import type { AccountRecord } from '@shared/runEvents';
 import type { SsoCheckResult } from '@shared/ipc';
 
-const PAGE_SIZE = 12;
+const PAGE_SIZE_OPTIONS = [10, 20, 50, 100, 500, 1000, 2000] as const;
+type PageSize = (typeof PAGE_SIZE_OPTIONS)[number];
+const DEFAULT_PAGE_SIZE: PageSize = 20;
+const PAGE_SIZE_KEY = 'gra-pool-page-size';
+
+function loadPageSize(): PageSize {
+  try {
+    const raw = Number(localStorage.getItem(PAGE_SIZE_KEY));
+    if (PAGE_SIZE_OPTIONS.includes(raw as PageSize)) return raw as PageSize;
+  } catch {
+    /* ignore */
+  }
+  return DEFAULT_PAGE_SIZE;
+}
 
 function stamp(): string {
   const d = new Date();
@@ -57,6 +70,17 @@ export function PoolPage() {
   const [lastRefresh, setLastRefresh] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<PageSize>(() => loadPageSize());
+
+  const changePageSize = (size: PageSize) => {
+    setPageSize(size);
+    setPage(1);
+    try {
+      localStorage.setItem(PAGE_SIZE_KEY, String(size));
+    } catch {
+      /* ignore */
+    }
+  };
 
   const doReload = async (scanHistory = false) => {
     try {
@@ -100,9 +124,9 @@ export function PoolPage() {
       const next = new Set([...prev].filter((id) => ids.has(id)));
       return next.size === prev.size ? prev : next;
     });
-    const totalPages = Math.max(1, Math.ceil(accounts.length / PAGE_SIZE));
+    const totalPages = Math.max(1, Math.ceil(accounts.length / pageSize) || 1);
     setPage((p) => Math.min(p, totalPages));
-  }, [accounts]);
+  }, [accounts, pageSize]);
 
   const ssoCount = useMemo(() => accounts.filter((a) => a.sso).length, [accounts]);
   const aliveCount = useMemo(
@@ -110,12 +134,12 @@ export function PoolPage() {
     [ssoMap]
   );
 
-  const totalPages = Math.max(1, Math.ceil(accounts.length / PAGE_SIZE) || 1);
+  const totalPages = Math.max(1, Math.ceil(accounts.length / pageSize) || 1);
   const currentPage = Math.min(page, totalPages);
-  const pageStart = (currentPage - 1) * PAGE_SIZE;
+  const pageStart = (currentPage - 1) * pageSize;
   const pageAccounts = useMemo(
-    () => accounts.slice(pageStart, pageStart + PAGE_SIZE),
-    [accounts, pageStart]
+    () => accounts.slice(pageStart, pageStart + pageSize),
+    [accounts, pageStart, pageSize]
   );
 
   const allSelected = accounts.length > 0 && selected.size === accounts.length;
@@ -204,7 +228,7 @@ export function PoolPage() {
   const picked = accounts.filter((a) => selected.has(a.id));
   const openAccount = accounts.find((a) => a.id === openId) ?? null;
   const rangeFrom = accounts.length === 0 ? 0 : pageStart + 1;
-  const rangeTo = Math.min(pageStart + PAGE_SIZE, accounts.length);
+  const rangeTo = Math.min(pageStart + pageSize, accounts.length);
 
   return (
     <div className="space-y-5">
@@ -321,7 +345,9 @@ export function PoolPage() {
             rangeFrom={rangeFrom}
             rangeTo={rangeTo}
             total={accounts.length}
+            pageSize={pageSize}
             onChange={setPage}
+            onPageSizeChange={changePageSize}
           />
         </>
       )}
@@ -343,34 +369,46 @@ function PaginationBar({
   rangeFrom,
   rangeTo,
   total,
-  onChange
+  pageSize,
+  onChange,
+  onPageSizeChange
 }: {
   page: number;
   totalPages: number;
   rangeFrom: number;
   rangeTo: number;
   total: number;
+  pageSize: PageSize;
   onChange(page: number): void;
+  onPageSizeChange(size: PageSize): void;
 }) {
-  if (totalPages <= 1) {
-    return (
-      <div className="flex items-center justify-center text-[12px] text-muted-foreground">
-        共 {total} 条 · 每页 {PAGE_SIZE} 条
-      </div>
-    );
-  }
-
   return (
-    <div className="flex flex-col items-center justify-between gap-3 sm:flex-row">
+    <div className="flex flex-col items-stretch justify-between gap-3 sm:flex-row sm:items-center">
       <p className="text-[12px] text-muted-foreground">
-        第 {rangeFrom}–{rangeTo} 条 · 共 {total} 条
+        {total === 0
+          ? '共 0 条'
+          : `第 ${rangeFrom}–${rangeTo} 条 · 共 ${total} 条`}
       </p>
-      <div className="flex items-center gap-1.5">
+      <div className="flex flex-wrap items-center justify-end gap-1.5">
+        <label className="flex items-center gap-1.5 text-[12px] text-muted-foreground">
+          <span className="shrink-0">每页</span>
+          <select
+            value={pageSize}
+            onChange={(e) => onPageSizeChange(Number(e.target.value) as PageSize)}
+            className="h-8 rounded-full border border-border bg-card px-2.5 text-[12px] font-medium text-foreground outline-none focus:border-primary"
+          >
+            {PAGE_SIZE_OPTIONS.map((n) => (
+              <option key={n} value={n}>
+                {n}
+              </option>
+            ))}
+          </select>
+        </label>
         <Button
           variant="secondary"
           size="sm"
           onClick={() => onChange(Math.max(1, page - 1))}
-          disabled={page <= 1}
+          disabled={page <= 1 || totalPages <= 1}
         >
           <ChevronLeft className="h-3.5 w-3.5" />
           上一页
@@ -382,7 +420,7 @@ function PaginationBar({
           variant="secondary"
           size="sm"
           onClick={() => onChange(Math.min(totalPages, page + 1))}
-          disabled={page >= totalPages}
+          disabled={page >= totalPages || totalPages <= 1}
         >
           下一页
           <ChevronRight className="h-3.5 w-3.5" />

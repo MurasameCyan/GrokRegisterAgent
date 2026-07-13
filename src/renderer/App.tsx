@@ -143,11 +143,11 @@ export default function App() {
       <aside className="app-nav">
         <div className="flex h-full flex-col">
           <div className="nav-brand">
-            <div className="nav-logo" aria-hidden>
-              G
+            <div className="nav-logo" aria-hidden title="Grok Register Agent">
+              GRA
             </div>
             <div className="min-w-0">
-              <div className="nav-title">Grok Agent</div>
+              <div className="nav-title">Grok Register Agent</div>
               <div className="nav-sub">注册控制台</div>
             </div>
           </div>
@@ -207,7 +207,7 @@ export default function App() {
       <main className="app-main">
         <header className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <p className="page-kicker mb-0.5">Grok Agent</p>
+            <p className="page-kicker mb-0.5">Grok Register Agent</p>
             <h1 className="page-heading">{tabs.find((item) => item.id === tab)?.label}</h1>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -248,11 +248,11 @@ function BootScreen() {
   return (
     <div className="login-wrap">
       <div className="flex items-center gap-3 rounded-2xl border border-border bg-card px-6 py-5 shadow-[var(--ios-shadow)]">
-        <div className="nav-logo" aria-hidden>
-          G
+        <div className="nav-logo" aria-hidden title="Grok Register Agent">
+          GRA
         </div>
         <div>
-          <div className="nav-sub">Grok Agent</div>
+          <div className="nav-sub">Grok Register Agent</div>
           <div className="text-[15px] font-semibold tracking-[-0.01em]">正在检查登录状态…</div>
         </div>
       </div>
@@ -283,11 +283,11 @@ function LoginScreen({ onAuthed }: { onAuthed(next: AuthState): void }) {
     <div className="login-wrap">
       <form onSubmit={submit} className="login-panel">
         <div className="mb-7 flex items-center gap-3">
-          <div className="nav-logo" aria-hidden>
-            G
+          <div className="nav-logo" aria-hidden title="Grok Register Agent">
+            GRA
           </div>
           <div>
-            <div className="nav-title">Grok Agent</div>
+            <div className="nav-title">Grok Register Agent</div>
             <div className="nav-sub">注册控制台</div>
           </div>
         </div>
