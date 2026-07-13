@@ -31,8 +31,9 @@ services:
       COOKIE_SECURE: "${COOKIE_SECURE:-}"
       DISPLAY: ":99"
     volumes:
+      # 仅挂数据目录。不要挂空的 ./register 覆盖 /app/register，
+      # 否则会盖掉镜像内置脚本，报「未找到内置注册脚本目录 register/」。
+      # 若需热更新 Python 脚本，请把完整 register 源码放到主机后取消下一行注释：
+      # - ./register:/app/register
       - ./data:/data
-      # 开发/调试：把本地 register 挂进容器，否则改 Python 代码不会生效
-      # （预构建镜像 /app/register 是打包时的旧代码）
-      - ./register:/app/register
     shm_size: "1gb"

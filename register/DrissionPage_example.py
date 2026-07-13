@@ -46,11 +46,11 @@ def setup_run_logger() -> logging.Logger:
     fh = logging.FileHandler(log_path, encoding="utf-8")
     fh.setFormatter(fmt)
     logger.addHandler(fh)
-    sh = logging.StreamHandler(sys.stdout)
-    sh.setFormatter(fmt)
-    logger.addHandler(sh)
+    # 不挂 StreamHandler：WebUI 已捕获 stdout；再挂会导致每条日志打印两遍。
+    # 控制台可见输出统一走 print(..., flush=True) / _emit。
 
     logger.info("日志文件: %s", log_path)
+    print(f"日志文件: {log_path}", flush=True)
     return logger
 
 
@@ -1083,22 +1083,60 @@ def _turnstile_widget_state():
     """
     观察 Turnstile 当前状态。
     诊断日志里出现 title=Turnstile feedback report / src 含 /failure 表示已被 Cloudflare 判定失败。
+    注意：widget 可能在 closed shadow 内，页面顶层 iframe 只有 1x1 占位。
     """
     try:
         return page.run_js(
             """
+function collectFrames(root, out, depth) {
+  if (!root || depth > 6) return;
+  let list = [];
+  try { list = Array.from(root.querySelectorAll('iframe')); } catch (e) { list = []; }
+  for (const n of list) {
+    const r = n.getBoundingClientRect();
+    out.push({
+      src: n.src || '',
+      title: n.title || '',
+      w: Math.round(r.width),
+      h: Math.round(r.height),
+      x: r.left,
+      y: r.top,
+    });
+  }
+  // 尝试 open shadow
+  let all = [];
+  try { all = Array.from(root.querySelectorAll('*')); } catch (e) { all = []; }
+  for (const el of all) {
+    if (el.shadowRoot) collectFrames(el.shadowRoot, out, depth + 1);
+  }
+}
+
 const input = document.querySelector('input[name="cf-turnstile-response"]');
-const frames = Array.from(document.querySelectorAll('iframe')).map((n) => {
-  const r = n.getBoundingClientRect();
-  return {
-    src: n.src || '',
-    title: n.title || '',
-    w: Math.round(r.width),
-    h: Math.round(r.height),
-    x: r.left,
-    y: r.top,
-  };
-});
+const frames = [];
+collectFrames(document, frames, 0);
+
+// 宿主容器尺寸（即使 iframe 1x1，容器可能仍是 300x65）
+const hosts = [];
+const hostSel = [
+  '.cf-turnstile', '[data-sitekey]', 'div[id^="cf-"]',
+  'input[name="cf-turnstile-response"]'
+];
+for (const sel of hostSel) {
+  try {
+    document.querySelectorAll(sel).forEach((el) => {
+      const target = sel.includes('input') ? (el.parentElement || el) : el;
+      const r = target.getBoundingClientRect();
+      hosts.push({
+        sel,
+        w: Math.round(r.width),
+        h: Math.round(r.height),
+        x: r.left,
+        y: r.top,
+      });
+    });
+  } catch (e) {}
+}
+
 const failure = frames.some((f) =>
   /\\/failure/i.test(f.src) || /feedback report/i.test(f.title) || /failed/i.test(f.title)
 );
@@ -1107,16 +1145,20 @@ const challenge = frames.find((f) =>
 ) || frames.find((f) =>
   /turnstile|widget containing/i.test((f.src || '') + ' ' + (f.title || '')) && f.w >= 20 && f.h >= 20
 ) || null;
-// 宿主 shadow 内的 300x65 级控件有时 src 为空，用尺寸兜底
 const sized = frames.find((f) => f.w >= 240 && f.w <= 400 && f.h >= 50 && f.h <= 90) || null;
+const hostSized = hosts.find((h) => h.w >= 100 && h.h >= 40) || hosts.find((h) => h.w >= 20 && h.h >= 20) || null;
+const collapsedOnly = !challenge && !sized && frames.some((f) => f.w > 0 && f.w <= 5 && f.h > 0 && f.h <= 5);
 const tokenLen = input ? String(input.value || '').trim().length : 0;
 return {
   failure: !!failure,
+  collapsedOnly: !!collapsedOnly,
   tokenLen,
   hasInput: !!input,
   hasApi: typeof turnstile !== 'undefined',
   challenge,
   sized,
+  hostSized,
+  hosts: hosts.slice(0, 6),
   frames: frames.map((f) => ({
     src: (f.src || '').slice(0, 140),
     title: f.title,
@@ -1166,14 +1208,53 @@ return {x: r.left, y: r.top, w: r.width, h: r.height};
     return None
 
 
+def _host_click_box():
+    """
+    当 shadow 内 iframe 缩成 1x1 时，改点宿主容器左侧（checkbox 区域）。
+    返回 {x,y,w,h} 或 None。
+    """
+    try:
+        box = page.run_js(
+            """
+const candidates = [];
+const push = (el, tag) => {
+  if (!el) return;
+  const r = el.getBoundingClientRect();
+  if (r.width >= 80 && r.height >= 40 && r.width <= 520 && r.height <= 120) {
+    candidates.push({ tag, x: r.left, y: r.top, w: r.width, h: r.height });
+  }
+};
+document.querySelectorAll('.cf-turnstile, [data-sitekey], div[id^="cf-"]').forEach((el) => push(el, 'host'));
+const input = document.querySelector('input[name="cf-turnstile-response"]');
+if (input) {
+  let p = input.parentElement;
+  for (let i = 0; i < 6 && p; i++) {
+    push(p, 'input-parent-' + i);
+    p = p.parentElement;
+  }
+}
+// 取面积最大的合理宿主
+candidates.sort((a, b) => (b.w * b.h) - (a.w * a.h));
+return candidates[0] || null;
+            """
+        )
+        if box and float(box.get("w") or 0) >= 80:
+            return box
+    except Exception:
+        pass
+    return None
+
+
 def _locate_turnstile_click_target():
     """
     定位 Turnstile 复选框点击目标。
-    跳过 failure feedback 大 iframe，优先找正常 challenge/widget。
+    返回 (target, how)：
+      - target 可以是 iframe 元素，或 dict 坐标框 {x,y,w,h,kind:'box'}
+    跳过 failure feedback；兼容 1x1 collapsed iframe + 宿主容器点击。
     """
     last_err = ""
 
-    # 路径 A：从 hidden input 的父级 shadow 找 iframe（原逻辑增强版）
+    # 路径 A：从 hidden input 的父级 shadow 找 iframe
     try:
         challenge_solution = page.ele("@name=cf-turnstile-response", timeout=0.5)
         if challenge_solution:
@@ -1194,6 +1275,9 @@ def _locate_turnstile_click_target():
                             box = _iframe_box(iframe)
                             if box and float(box.get("w") or 0) >= 20 and float(box.get("h") or 0) >= 20:
                                 return iframe, "input-parent-shadow"
+                            # 1x1 也返回，调用方可用宿主框补点
+                            if box and float(box.get("w") or 0) > 0:
+                                return iframe, "input-parent-shadow-collapsed"
                             if not box:
                                 return iframe, "input-parent-shadow"
                 except Exception as e:
@@ -1240,13 +1324,26 @@ def _locate_turnstile_click_target():
                 if sr:
                     iframe = sr.ele("tag:iframe", timeout=0.3)
                     if iframe:
-                        return iframe, f"host-shadow:{selector}"
+                        box = _iframe_box(iframe)
+                        if box and float(box.get("w") or 0) >= 20:
+                            return iframe, f"host-shadow:{selector}"
             except Exception:
                 pass
             try:
                 iframe = host.ele("tag:iframe", timeout=0.2)
                 if iframe:
                     return iframe, f"host-iframe:{selector}"
+            except Exception:
+                pass
+            # 无可用 iframe 时点宿主本身
+            try:
+                hb = host.run_js(
+                    "const r=this.getBoundingClientRect(); return {x:r.left,y:r.top,w:r.width,h:r.height};"
+                )
+                if hb and float(hb.get("w") or 0) >= 80 and float(hb.get("h") or 0) >= 40:
+                    hb = dict(hb)
+                    hb["kind"] = "box"
+                    return hb, f"host-box:{selector}"
             except Exception:
                 pass
         except Exception as e:
@@ -1263,6 +1360,13 @@ def _locate_turnstile_click_target():
                 return iframe, "sized-widget"
     except Exception as e:
         last_err = f"pathD:{e}"
+
+    # 路径 E：宿主容器坐标（iframe 已 1x1 / closed shadow 时）
+    host_box = _host_click_box()
+    if host_box:
+        host_box = dict(host_box)
+        host_box["kind"] = "box"
+        return host_box, "host-container-box"
 
     return None, last_err or "not-found"
 
@@ -1308,15 +1412,30 @@ def _cdp_human_click(cx, cy):
     )
 
 
-def _click_turnstile_checkbox(iframe, prefer_cdp=True):
+def _click_turnstile_checkbox(target, prefer_cdp=True, how=""):
     """
     对 Turnstile 复选框点击。
-    优先 CDP 坐标点击；少用 shadow element.click（易被判定自动化）。
+    target: iframe 元素 或 {x,y,w,h,kind:'box'} 宿主坐标框。
+    优先 CDP 坐标点击；iframe 缩成 1x1 时改点宿主左侧。
     """
     clicked = False
     detail = []
+    iframe = None
+    box = None
 
-    box = _iframe_box(iframe)
+    if isinstance(target, dict) and target.get("kind") == "box":
+        box = target
+        detail.append("target=box")
+    else:
+        iframe = target
+        box = _iframe_box(iframe) if iframe is not None else None
+        # collapsed iframe：用宿主容器尺寸
+        if (not box) or float(box.get("w") or 0) < 20 or float(box.get("h") or 0) < 20 or "collapsed" in (how or ""):
+            host = _host_click_box()
+            if host:
+                box = host
+                detail.append("fallback-host-box")
+
     if box:
         w = float(box.get("w") or 300)
         h = float(box.get("h") or 65)
@@ -1345,8 +1464,8 @@ def _click_turnstile_checkbox(iframe, prefer_cdp=True):
                 except Exception as e:
                     detail.append(f"actions:{e}")
 
-    # 兜底：shadow 内 input（可能触发 automation 指纹，放最后）
-    if not clicked:
+    # 兜底：shadow 内 input（仅 iframe 可用时）
+    if not clicked and iframe is not None:
         try:
             body = iframe.ele("tag:body", timeout=0.6)
             if body is not None:
@@ -1374,7 +1493,7 @@ def _click_turnstile_checkbox(iframe, prefer_cdp=True):
         except Exception as e:
             detail.append(f"shadow:{e}")
 
-    if not clicked:
+    if not clicked and iframe is not None:
         try:
             iframe.click()
             clicked = True
@@ -1465,10 +1584,22 @@ def getTurnstileToken(timeout=65):
                 continue
             break
 
-        iframe, how = _locate_turnstile_click_target()
-        if iframe is None:
+        target, how = _locate_turnstile_click_target()
+        if target is None:
             last_diag = f"locate-fail:{how} state={state}"
-            # widget 可能仍在渲染
+            # 仅有 1x1 占位时尝试 soft reset 恢复可见 widget
+            if state.get("collapsedOnly") and reset_count < 1 and time.time() + 15 < deadline:
+                print("[*] Turnstile 控件折叠为 1x1，执行 soft reset 尝试恢复。")
+                _soft_reset_turnstile()
+                reset_count += 1
+                wait_end = time.time() + min(10, deadline - time.time())
+                while time.time() < wait_end:
+                    token = _read_turnstile_token()
+                    if token:
+                        print("[*] Turnstile soft reset 后已自动通过。")
+                        return token
+                    time.sleep(0.5)
+                continue
             time.sleep(1.0)
             continue
 
@@ -1477,13 +1608,13 @@ def getTurnstileToken(timeout=65):
 
         # 点击前轻微随机停顿，模拟阅读
         time.sleep(0.4 + secrets.randbelow(60) / 100.0)
-        clicked, detail = _click_turnstile_checkbox(iframe, prefer_cdp=True)
+        clicked, detail = _click_turnstile_checkbox(target, prefer_cdp=True, how=how)
         click_attempts += 1
         last_diag = f"click#{click_attempts} via={how} detail={detail} ok={clicked}"
         print(f"[*] Turnstile 点击尝试 #{click_attempts}: {detail}")
 
         # 点击后给足时间出 token / 或进入 failure，不要马上再点
-        wait_slice = min(10.0, max(3.0, deadline - time.time()))
+        wait_slice = min(12.0, max(4.0, deadline - time.time()))
         wait_end = time.time() + wait_slice
         while time.time() < wait_end:
             token = _read_turnstile_token()
@@ -1495,7 +1626,11 @@ def getTurnstileToken(timeout=65):
                 print("[Warn] 点击后进入 Turnstile failure 状态。")
                 last_diag = f"post-click-failure #{click_attempts}"
                 break
-            time.sleep(0.4)
+            # 点击后若折叠且仍无 token，稍等再决定是否下一次点击
+            if st.get("collapsedOnly") and time.time() + 2 < wait_end:
+                time.sleep(0.8)
+            else:
+                time.sleep(0.4)
 
         time.sleep(0.6 + secrets.randbelow(50) / 100.0)
 
@@ -2157,8 +2292,8 @@ def main():
     collected_sso: list = []
     try:
         start_browser()
-        # 浏览器起来后再强制打 WebGL/UA（即使 start_browser 内已打过，force 保证进 logger）
-        log_runtime_fingerprint(page, force=True)
+        # start_browser 内已打指纹；仅当未打过时再补一次（避免双份）
+        log_runtime_fingerprint(page, force=False)
         while True:
             if args.count > 0 and current_round >= args.count:
                 break

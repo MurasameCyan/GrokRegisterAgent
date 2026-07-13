@@ -122,7 +122,11 @@ export class RegisterBot extends EventEmitter {
         // 1. 确定 Python 脚本路径:优先用配置里真实存在的目录,否则回退到项目内置 register/。
         const runtime = resolveRegisterRuntime(settings);
         if (!runtime) {
-            throw new Error('未找到内置注册脚本目录 register/，请检查项目完整性。');
+            throw new Error(
+                '未找到内置注册脚本目录 register/（需含 runner.py 或 DrissionPage_example.py）。' +
+                    '若使用 Docker：请勿用空的 ./register 挂载覆盖 /app/register；' +
+                    '默认只用 ./data:/data。热更新请挂载完整 register 源码目录。'
+            );
         }
 
         const { registerDir, scriptPath, pythonPath, entrypoint } = runtime;
