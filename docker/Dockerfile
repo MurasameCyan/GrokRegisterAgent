@@ -23,6 +23,7 @@ ENV NODE_ENV=production \
     REGISTER_DIR=/app/register \
     SSO_DIR=/data/sso \
     PYTHONUNBUFFERED=1 \
+    PYTHONIOENCODING=utf-8 \
     PIP_NO_CACHE_DIR=1 \
     DISPLAY=:99
 

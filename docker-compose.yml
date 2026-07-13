@@ -32,4 +32,7 @@ services:
       DISPLAY: ":99"
     volumes:
       - ./data:/data
+      # 开发/调试：把本地 register 挂进容器，否则改 Python 代码不会生效
+      # （预构建镜像 /app/register 是打包时的旧代码）
+      - ./register:/app/register
     shm_size: "1gb"

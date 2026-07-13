@@ -5,9 +5,17 @@ import io
 
 # 强制 stdout/stderr 使用 UTF-8，解决 Windows 下 WebUI 读取乱码问题
 if sys.stdout.encoding != 'utf-8':
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True)
 if sys.stderr.encoding != 'utf-8':
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+
+# 管道接到 Node WebUI 时避免块缓冲吞掉早期诊断日志
+os.environ.setdefault("PYTHONUNBUFFERED", "1")
+try:
+    sys.stdout.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
+    sys.stderr.reconfigure(line_buffering=True)  # type: ignore[attr-defined]
+except Exception:
+    pass
 
 from DrissionPage import Chromium, ChromiumOptions
 from DrissionPage.errors import PageDisconnectedError
@@ -261,14 +269,25 @@ if os.path.isdir(EXTENSION_PATH):
 else:
     print(f"[Warn] Turnstile 扩展目录不存在: {EXTENSION_PATH}")
 
+_MACHINE = platform.machine() or ""
+_ARCH_NOTE = ""
+if _MACHINE.lower() in ("aarch64", "arm64", "armv8l", "armv7l"):
+    _ARCH_NOTE = "（ARM：Turnstile 指纹/WebGL 通过率通常低于 x86_64）"
+elif _MACHINE.lower() in ("x86_64", "amd64"):
+    _ARCH_NOTE = "（x86_64）"
+
 print(
-    f"[*] 运行环境: system={platform.system()} DISPLAY={os.environ.get('DISPLAY', '')!r} "
-    f"window={_WINDOW_W}x{_WINDOW_H} headless=False"
+    f"[*] 运行环境: system={platform.system()} machine={_MACHINE}{_ARCH_NOTE} "
+    f"python={platform.python_version()} DISPLAY={os.environ.get('DISPLAY', '')!r} "
+    f"window={_WINDOW_W}x{_WINDOW_H} headless=False",
+    flush=True,
 )
 
 _chrome_temp_dir: str = ""
 browser = None
 page = None
+# 指纹探测是否已输出（必须模块级初始化，否则 NameError）
+_fingerprint_logged = False
 
 SIGNUP_URL = "https://accounts.x.ai/sign-up?redirect=grok-com"
 
@@ -411,13 +430,33 @@ return {
         return {"error": str(e)}
 
 
+def _emit(msg: str) -> None:
+    """同时打到 stdout（WebUI）和 run_logger（文件），并立刻 flush。"""
+    print(msg, flush=True)
+    try:
+        sys.stdout.flush()
+    except Exception:
+        pass
+    if run_logger is not None:
+        try:
+            run_logger.info("%s", msg)
+        except Exception:
+            pass
+
+
 def log_runtime_fingerprint(tab=None, force: bool = False):
     """
     打印架构 / 浏览器版本 / WebGL 探测，方便确认 ARM 无 GUI 环境是否可用。
     默认每个进程只详打一次，避免每轮刷屏。
     """
     global _fingerprint_logged
-    if _fingerprint_logged and not force:
+    # 防御：热更新/旧进程合并时变量可能缺失
+    try:
+        already = _fingerprint_logged
+    except NameError:
+        already = False
+        globals()["_fingerprint_logged"] = False
+    if already and not force:
         return
     target = tab or page
     machine = platform.machine() or "?"
@@ -426,52 +465,50 @@ def log_runtime_fingerprint(tab=None, force: bool = False):
         arch_hint = "ARM 风险：Turnstile 更容易给 failure，优先考虑 x86_64 worker"
     elif machine.lower() in ("x86_64", "amd64"):
         arch_hint = "x86_64 相对更友好"
-    print(f"[*] 指纹探测 machine={machine} | {arch_hint}")
-    print(f"[*] 浏览器版本: {_probe_browser_version()}")
-    print(
+    _emit(f"[*] 指纹探测 machine={machine} | {arch_hint}")
+    _emit(f"[*] 浏览器版本: {_probe_browser_version()}")
+    _emit(
         f"[*] DISPLAY={os.environ.get('DISPLAY', '')!r} "
         f"XDG_SESSION_TYPE={os.environ.get('XDG_SESSION_TYPE', '')!r} "
         f"WAYLAND_DISPLAY={os.environ.get('WAYLAND_DISPLAY', '')!r}"
     )
     if target is None:
-        print("[Warn] 浏览器未就绪，跳过 WebGL/UA 探测")
+        _emit("[Warn] 浏览器未就绪，跳过 WebGL/UA 探测")
         return
     info = _probe_webgl_and_ua(target)
     if info.get("error"):
-        print(f"[Warn] WebGL/UA 探测失败: {info['error']}")
+        _emit(f"[Warn] WebGL/UA 探测失败: {info['error']}")
         _fingerprint_logged = True
         return
     nav = info.get("nav") or {}
     webgl = info.get("webgl") or {}
     scr = info.get("screen") or {}
-    print(
-        f"[*] UA: {nav.get('userAgent', '')}"
-    )
-    print(
+    _emit(f"[*] UA: {nav.get('userAgent', '')}")
+    _emit(
         f"[*] platform={nav.get('platform')!r} webdriver={nav.get('webdriver')!r} "
         f"hw={nav.get('hardwareConcurrency')} mem={nav.get('deviceMemory')} "
         f"langs={nav.get('languages')}"
     )
-    print(
+    _emit(
         f"[*] screen={scr.get('width')}x{scr.get('height')} "
         f"avail={scr.get('availWidth')}x{scr.get('availHeight')} "
         f"depth={scr.get('colorDepth')} dpr={scr.get('devicePixelRatio')}"
     )
     if webgl.get("ok"):
-        print(
+        _emit(
             f"[*] WebGL OK vendor={webgl.get('vendor')!r} renderer={webgl.get('renderer')!r}"
         )
-        print(
+        _emit(
             f"[*] WebGL unmasked vendor={webgl.get('unmaskedVendor')!r} "
             f"renderer={webgl.get('unmaskedRenderer')!r} version={webgl.get('version')!r}"
         )
         renderer_l = str(webgl.get("unmaskedRenderer") or webgl.get("renderer") or "").lower()
         if any(x in renderer_l for x in ("swiftshader", "llvmpipe", "softpipe", "software")):
-            print("[Warn] WebGL 为软件渲染（SwiftShader/llvmpipe）——无独显服务器常见，Turnstile 分可能偏低")
+            _emit("[Warn] WebGL 为软件渲染（SwiftShader/llvmpipe）——无独显服务器常见，Turnstile 分可能偏低")
         if machine.lower() in ("aarch64", "arm64") and "swiftshader" in renderer_l:
-            print("[Warn] ARM + 软件 WebGL：建议换 x86_64 跑注册机，或使用住宅代理降低 failure")
+            _emit("[Warn] ARM + 软件 WebGL：建议换 x86_64 跑注册机，或使用住宅代理降低 failure")
     else:
-        print(f"[Warn] WebGL 不可用: {webgl} —— Turnstile 极易 failure，请检查 Xvfb/Chromium/GL 库")
+        _emit(f"[Warn] WebGL 不可用: {webgl} —— Turnstile 极易 failure，请检查 Xvfb/Chromium/GL 库")
     _fingerprint_logged = True
 
 
@@ -2100,12 +2137,19 @@ def main():
     args = parser.parse_args()
 
     total = args.count if args.count > 0 else '∞'
-    print(f"")
-    print(f"══════════════════════════════════════")
-    print(f"  Grok 注册机启动")
-    print(f"  计划轮数: {total}")
-    print(f"  SSO 输出: {args.output}")
-    print(f"══════════════════════════════════════")
+    # logger 就绪后再打一次环境摘要，确保 WebUI/日志文件都能看到（不依赖模块 import 时的 print）
+    _emit(
+        f"[*] 运行环境: system={platform.system()} machine={platform.machine()} "
+        f"python={platform.python_version()} DISPLAY={os.environ.get('DISPLAY', '')!r} "
+        f"window={_WINDOW_W}x{_WINDOW_H} headless=False"
+    )
+    _emit(f"[*] 浏览器版本(启动前): {_probe_browser_version()}")
+    print("", flush=True)
+    print("══════════════════════════════════════", flush=True)
+    print("  Grok 注册机启动", flush=True)
+    print(f"  计划轮数: {total}", flush=True)
+    print(f"  SSO 输出: {args.output}", flush=True)
+    print("══════════════════════════════════════", flush=True)
 
     current_round = 0
     success_count = 0
@@ -2113,6 +2157,8 @@ def main():
     collected_sso: list = []
     try:
         start_browser()
+        # 浏览器起来后再强制打 WebGL/UA（即使 start_browser 内已打过，force 保证进 logger）
+        log_runtime_fingerprint(page, force=True)
         while True:
             if args.count > 0 and current_round >= args.count:
                 break
