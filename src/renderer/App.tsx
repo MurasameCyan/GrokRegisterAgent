@@ -131,7 +131,7 @@ export default function App() {
 
   const phasePill =
     status.phase === 'running' || status.phase === 'starting'
-      ? 'pill-warn'
+      ? 'pill-ok'
       : status.phase === 'error'
         ? 'pill-danger'
         : status.phase === 'done'
@@ -160,38 +160,44 @@ export default function App() {
                 onClick={() => setTab(id)}
                 className={cn('nav-link shrink-0', tab === id && 'nav-link-active')}
               >
-                <Icon className="h-4 w-4 shrink-0" />
-                <span>{label}</span>
+                <Icon className="h-4 w-4 shrink-0" strokeWidth={2} aria-hidden />
+                <span className="leading-none">{label}</span>
               </button>
             ))}
           </nav>
 
-          <div className="mt-auto space-y-3 border-t border-border p-3">
-            <div className="flex items-center justify-between gap-2 rounded-xl bg-muted px-3 py-2.5">
+          <div className="mt-auto space-y-2.5 border-t border-border p-3">
+            <div className="flex h-10 items-center justify-between gap-2 rounded-xl bg-muted px-2.5">
               <div className="flex min-w-0 items-center gap-2">
-                <ShieldCheck className="h-4 w-4 shrink-0 text-ok" />
-                <span className="truncate text-[13px] font-medium">{auth.username}</span>
+                <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-ok/15 text-ok">
+                  <ShieldCheck className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />
+                </span>
+                <span className="truncate text-[13px] font-medium leading-none">
+                  {auth.username}
+                </span>
               </div>
               <button
                 type="button"
                 onClick={logout}
-                className="inline-flex items-center gap-1 rounded-lg px-2 py-1 text-[12px] font-medium text-primary active:opacity-70"
+                className="inline-flex h-7 shrink-0 items-center justify-center gap-1 rounded-lg px-2 text-[12px] font-medium leading-none text-primary active:opacity-70"
                 title="退出登录"
               >
-                <LogOut className="h-3.5 w-3.5" />
-                退出
+                <LogOut className="h-3.5 w-3.5 shrink-0" strokeWidth={2} aria-hidden />
+                <span className="leading-none">退出</span>
               </button>
             </div>
-            <div className="flex items-center justify-between gap-2">
-              <ThemeToggle />
+            <div className="flex items-center gap-2">
+              <div className="min-w-0 flex-1">
+                <ThemeToggle />
+              </div>
               <a
                 href="https://github.com/MurasameCyan/GrokRegisterAgent"
                 target="_blank"
                 rel="noreferrer"
-                className="inline-flex h-9 w-9 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                 title="GitHub"
               >
-                <Github className="h-4 w-4" />
+                <Github className="h-4 w-4" strokeWidth={2} aria-hidden />
               </a>
             </div>
           </div>

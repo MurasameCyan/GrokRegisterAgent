@@ -116,7 +116,15 @@
   }
 
   .nav-link {
-    @apply flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-[15px] font-medium text-muted-foreground transition-colors duration-100 active:opacity-70;
+    @apply flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-[15px] font-medium leading-none text-muted-foreground transition-colors duration-100 active:opacity-70;
+  }
+
+  /* Lucide 与中文并排时强制光学居中，避免 baseline 错位 */
+  .nav-link > svg,
+  .pill > svg,
+  .chip > svg {
+    @apply shrink-0;
+    display: block;
   }
 
   .nav-link:hover {
@@ -195,11 +203,11 @@
 
   /* 胶囊 / 状态 */
   .chip {
-    @apply inline-flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-1 text-[12px] font-medium text-muted-foreground;
+    @apply inline-flex items-center justify-center gap-1.5 rounded-full bg-muted px-2.5 py-1 text-[12px] font-medium leading-none text-muted-foreground;
   }
 
   .pill {
-    @apply inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] font-semibold;
+    @apply inline-flex items-center justify-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] font-semibold leading-none;
   }
 
   .pill-ok {

@@ -173,21 +173,9 @@ function RuntimeSettingsPanel() {
             <Input value={draft.proxy} onChange={(e) => update('proxy', e.target.value)} />
           </Field>
 
-          <Field label="Python 路径" hint="留空则用系统 PATH 中的 python">
-            <Input
-              value={draft.pythonPath}
-              onChange={(e) => update('pythonPath', e.target.value)}
-              placeholder="python"
-            />
-          </Field>
-
-          <Field label="注册脚本目录" hint="留空用内置 register/">
-            <Input
-              value={draft.registerDir}
-              onChange={(e) => update('registerDir', e.target.value)}
-              placeholder="/app/register"
-            />
-          </Field>
+          <p className="text-[12px] leading-5 text-muted-foreground">
+            Python 路径与注册脚本目录请在「配置」页修改。
+          </p>
         </div>
 
         <Button onClick={save} disabled={!dirty || saving} className="w-full">

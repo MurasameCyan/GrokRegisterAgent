@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { Github, Save, Server, ShieldCheck } from 'lucide-react';
+import { FolderCode, Github, Save, Server, ShieldCheck, Terminal } from 'lucide-react';
 import { Card, CardBody, CardHeader } from '@renderer/components/ui/Card';
 import { Button } from '@renderer/components/ui/Button';
 import { Input } from '@renderer/components/ui/Input';
@@ -77,13 +77,15 @@ export function SettingsForm() {
   const origin = typeof window === 'undefined' ? 'http://127.0.0.1:8098' : window.location.origin;
   const updateMail = <K extends keyof AppSettings['mail']>(key: K, value: AppSettings['mail'][K]) =>
     setDraft({ ...draft, mail: { ...draft.mail, [key]: value } });
+  const update = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) =>
+    setDraft({ ...draft, [key]: value });
 
   const save = async () => {
     setSaving(true);
     try {
       await window.api.saveSettings(draft);
       await reload();
-      push({ tone: 'ok', title: '邮箱后台配置已保存' });
+      push({ tone: 'ok', title: '配置已保存' });
     } catch (err) {
       push({ tone: 'danger', title: '保存失败', description: String(err) });
     } finally {
@@ -143,6 +145,43 @@ export function SettingsForm() {
                 invalid={!!errors['mail.adminAuth']}
               />
             </Field>
+          </div>
+        </CardBody>
+      </Card>
+
+      <Card>
+        <CardHeader
+          title="运行环境"
+          description="注册机 Python 解释器与脚本目录"
+          right={
+            <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-muted text-muted-foreground">
+              <FolderCode className="h-4 w-4" aria-hidden />
+            </span>
+          }
+        />
+        <CardBody className="grid gap-4 lg:grid-cols-2">
+          <Field label="Python 路径" hint="留空则用系统 PATH 中的 python">
+            <Input
+              value={draft.pythonPath}
+              onChange={(e) => update('pythonPath', e.target.value)}
+              placeholder="python"
+            />
+          </Field>
+          <Field label="注册脚本目录" hint="留空用内置 register/">
+            <Input
+              value={draft.registerDir}
+              onChange={(e) => update('registerDir', e.target.value)}
+              placeholder="/app/register"
+            />
+          </Field>
+          <div className="lg:col-span-2 rounded-xl bg-muted/60 px-3.5 py-3 text-[12px] leading-5 text-muted-foreground">
+            <div className="mb-1 flex items-center gap-1.5 font-medium text-foreground">
+              <Terminal className="h-3.5 w-3.5" aria-hidden />
+              Docker 默认
+            </div>
+            容器内一般为 <code className="text-[11px]">/usr/local/bin/python3</code> 与{' '}
+            <code className="text-[11px]">/app/register</code>；热更新脚本目录请挂载到{' '}
+            <code className="text-[11px]">/opt/register-host</code>。
           </div>
         </CardBody>
       </Card>

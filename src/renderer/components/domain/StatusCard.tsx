@@ -97,12 +97,12 @@ function phaseTone(phase: RunStatus['phase']) {
       return {
         kicker: '状态',
         label: phase === 'starting' ? '启动中' : '运行中',
-        pill: 'status-pill-warn',
+        pill: 'status-pill-ok',
         Icon: Loader2,
-        bg: 'bg-warn/5',
-        border: 'border-warn/30',
-        iconBg: 'bg-warn/10',
-        iconColor: 'text-warn'
+        bg: 'bg-ok/5',
+        border: 'border-ok/30',
+        iconBg: 'bg-ok/10',
+        iconColor: 'text-ok'
       };
     case 'done':
       return {
@@ -117,7 +117,7 @@ function phaseTone(phase: RunStatus['phase']) {
       };
     case 'killed':
       return {
-        kicker: 'run state',
+        kicker: '状态',
         label: '已停止',
         pill: 'status-pill-idle',
         Icon: Activity,
