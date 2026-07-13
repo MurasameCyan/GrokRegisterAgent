@@ -91,27 +91,32 @@
   }
 
   .app-nav {
-    @apply w-full shrink-0 border-b border-border bg-card lg:sticky lg:top-5 lg:h-[calc(100vh-2.5rem)] lg:w-[220px] lg:rounded-2xl lg:border lg:border-border lg:shadow-[var(--ios-shadow)];
+    @apply w-full shrink-0 border-b border-border bg-card lg:sticky lg:top-5 lg:h-[calc(100vh-2.5rem)] lg:w-[180px] lg:rounded-2xl lg:border lg:border-border lg:shadow-[var(--ios-shadow)];
   }
 
   .app-main {
     @apply min-w-0 flex-1 px-4 py-4 sm:px-2 lg:px-1 lg:py-0;
   }
 
-  /* 导航 */
+  /* 导航：总宽 180，图标左 80、标题右 */
   .nav-brand {
-    @apply flex flex-col items-center gap-3 px-4 py-4 text-center;
+    @apply flex items-center gap-2 px-2.5 py-3;
   }
 
-  /* 侧边栏图标放大到 100×100，标题同步放大（仅作用于侧边栏，不影响登录/启动页） */
+  /* 侧边栏图标 80×80 + 标题字号适配剩余宽度（仅 .nav-brand，不影响登录/启动页） */
   .nav-brand .nav-logo {
-    @apply h-[100px] w-[100px] text-[30px];
+    @apply h-20 w-20 shrink-0 text-[22px];
   }
 
   .nav-brand .site-name {
-    font-size: 24px;
-    align-items: center;
-    text-align: center;
+    font-size: 13px;
+    line-height: 1.15;
+    gap: 1px;
+    min-width: 0;
+    flex: 1;
+    text-align: left;
+    align-items: flex-start;
+    letter-spacing: -0.04em;
   }
 
   .nav-logo {

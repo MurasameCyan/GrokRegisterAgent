@@ -4,7 +4,7 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile
-    container_name: grok-gegister-agent
+    container_name: grok-register-agent
     restart: unless-stopped
     ports:
       - "${WEB_PORT:-6657}:6657"
