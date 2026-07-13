@@ -1,0 +1,242 @@
+"""SSO → CPA auth 文件 + refresh 重签。
+
+默认写出目录：DATA_DIR/auth 或 config cpa_auth_dir，默认 /data/auth。
+"""
+from __future__ import annotations
+
+import json
+import os
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+from typing import Any, Callable, Optional
+
+from cpa_schema import (
+    DEFAULT_BASE_URL,
+    DEFAULT_TOKEN_ENDPOINT,
+    build_cpa_xai_auth,
+    credential_file_name,
+    random_client_headers,
+)
+from sso_to_auth import sso_to_token, write_cpa_auth, token_to_cpa_record
+
+LogFn = Callable[[str], None]
+
+
+def _noop(msg: str) -> None:
+    return None
+
+
+def default_auth_dir() -> Path:
+    env = (os.environ.get("AUTH_DIR") or os.environ.get("CPA_AUTH_DIR") or "").strip()
+    if env:
+        return Path(env).expanduser().resolve()
+    # config.json
+    conf_path = Path(__file__).resolve().parent / "config.json"
+    try:
+        conf = json.loads(conf_path.read_text(encoding="utf-8"))
+        d = str(conf.get("cpa_auth_dir") or conf.get("auth_dir") or "").strip()
+        if d:
+            return Path(d).expanduser().resolve()
+    except Exception:
+        pass
+    data = (os.environ.get("DATA_DIR") or "").strip()
+    if data:
+        return Path(data).expanduser().resolve() / "auth"
+    return Path("/data/auth")
+
+
+def sso_to_cpa_auth(
+    *,
+    sso: str,
+    email: str = "",
+    proxy: str = "",
+    auth_dir: str | Path | None = None,
+    random_fingerprint: bool = True,
+    log: LogFn | None = None,
+) -> dict[str, Any]:
+    """SSO cookie → device-flow → data/auth/xai-<email>.json"""
+    log = log or _noop
+    sso = (sso or "").strip()
+    if not sso:
+        return {"ok": False, "error": "empty sso"}
+    out_dir = Path(auth_dir) if auth_dir else default_auth_dir()
+    log(f"[auth] SSO→CPA mint email={email or '-'} dir={out_dir}")
+    token = sso_to_token(sso, proxy=proxy or "", log=log)
+    if not token:
+        return {"ok": False, "error": "sso_to_token failed", "email": email}
+
+    headers = random_client_headers(email or sso[:16]) if random_fingerprint else None
+    # 用 schema 构建（含随机 fingerprint headers）
+    try:
+        payload = build_cpa_xai_auth(
+            email=email,
+            access_token=token.get("access_token") or "",
+            refresh_token=token.get("refresh_token") or "",
+            id_token=token.get("id_token"),
+            expires_in=token.get("expires_in"),
+            base_url=DEFAULT_BASE_URL,
+            headers=headers,
+        )
+        # 兼容 token_to_cpa_record 字段
+        if not payload.get("email") and email:
+            payload["email"] = email
+    except Exception:
+        payload = token_to_cpa_record(token, email=email)
+        if headers:
+            payload["headers"] = headers
+
+    path = write_cpa_auth(out_dir, payload)
+    log(f"[auth] wrote {path}")
+    return {
+        "ok": True,
+        "email": payload.get("email") or email,
+        "path": str(path),
+        "filename": path.name,
+        "sub": payload.get("sub") or "",
+        "agent_id": (headers or {}).get("x-grok-agent-id", ""),
+    }
+
+
+def refresh_access_token(
+    refresh_token: str,
+    *,
+    proxy: str = "",
+    timeout: float = 30.0,
+) -> dict[str, Any] | None:
+    """用 refresh_token 换新 access/refresh（CPA 重签）。"""
+    refresh_token = (refresh_token or "").strip()
+    if not refresh_token:
+        return None
+    form = {
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "client_id": "b1a00492-073a-47ea-816f-4c329264a828",
+    }
+    data = urllib.parse.urlencode(form).encode("utf-8")
+    req = urllib.request.Request(
+        DEFAULT_TOKEN_ENDPOINT,
+        data=data,
+        method="POST",
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+            "User-Agent": "grok-register-agent/auth-resign",
+        },
+    )
+    handlers = []
+    if proxy:
+        handlers.append(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
+    opener = urllib.request.build_opener(*handlers) if handlers else urllib.request.build_opener()
+    try:
+        with opener.open(req, timeout=timeout) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
+            return json.loads(body)
+    except urllib.error.HTTPError as e:
+        try:
+            err_body = e.read().decode("utf-8", errors="replace")
+        except Exception:
+            err_body = str(e)
+        return {"error": f"HTTP {e.code}", "detail": err_body[:300]}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def resign_auth_file(
+    path: str | Path,
+    *,
+    sso: str = "",
+    proxy: str = "",
+    log: LogFn | None = None,
+) -> dict[str, Any]:
+    """重签单个 auth JSON：优先 refresh_token；失败则用 sso 重 mint。"""
+    log = log or _noop
+    p = Path(path).expanduser().resolve()
+    if not p.is_file():
+        return {"ok": False, "error": f"file not found: {p}"}
+    try:
+        payload = json.loads(p.read_text(encoding="utf-8"))
+    except Exception as e:
+        return {"ok": False, "error": f"read failed: {e}"}
+
+    email = str(payload.get("email") or "").strip()
+    refresh = str(payload.get("refresh_token") or "").strip()
+    headers = payload.get("headers") if isinstance(payload.get("headers"), dict) else None
+
+    # 1) refresh
+    if refresh:
+        log(f"[auth] resign via refresh: {p.name}")
+        token = refresh_access_token(refresh, proxy=proxy)
+        if token and token.get("access_token"):
+            new_refresh = token.get("refresh_token") or refresh
+            try:
+                new_payload = build_cpa_xai_auth(
+                    email=email,
+                    access_token=token["access_token"],
+                    refresh_token=new_refresh,
+                    id_token=token.get("id_token") or payload.get("id_token"),
+                    expires_in=token.get("expires_in"),
+                    base_url=str(payload.get("base_url") or DEFAULT_BASE_URL),
+                    headers=headers,
+                    sub=str(payload.get("sub") or "") or None,
+                )
+            except Exception as e:
+                return {"ok": False, "error": f"build payload failed: {e}", "email": email}
+            # 原地原子写
+            tmp = p.with_suffix(p.suffix + ".tmp")
+            tmp.write_text(json.dumps(new_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            os.replace(tmp, p)
+            log(f"[auth] resign ok (refresh) → {p}")
+            return {"ok": True, "mode": "refresh", "path": str(p), "email": email, "filename": p.name}
+        log(f"[auth] refresh failed: {token}")
+
+    # 2) sso re-mint
+    sso_v = (sso or str(payload.get("sso") or "")).strip()
+    if sso_v:
+        log(f"[auth] resign via sso: {p.name}")
+        r = sso_to_cpa_auth(
+            sso=sso_v,
+            email=email,
+            proxy=proxy,
+            auth_dir=p.parent,
+            random_fingerprint=bool(headers is None),
+            log=log,
+        )
+        if r.get("ok"):
+            r["mode"] = "sso"
+            return r
+        return {"ok": False, "error": r.get("error") or "sso resign failed", "email": email}
+
+    return {
+        "ok": False,
+        "error": "no refresh_token and no sso for resign",
+        "email": email,
+        "path": str(p),
+    }
+
+
+def list_auth_files(auth_dir: str | Path | None = None) -> list[dict[str, Any]]:
+    d = Path(auth_dir) if auth_dir else default_auth_dir()
+    if not d.is_dir():
+        return []
+    out: list[dict[str, Any]] = []
+    for f in sorted(d.glob("*.json")):
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+        out.append(
+            {
+                "filename": f.name,
+                "path": str(f),
+                "email": data.get("email") or "",
+                "sub": data.get("sub") or "",
+                "expired": data.get("expired") or "",
+                "disabled": bool(data.get("disabled")),
+                "has_refresh": bool(data.get("refresh_token")),
+                "mtime": f.stat().st_mtime,
+            }
+        )
+    return out

@@ -33,6 +33,19 @@ MAIL_ADMIN_AUTH = str(_conf.get("mail_admin_auth", ""))
 MAIL_DOMAIN = str(_conf.get("mail_domain", ""))
 PROXY = str(_conf.get("proxy", ""))
 
+# 邮箱域名池（可选）；轮换逻辑见 pools.next_mail_domain
+try:
+    from pools import next_mail_domain, next_proxy, reload_pools
+except Exception:  # pragma: no cover
+    def next_mail_domain(fallback: str = "") -> str:
+        return fallback
+
+    def next_proxy(fallback: str = "") -> str:
+        return fallback
+
+    def reload_pools(force: bool = False) -> None:
+        return None
+
 # ============================================================
 # 适配层：为 DrissionPage_example.py 提供简单接口
 # ============================================================
@@ -114,28 +127,37 @@ def create_temp_email() -> Tuple[str, str, str]:
     """
     通过 admin 接口创建一个新地址。
     后端返回 {jwt, address, password}，jwt 即用于读邮件的 Bearer。
+    域名：优先邮箱域名池轮换，否则用 MAIL_DOMAIN。
     """
     if not MAIL_ADMIN_AUTH:
         raise Exception("mail_admin_auth 未设置，无法创建邮箱地址")
 
     headers = {"x-admin-auth": MAIL_ADMIN_AUTH}
+    # 每轮创建前刷新池配置（支持热更新 config）
+    try:
+        reload_pools(force=True)
+    except Exception:
+        pass
     session, use_cffi = _create_session()
 
     last_err = ""
     for _ in range(5):
         local = _generate_local_part()
+        domain = next_mail_domain(MAIL_DOMAIN) or MAIL_DOMAIN
+        if not domain:
+            raise Exception("mail_domain / mail_domains 未设置，无法创建邮箱地址")
         try:
             res = _do_request(
                 session, use_cffi, "post",
                 f"{MAIL_API_BASE}/admin/new_address",
-                json={"name": local, "domain": MAIL_DOMAIN, "enablePrefix": False},
+                json={"name": local, "domain": domain, "enablePrefix": False},
                 headers=headers,
                 timeout=15,
             )
             if res.status_code in (200, 201):
                 data = res.json()
                 jwt = data.get("jwt")
-                address = data.get("address") or f"{local}@{MAIL_DOMAIN}"
+                address = data.get("address") or f"{local}@{domain}"
                 password = data.get("password", "")
                 if jwt and address:
                     print(f"[*] 邮箱创建成功: {address}")

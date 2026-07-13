@@ -213,9 +213,11 @@ try:
 except Exception:
     pass
 
-# 从 config.json 读取代理配置给浏览器
+# 从 config.json 读取代理 / 浏览器路径；代理支持池轮换（每轮 start_browser 再取）
 _browser_proxy = ""
 _browser_path_cfg = ""
+_current_fingerprint = None
+_auto_auth_export = True
 try:
     import json as _json_mod
     _cfg_path = os.path.join(os.path.dirname(__file__), "config.json")
@@ -224,11 +226,32 @@ try:
             _cfg = _json_mod.load(_f)
         _browser_proxy = str(_cfg.get("browser_proxy", "") or _cfg.get("proxy", "") or "")
         _browser_path_cfg = str(_cfg.get("browser_path", "") or "")
+        _auto_auth_export = bool(_cfg.get("auto_auth_export", True))
 except Exception:
     pass
-if _browser_proxy:
-    co.set_proxy(_browser_proxy)
-    print(f"[*] 浏览器代理: {_browser_proxy}")
+
+try:
+    from pools import next_proxy, reload_pools
+except Exception:
+    def next_proxy(fallback: str = "") -> str:
+        return fallback
+
+    def reload_pools(force: bool = False) -> None:
+        return None
+
+try:
+    from fingerprint import build_fingerprint, apply_to_chromium_options, stealth_js
+except Exception:
+    build_fingerprint = None
+    apply_to_chromium_options = None
+    stealth_js = None
+
+try:
+    from auth_service import sso_to_cpa_auth, default_auth_dir
+except Exception:
+    sso_to_cpa_auth = None
+    default_auth_dir = None
+
 if _browser_path_cfg and os.path.isfile(_browser_path_cfg):
     co.set_browser_path(_browser_path_cfg)
     print(f"[*] 浏览器路径: {_browser_path_cfg}")
@@ -514,25 +537,68 @@ def log_runtime_fingerprint(tab=None, force: bool = False):
 
 def start_browser():
     # 每轮从全新浏览器开始，使用独立临时 profile 目录避免 Cookie/Session 复用。
-    global browser, page, _chrome_temp_dir
+    # 每轮轮换代理 + 随机浏览器特征。
+    global browser, page, _chrome_temp_dir, _current_fingerprint, _browser_proxy
     if _IS_LINUX:
         _ensure_virtual_display()
+
+    # 代理池：每轮取一个
+    try:
+        reload_pools(force=True)
+    except Exception:
+        pass
+    try:
+        picked = next_proxy(_browser_proxy)
+        if picked:
+            _browser_proxy = picked
+            try:
+                co.set_proxy(picked)
+            except Exception:
+                pass
+            print(f"[*] 浏览器代理(本轮): {picked}")
+        else:
+            print("[*] 浏览器代理: 直接连接")
+    except Exception as e:
+        print(f"[Warn] 代理池选取失败: {e}")
+
+    # 随机注册特征
+    if build_fingerprint is not None:
+        try:
+            _current_fingerprint = build_fingerprint()
+            if apply_to_chromium_options is not None:
+                apply_to_chromium_options(co, _current_fingerprint)
+            print(
+                f"[*] 本轮特征: ua={_current_fingerprint.user_agent[:60]}… "
+                f"tz={_current_fingerprint.timezone} "
+                f"size={_current_fingerprint.window_w}x{_current_fingerprint.window_h}"
+            )
+        except Exception as e:
+            print(f"[Warn] 指纹生成失败: {e}")
+            _current_fingerprint = None
+
     _chrome_temp_dir = tempfile.mkdtemp(prefix="chrome_run_")
     co.set_user_data_path(_chrome_temp_dir)
     browser = Chromium(co)
     tabs = browser.get_tabs()
     page = tabs[-1] if tabs else browser.new_tab()
+    win_w = getattr(_current_fingerprint, "window_w", None) or _WINDOW_W
+    win_h = getattr(_current_fingerprint, "window_h", None) or _WINDOW_H
     try:
-        # 固定视口，保证 CDP 坐标点击与 Xvfb 分辨率一致
-        page.set.window.size(_WINDOW_W, _WINDOW_H)
+        page.set.window.size(win_w, win_h)
     except Exception:
         try:
             page.run_cdp("Browser.setWindowBounds", windowId=1, bounds={
-                "left": 0, "top": 0, "width": _WINDOW_W, "height": _WINDOW_H, "windowState": "normal"
+                "left": 0, "top": 0, "width": win_w, "height": win_h, "windowState": "normal"
             })
         except Exception:
             pass
     _apply_stealth_patches(page)
+    # 叠加本轮随机特征 JS
+    if _current_fingerprint is not None and stealth_js is not None:
+        try:
+            page.run_js(stealth_js(_current_fingerprint))
+        except Exception:
+            pass
     # 进程内首次启动时打印架构/版本/WebGL，确认 ARM 无 GUI 环境
     log_runtime_fingerprint(page, force=False)
     return browser, page
@@ -554,19 +620,9 @@ def stop_browser():
 
 
 def restart_browser():
-    # 清除 cookie/storage 代替完整重启，节省 Chrome 冷启动时间。
-    global browser, page
-    if browser is None:
-        start_browser()
-        return
-    try:
-        tabs = browser.get_tabs()
-        page = tabs[-1] if tabs else browser.new_tab()
-        page.run_js("window.localStorage.clear(); window.sessionStorage.clear();")
-        page.clear_cache(session_storage=True, cookies=True)
-    except Exception:
-        stop_browser()
-        start_browser()
+    # 整机重启以切换代理与随机特征（池轮换依赖新 Chromium 进程）。
+    stop_browser()
+    start_browser()
 
 
 def refresh_active_page():
@@ -2740,6 +2796,27 @@ def run_single_registration(output_path=DEFAULT_SSO_FILE, extract_numbers=False)
     password = str(profile.get("password", "") or "")
     append_sso_to_txt(sso_value, output_path, email=email, password=password)
 
+    # SSO → CPA auth（data/auth/xai-<email>.json）；失败不阻断本轮成功
+    auth_status = {"attempted": False, "ok": False}
+    if _auto_auth_export and sso_to_cpa_auth is not None and sso_value:
+        auth_status["attempted"] = True
+        try:
+            proxy_for_auth = ""
+            try:
+                proxy_for_auth = next_proxy(_browser_proxy) or _browser_proxy or ""
+            except Exception:
+                proxy_for_auth = _browser_proxy or ""
+            auth_status = sso_to_cpa_auth(
+                sso=sso_value,
+                email=email,
+                proxy=proxy_for_auth,
+                log=lambda m: print(m),
+            )
+            auth_status["attempted"] = True
+        except Exception as e:
+            print(f"[Warn] SSO→auth 导出异常（不影响 sso 落盘）: {e}")
+            auth_status = {"attempted": True, "ok": False, "error": str(e)}
+
     if extract_numbers:
         extract_visible_numbers()
 
@@ -2747,6 +2824,7 @@ def run_single_registration(output_path=DEFAULT_SSO_FILE, extract_numbers=False)
         "email": email,
         "sso": sso_value,
         "age_gate": age_status,
+        "auth": auth_status,
         **profile,
     }
 
