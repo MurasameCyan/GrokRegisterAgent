@@ -68,6 +68,15 @@ const config: Config = {
           '"SF Pro Display"',
           '"Segoe UI"',
           'sans-serif'
+        ],
+        /* 站名花体 */
+        script: [
+          '"Segoe Script"',
+          '"Brush Script MT"',
+          '"Lucida Handwriting"',
+          '"Apple Chancery"',
+          '"Snell Roundhand"',
+          'cursive'
         ]
       },
       boxShadow: {

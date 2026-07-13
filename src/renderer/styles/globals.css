@@ -91,7 +91,7 @@
   }
 
   .app-nav {
-    @apply w-full shrink-0 border-b border-border bg-card lg:sticky lg:top-5 lg:h-[calc(100vh-2.5rem)] lg:w-[220px] lg:rounded-2xl lg:border lg:border-border lg:shadow-[var(--ios-shadow)];
+    @apply w-full shrink-0 border-b border-border bg-card lg:sticky lg:top-5 lg:h-[calc(100vh-2.5rem)] lg:w-[300px] lg:rounded-2xl lg:border lg:border-border lg:shadow-[var(--ios-shadow)];
   }
 
   .app-main {
@@ -100,11 +100,28 @@
 
   /* 导航 */
   .nav-brand {
-    @apply flex items-center gap-3 px-4 py-4;
+    @apply flex items-center gap-4 px-4 py-5;
   }
 
+  /* 固定 100x100，不用 h-11（会被 tailwind 覆盖回 44px） */
   .nav-logo {
-    @apply relative flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden text-[13px] font-black tracking-[-0.06em] text-white;
+    position: relative;
+    display: flex;
+    width: 100px;
+    height: 100px;
+    min-width: 100px;
+    min-height: 100px;
+    max-width: 100px;
+    max-height: 100px;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    font-size: 28px;
+    font-weight: 900;
+    letter-spacing: -0.06em;
+    line-height: 1;
+    color: #fff;
     border-radius: 30% 70% 70% 30% / 30% 30% 70% 70%;
     background: linear-gradient(
       135deg,
@@ -121,8 +138,8 @@
       gra-breathe 3.6s ease-in-out infinite;
     box-shadow:
       0 0 0 1px rgba(255, 255, 255, 0.14) inset,
-      0 6px 18px rgba(91, 140, 255, 0.32);
-    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.28);
+      0 8px 24px rgba(91, 140, 255, 0.34);
+    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.28);
     will-change: border-radius, transform, background-position;
   }
 
@@ -202,24 +219,30 @@
     @apply nav-logo;
   }
 
-  /* 站名：三行炫彩（与 100px 图标视觉平衡） */
+  /* 站名：花体/手写体 + 三行炫彩（零外链） */
   .site-name {
     display: flex;
     flex-direction: column;
     justify-content: center;
-    line-height: 1.12;
-    font-weight: 800;
-    letter-spacing: -0.045em;
-    font-size: 18px;
-    gap: 2px;
+    line-height: 1.18;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    font-size: 20px;
+    gap: 1px;
     min-width: 0;
     font-family:
-      ui-rounded,
-      'SF Pro Rounded',
-      'Segoe UI',
-      system-ui,
-      -apple-system,
-      sans-serif;
+      'Segoe Script',
+      'Brush Script MT',
+      'Lucida Handwriting',
+      'Apple Chancery',
+      'Snell Roundhand',
+      'Zapfino',
+      'STXingkai',
+      'STKaiti',
+      'KaiTi',
+      'FangSong',
+      cursive;
+    font-style: italic;
     user-select: none;
   }
 
@@ -242,10 +265,10 @@
   }
 
   .site-name-lg {
-    font-size: 26px;
-    letter-spacing: -0.05em;
-    gap: 3px;
-    line-height: 1.1;
+    font-size: 28px;
+    letter-spacing: 0.02em;
+    gap: 2px;
+    line-height: 1.15;
   }
 
   .nav-sub {
@@ -336,6 +359,35 @@
   /* 欢迎区 */
   .welcome-card {
     @apply relative overflow-hidden rounded-2xl border border-border bg-card p-5 shadow-[var(--ios-shadow)] sm:p-6;
+  }
+
+  /* 仪表盘左右并排卡：强制同壳同高 */
+  .dash-panel {
+    display: flex;
+    height: 100%;
+    min-height: 248px;
+    flex-direction: column;
+    overflow: hidden;
+    border-radius: 1rem;
+    border: 1px solid hsl(var(--border));
+    background: hsl(var(--card));
+    box-shadow: var(--ios-shadow);
+  }
+
+  .dash-panel-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 0.75rem;
+    min-height: 88px;
+    padding: 1rem 1.1rem 0.75rem;
+  }
+
+  .dash-panel-body {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    padding: 0 1.1rem 1rem;
   }
 
   /* 胶囊 / 状态 */

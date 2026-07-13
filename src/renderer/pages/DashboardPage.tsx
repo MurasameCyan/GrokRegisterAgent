@@ -159,10 +159,10 @@ function MiniStat({
 
 function InfoRow({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex min-h-[48px] flex-1 items-center gap-3 px-4 py-3">
+    <div className="flex h-11 items-center gap-3 px-3.5">
       <span className="shrink-0 text-[13px] text-foreground">{label}</span>
       <span
-        className="ml-auto max-w-[65%] truncate text-right text-[13px] text-muted-foreground"
+        className="ml-auto max-w-[62%] truncate text-right text-[13px] text-muted-foreground"
         title={value}
       >
         {value}
