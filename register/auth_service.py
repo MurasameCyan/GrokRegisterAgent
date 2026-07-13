@@ -15,12 +15,18 @@ from typing import Any, Callable, Optional
 
 from cpa_schema import (
     DEFAULT_BASE_URL,
+    DEFAULT_CLIENT_HEADERS,
     DEFAULT_TOKEN_ENDPOINT,
     build_cpa_xai_auth,
     credential_file_name,
     random_client_headers,
 )
-from sso_to_auth import sso_to_token, write_cpa_auth, token_to_cpa_record
+from sso_to_auth import (
+    access_token_referrer,
+    sso_to_token,
+    token_to_cpa_record,
+    write_cpa_auth,
+)
 from cpa_probe import probe_and_cleanup
 
 LogFn = Callable[[str], None]
@@ -28,6 +34,37 @@ LogFn = Callable[[str], None]
 
 def _noop(msg: str) -> None:
     return None
+
+
+def _normalize_grok_pager_headers(headers: dict | None) -> dict[str, str]:
+    """将旧 grok-shell 头升级为 grok-pager，保留 x-grok-agent-id。
+
+    对齐 cred2cpa：免费 Build 必须以 grok-pager 身份访问 cli-chat-proxy。
+    """
+    base = dict(DEFAULT_CLIENT_HEADERS)
+    if not isinstance(headers, dict):
+        return base
+    # 保留已有 agent-id / 平台相关 UA 仅当已是 pager；否则用默认 pager 头
+    agent = str(headers.get("x-grok-agent-id") or headers.get("X-Grok-Agent-Id") or "").strip()
+    ua = str(headers.get("User-Agent") or headers.get("user-agent") or "")
+    ident = str(
+        headers.get("x-grok-client-identifier")
+        or headers.get("X-Grok-Client-Identifier")
+        or ""
+    ).strip()
+    if ident == "grok-pager" or "grok-pager/" in ua:
+        # 已是 pager：保留完整自定义（含随机平台 UA + agent-id）
+        out = {str(k): str(v) for k, v in headers.items() if v is not None}
+        # 确保关键身份字段存在
+        for k, v in DEFAULT_CLIENT_HEADERS.items():
+            out.setdefault(k, v)
+        if agent:
+            out["x-grok-agent-id"] = agent
+        return out
+    # 旧 shell 或其它：升级为 pager 默认，仅保留 agent-id
+    if agent:
+        base["x-grok-agent-id"] = agent
+    return base
 
 
 def default_auth_dir() -> Path:
@@ -138,7 +175,12 @@ def refresh_access_token(
     proxy: str = "",
     timeout: float = 30.0,
 ) -> dict[str, Any] | None:
-    """用 refresh_token 换新 access/refresh（CPA 重签）。"""
+    """用 refresh_token 换新 access/refresh（CPA 重签）。
+
+    对齐 cred2cpa / 7sso2auth：refresh 请求必须带 grok-pager 身份头，
+    服务端才会把 referrer=grok-build 签进新的 access_token，
+    cli-chat-proxy.grok.com 才接受（旧 UA / 无 referrer 会 403）。
+    """
     refresh_token = (refresh_token or "").strip()
     if not refresh_token:
         return None
@@ -155,7 +197,7 @@ def refresh_access_token(
         headers={
             "Content-Type": "application/x-www-form-urlencoded",
             "Accept": "application/json",
-            "User-Agent": "grok-register-agent/auth-resign",
+            **DEFAULT_CLIENT_HEADERS,
         },
     )
     handlers = []
@@ -195,7 +237,9 @@ def resign_auth_file(
 
     email = str(payload.get("email") or "").strip()
     refresh = str(payload.get("refresh_token") or "").strip()
-    headers = payload.get("headers") if isinstance(payload.get("headers"), dict) else None
+    raw_headers = payload.get("headers") if isinstance(payload.get("headers"), dict) else None
+    # 重签时统一升级为 grok-pager（旧 grok-shell 文件也会修好）
+    headers = _normalize_grok_pager_headers(raw_headers)
 
     # 1) refresh
     if refresh:
@@ -203,6 +247,7 @@ def resign_auth_file(
         token = refresh_access_token(refresh, proxy=proxy)
         if token and token.get("access_token"):
             new_refresh = token.get("refresh_token") or refresh
+            # 部分实现不回传新 refresh_token，沿用旧的（对齐 7sso2auth）
             try:
                 new_payload = build_cpa_xai_auth(
                     email=email,
@@ -221,6 +266,11 @@ def resign_auth_file(
             tmp.write_text(json.dumps(new_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             os.replace(tmp, p)
             log(f"[auth] resign wrote (refresh) → {p}")
+            ref = access_token_referrer(str(token.get("access_token") or ""))
+            if ref:
+                log(f"[auth] resign access_token referrer={ref}")
+            else:
+                log("[auth] ⚠ resign 后 access_token 无 referrer claim（cli-chat-proxy 可能 403）")
             # refresh 成功后 cehuo 风格测活；dead 删文件并 ok=false
             probe = probe_and_cleanup(p, proxy=proxy or "", delete_on_dead=True)
             log(
@@ -237,8 +287,9 @@ def resign_auth_file(
                     "filename": p.name,
                     "probe": probe,
                     "deleted": bool(probe.get("deleted")),
+                    "referrer": ref,
                 }
-            return {
+            out: dict[str, Any] = {
                 "ok": True,
                 "mode": "refresh",
                 "path": str(p),
@@ -246,7 +297,11 @@ def resign_auth_file(
                 "filename": p.name,
                 "probe": probe,
                 "deleted": bool(probe.get("deleted")),
+                "referrer": ref,
             }
+            if not ref:
+                out["referrer_warn"] = "missing referrer claim"
+            return out
         log(f"[auth] refresh failed: {token}")
 
     # 2) sso re-mint
@@ -258,7 +313,7 @@ def resign_auth_file(
             email=email,
             proxy=proxy,
             auth_dir=p.parent,
-            random_fingerprint=bool(headers is None),
+            random_fingerprint=bool(raw_headers is None),
             log=log,
         )
         if r.get("ok"):

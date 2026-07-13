@@ -41,13 +41,21 @@ SCOPES = (
 # CPA 的 internal/auth/xai/token.go TokenStorage 读的是扁平字段。
 # Build/CLI token（scope 含 grok-cli:access）必须走 cli-chat-proxy.grok.com，
 # 不能用默认 api.x.ai/v1（那是计费通道，会 402）。
-CPA_TOKEN_ENDPOINT = f"{OIDC_ISSUER}/oauth2/token"
-CPA_GROK_BASE_URL = "https://cli-chat-proxy.grok.com/v1"
-CPA_GROK_HEADERS = {
-    "X-XAI-Token-Auth": "xai-grok-cli",
-    "x-grok-client-version": "0.2.93",
-    "x-grok-client-identifier": "grok-shell",
-}
+#
+# 对齐 cred2cpa.py / 7sso2auth.py：
+# 免费 Grok Build 必须以 grok-pager 身份 + approve 阶段 referrer=grok-build，
+# 服务端才会把 referrer=grok-build 签进 access_token，cli-chat-proxy 才接受。
+# 旧的 grok-shell 身份 / 未带 referrer 的 token 会 403。
+from cpa_schema import (
+    DEFAULT_BASE_URL as CPA_GROK_BASE_URL,
+    DEFAULT_CLIENT_HEADERS,
+    DEFAULT_REDIRECT_URI,
+    DEFAULT_TOKEN_ENDPOINT as CPA_TOKEN_ENDPOINT,
+    GROK_CLIENT_VERSION,
+)
+
+CPA_GROK_HEADERS = dict(DEFAULT_CLIENT_HEADERS)
+GROK_BUILD_REFERRER = "grok-build"
 
 
 def b64url_decode(seg: str) -> bytes:
@@ -86,7 +94,10 @@ def request_device_code(proxy: str = "", log=print) -> dict | None:
         f"{OIDC_ISSUER}/oauth2/device/code",
         data=data,
         method="POST",
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            **DEFAULT_CLIENT_HEADERS,
+        },
     )
     try:
         with _urlopen(req, proxy=proxy, timeout=15) as resp:
@@ -111,7 +122,10 @@ def poll_token(device_code: str, interval: int, expires_in: int, timeout: int = 
             f"{OIDC_ISSUER}/oauth2/token",
             data=data,
             method="POST",
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                **DEFAULT_CLIENT_HEADERS,
+            },
         )
         try:
             with _urlopen(req, proxy=proxy, timeout=15) as resp:
@@ -172,6 +186,9 @@ def sso_to_token(sso_cookie: str, proxy: str = "", log=print) -> dict | None:
         return None
 
     try:
+        # 关键（cred2cpa / 7sso2auth）：approve 阶段必须带 referrer=grok-build，
+        # 服务端才会把 referrer=grok-build 签进 access_token。
+        # 实测仅此阶段有效（device/code 与 token 交换阶段注入均无效）。
         r = s.post(
             f"{OIDC_ISSUER}/oauth2/device/approve",
             data={
@@ -179,8 +196,12 @@ def sso_to_token(sso_cookie: str, proxy: str = "", log=print) -> dict | None:
                 "action": "allow",
                 "principal_type": "User",
                 "principal_id": "",
+                "referrer": GROK_BUILD_REFERRER,
             },
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                **DEFAULT_CLIENT_HEADERS,
+            },
             impersonate="chrome",
             timeout=15,
             allow_redirects=True,
@@ -188,7 +209,7 @@ def sso_to_token(sso_cookie: str, proxy: str = "", log=print) -> dict | None:
         if "done" not in r.url:
             log(f"  ❌ approve 失败: {r.url}")
             return None
-        log("  ✅ 授权确认")
+        log("  ✅ 授权确认 (referrer=grok-build)")
     except Exception as e:
         log(f"  ❌ approve 异常: {e}")
         return None
@@ -202,8 +223,11 @@ def sso_to_token(sso_cookie: str, proxy: str = "", log=print) -> dict | None:
     )
     if not token:
         return None
+    ref = access_token_referrer(token.get("access_token") or "")
     log(
-        f"  ✅ access_token (expires_in={token.get('expires_in')}s)"
+        f"  ✅ access_token (expires_in={token.get('expires_in')}s"
+        + (f", referrer={ref}" if ref else ", ⚠无 referrer")
+        + ")"
         + (" + refresh_token" if token.get("refresh_token") else "")
     )
     return token
@@ -261,11 +285,16 @@ def _safe_email_for_filename(email: str) -> str:
     return safe or "unknown"
 
 
-def token_to_cpa_record(token: dict, email: str = "") -> dict:
+def access_token_referrer(access_token: str) -> str:
+    """返回 access_token JWT 里的 referrer claim（没有则空串）。对齐 7sso2auth。"""
+    return (decode_jwt_payload(access_token).get("referrer") or "").strip()
+
+
+def token_to_cpa_record(token: dict, email: str = "", headers: dict | None = None) -> dict:
     """token dict → CLIProxyAPI 扁平 xai auth 记录。
 
-    对齐 CPA internal/auth/xai/token.go 的 TokenStorage 字段，以及
-    grok-build-auth build_cliproxyapi_auth_record 的输出。
+    对齐 CPA internal/auth/xai/token.go、cred2cpa.py / 7sso2auth.token_to_cpa_entry。
+    headers 默认 grok-pager（非旧 grok-shell）。
     """
     access = token.get("access_token") or token.get("key") or ""
     refresh = token.get("refresh_token") or ""
@@ -279,32 +308,41 @@ def token_to_cpa_record(token: dict, email: str = "") -> dict:
 
     # expired: 优先 access token 的 exp，其次 expires_in 推算
     expired = ""
+    expires_in = token.get("expires_in", None)
     if "exp" in payload:
         expired = _iso_utc_from_unix(payload["exp"])
+        if expires_in is None and payload.get("iat") is not None:
+            try:
+                expires_in = max(int(payload["exp"]) - int(payload["iat"]), 0)
+            except Exception:
+                expires_in = 21600
     elif token.get("expires_in") is not None:
         try:
-            expired = _iso_utc_from_unix(int(time.time()) + int(token["expires_in"]))
+            expires_in = int(token["expires_in"])
+            expired = _iso_utc_from_unix(int(time.time()) + expires_in)
         except Exception:
             expired = ""
 
-    return {
+    entry = {
         "type": "xai",
         "auth_kind": "oauth",
-        "email": email or "",
-        "sub": sub,
+        "email": (email or "").strip(),
+        "sub": (sub or "").strip(),
         "access_token": access,
         "refresh_token": refresh,
-        "id_token": id_token,
         "token_type": token.get("token_type", "Bearer"),
-        "expires_in": token.get("expires_in", None),
+        "expires_in": expires_in,
         "expired": expired,
         "last_refresh": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "redirect_uri": "",
+        "redirect_uri": DEFAULT_REDIRECT_URI,
         "token_endpoint": CPA_TOKEN_ENDPOINT,
         "base_url": CPA_GROK_BASE_URL,
         "disabled": False,
-        "headers": dict(CPA_GROK_HEADERS),
+        "headers": dict(headers) if headers else dict(CPA_GROK_HEADERS),
     }
+    if id_token:
+        entry["id_token"] = id_token.strip()
+    return entry
 
 
 def cpa_auth_filename(record: dict) -> str:
