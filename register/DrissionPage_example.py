@@ -1518,11 +1518,10 @@ return true;
         return False
 
 
-def getTurnstileToken(timeout=65):
+def getTurnstileToken(timeout=50):
     """
     求解最终注册页 Turnstile。
-    根据实测诊断：连点会导致 /failure feedback report。
-    策略改为：长等自动通过 -> 最多 3 次 CDP 真人点击且间隔长 -> 检测到 failure 则 soft reset 一次。
+    优先长等自动通过（实测成功多在此）；点击阶段压缩，少点、少等。
     """
     refresh_active_page()
     _apply_stealth_patches(page)
@@ -1530,11 +1529,12 @@ def getTurnstileToken(timeout=65):
     last_diag = ""
     click_attempts = 0
     reset_count = 0
-    max_clicks = 3
+    max_clicks = 2  # 连点收益低，压缩次数
 
-    # 先给 managed / invisible 模式最长 20 秒自动通过
-    auto_wait_secs = min(20, max(0, timeout - 8))
+    # 仅加长自动通过；其余流程从紧
+    auto_wait_secs = min(30, max(0, timeout - 5))
     auto_wait_until = time.time() + auto_wait_secs
+    print(f"[*] Turnstile 自动通过等待最长 {auto_wait_secs:.0f}s …")
     while time.time() < auto_wait_until:
         token = _read_turnstile_token()
         if token:
@@ -1544,7 +1544,7 @@ def getTurnstileToken(timeout=65):
         if state.get("failure"):
             print("[Warn] 自动等待阶段检测到 Turnstile failure 反馈页。")
             break
-        time.sleep(0.5)
+        time.sleep(0.4)
 
     while time.time() < deadline:
         token = _read_turnstile_token()
@@ -1555,12 +1555,11 @@ def getTurnstileToken(timeout=65):
         state = _turnstile_widget_state()
         if state.get("failure"):
             last_diag = f"failure-state frames={state.get('frames')}"
-            if reset_count < 1 and time.time() + 12 < deadline:
-                print("[*] 检测到 Turnstile failure，执行 soft reset 并重新等待。")
+            if reset_count < 1 and time.time() + 6 < deadline:
+                print("[*] 检测到 Turnstile failure，执行 soft reset。")
                 _soft_reset_turnstile()
                 reset_count += 1
-                # reset 后先再等自动通过，不要立刻连点
-                wait_end = time.time() + min(12, deadline - time.time())
+                wait_end = time.time() + min(6, deadline - time.time())
                 while time.time() < wait_end:
                     token = _read_turnstile_token()
                     if token:
@@ -1568,71 +1567,59 @@ def getTurnstileToken(timeout=65):
                         return token
                     if _turnstile_widget_state().get("failure"):
                         break
-                    time.sleep(0.5)
+                    time.sleep(0.4)
                 continue
-            print("[Debug] Turnstile 已被 Cloudflare 判定 failure（IP/指纹/环境），停止无效连点。")
+            print("[Debug] Turnstile 已被 Cloudflare 判定 failure，停止连点。")
             break
 
         if click_attempts >= max_clicks:
             last_diag = f"max-clicks:{click_attempts}"
-            if reset_count < 1 and time.time() + 10 < deadline:
-                print("[*] 已达最大点击次数，尝试 soft reset。")
-                _soft_reset_turnstile()
-                reset_count += 1
-                click_attempts = 0
-                time.sleep(2)
-                continue
+            # 不再二次 reset+重点，直接结束压缩总耗时
             break
 
         target, how = _locate_turnstile_click_target()
         if target is None:
             last_diag = f"locate-fail:{how} state={state}"
-            # 仅有 1x1 占位时尝试 soft reset 恢复可见 widget
-            if state.get("collapsedOnly") and reset_count < 1 and time.time() + 15 < deadline:
-                print("[*] Turnstile 控件折叠为 1x1，执行 soft reset 尝试恢复。")
+            if state.get("collapsedOnly") and reset_count < 1 and time.time() + 8 < deadline:
+                print("[*] Turnstile 控件折叠为 1x1，soft reset 一次。")
                 _soft_reset_turnstile()
                 reset_count += 1
-                wait_end = time.time() + min(10, deadline - time.time())
+                wait_end = time.time() + min(6, deadline - time.time())
                 while time.time() < wait_end:
                     token = _read_turnstile_token()
                     if token:
                         print("[*] Turnstile soft reset 后已自动通过。")
                         return token
-                    time.sleep(0.5)
+                    time.sleep(0.4)
                 continue
-            time.sleep(1.0)
+            time.sleep(0.6)
             continue
 
         if click_attempts == 0:
-            print(f"[*] 已定位 Turnstile 控件 ({how})，开始 CDP 真人化点击（最多 {max_clicks} 次）。")
+            print(f"[*] 已定位 Turnstile ({how})，CDP 点击（最多 {max_clicks} 次）。")
 
-        # 点击前轻微随机停顿，模拟阅读
-        time.sleep(0.4 + secrets.randbelow(60) / 100.0)
+        time.sleep(0.15 + secrets.randbelow(20) / 100.0)
         clicked, detail = _click_turnstile_checkbox(target, prefer_cdp=True, how=how)
         click_attempts += 1
         last_diag = f"click#{click_attempts} via={how} detail={detail} ok={clicked}"
         print(f"[*] Turnstile 点击尝试 #{click_attempts}: {detail}")
 
-        # 点击后给足时间出 token / 或进入 failure，不要马上再点
-        wait_slice = min(12.0, max(4.0, deadline - time.time()))
+        # 点击后短等；无 token 尽快下一轮或结束
+        wait_slice = min(5.0, max(2.0, deadline - time.time()))
         wait_end = time.time() + wait_slice
         while time.time() < wait_end:
             token = _read_turnstile_token()
             if token:
-                print(f"[*] Turnstile 点击后已出 token（第 {click_attempts} 次尝试）。")
+                print(f"[*] Turnstile 点击后已出 token（第 {click_attempts} 次）。")
                 return token
             st = _turnstile_widget_state()
             if st.get("failure"):
                 print("[Warn] 点击后进入 Turnstile failure 状态。")
                 last_diag = f"post-click-failure #{click_attempts}"
                 break
-            # 点击后若折叠且仍无 token，稍等再决定是否下一次点击
-            if st.get("collapsedOnly") and time.time() + 2 < wait_end:
-                time.sleep(0.8)
-            else:
-                time.sleep(0.4)
+            time.sleep(0.35)
 
-        time.sleep(0.6 + secrets.randbelow(50) / 100.0)
+        time.sleep(0.25 + secrets.randbelow(20) / 100.0)
 
     # 最终诊断
     try:
@@ -1704,9 +1691,8 @@ def build_profile():
     return given_name, family_name, password
 
 
-def fill_profile_and_submit(timeout=110):
-    # 在验证码通过后，直接锁定“可见且可写”的真实输入框，避免命中隐藏节点或 React 受控副本。
-    # timeout 需覆盖 Turnstile 自动通过 20s + 点击重试 + 表单填写。
+def fill_profile_and_submit(timeout=75):
+    # 覆盖 Turnstile 自动通过 30s + 短点击 + 表单填写（点击阶段已压缩）。
 
     given_name, family_name, password = build_profile()
     deadline = time.time() + timeout
@@ -1871,12 +1857,11 @@ return value ? 'ready' : 'pending';
 
         if turnstile_state == "pending" and not turnstile_token:
             if turnstile_attempted:
-                # 上一轮已求解过但 token 丢失，再给一次机会；否则避免死循环烧满 timeout
-                remain = max(8, deadline - time.time() - 5)
+                remain = max(5, deadline - time.time() - 3)
             else:
-                # 需覆盖约 20s 自动通过 + 后续点击，至少预留 65s
-                remain = max(65, min(90, deadline - time.time() - 5))
-            print("[*] 检测到最终注册页存在 Turnstile，开始使用真人化点击逻辑。")
+                # 30s 自动通过 + 压缩点击，总预算约 50s
+                remain = max(45, min(55, deadline - time.time() - 3))
+            print("[*] 检测到最终注册页存在 Turnstile，优先等待自动通过。")
             turnstile_attempted = True
             turnstile_token = getTurnstileToken(timeout=remain)
             if turnstile_token:
@@ -1902,7 +1887,7 @@ return String(challengeInput.value || '').trim() === String(token || '').trim();
                 if synced:
                     print("[*] Turnstile 响应已同步到最终注册表单。")
 
-        time.sleep(1.2)
+        time.sleep(0.6)
 
         try:
             submit_button = page.ele('tag:button@@text()=完成注册') or page.ele('tag:button@@text():Create Account') or page.ele('tag:button@@text():Sign up')
