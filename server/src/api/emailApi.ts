@@ -14,9 +14,22 @@ function generateLocalPart(minLen = 8, maxLen = 13): string {
     return res;
 }
 
+function normalizeMailApiBase(raw: string): string {
+    let base = String(raw || '').trim().replace(/\/+$/, '');
+    for (const suffix of ['/admin/new_address', '/admin', '/api/mails', '/api']) {
+        if (base.toLowerCase().endsWith(suffix)) {
+            base = base.slice(0, -suffix.length).replace(/\/+$/, '');
+        }
+    }
+    return base;
+}
+
 export async function createTempEmail(mailConfig: { apiBase: string, adminAuth: string, domain: string }): Promise<{ address: string; jwt: string; password?: string }> {
     const local = generateLocalPart();
-    const url = `${mailConfig.apiBase}/admin/new_address`;
+    const apiBase = normalizeMailApiBase(mailConfig.apiBase);
+    if (!apiBase) throw new Error('mail apiBase 为空（需 Worker 根地址，如 https://xxx.workers.dev）');
+    const url = `${apiBase}/admin/new_address`;
+    const domain = String(mailConfig.domain || '').trim().replace(/^@+/, '');
     
     // Attempt 3 times
     for (let i = 0; i < 3; i++) {
@@ -29,16 +42,16 @@ export async function createTempEmail(mailConfig: { apiBase: string, adminAuth: 
                 },
                 body: JSON.stringify({
                     name: local,
-                    domain: mailConfig.domain,
+                    domain,
                     enablePrefix: false
                 })
             });
             
             if (res.ok) {
                 const data = await res.json() as any;
-                if (data.jwt && (data.address || `${local}@${mailConfig.domain}`)) {
+                if (data.jwt && (data.address || `${local}@${domain}`)) {
                     return {
-                        address: data.address || `${local}@${mailConfig.domain}`,
+                        address: data.address || `${local}@${domain}`,
                         jwt: data.jwt,
                         password: data.password
                     };
@@ -47,7 +60,14 @@ export async function createTempEmail(mailConfig: { apiBase: string, adminAuth: 
                 // maybe collision, try again
                 continue;
             } else {
-                throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+                const body = (await res.text()).slice(0, 200);
+                let hint = '';
+                if (res.status === 405) {
+                    hint = '（405 多为填了前端 Pages 地址而非 Worker API 根）';
+                } else if (res.status === 401 || res.status === 403) {
+                    hint = '（管理密码 x-admin-auth 可能不对）';
+                }
+                throw new Error(`HTTP ${res.status}: ${body} url=${url}${hint}`);
             }
         } catch (e) {
             console.error(`Attempt ${i+1} failed to create email:`, e);

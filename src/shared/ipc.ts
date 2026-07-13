@@ -234,6 +234,8 @@ export interface RendererApi {
 
   // tests
   testMail(block: MailSettings): Promise<TestResult>;
+  /** 单条代理测活（经代理访问公网 IP） */
+  testProxy(proxy: string): Promise<TestResult & { exitIp?: string; latencyMs?: number }>;
 
   // system
   getSystemHealth(): Promise<SystemHealth>;

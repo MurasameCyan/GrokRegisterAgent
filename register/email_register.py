@@ -28,9 +28,44 @@ if _config_path.exists():
     with _config_path.open("r", encoding="utf-8") as _f:
         _conf = json.load(_f)
 
-MAIL_API_BASE = str(_conf.get("mail_api_base", "")).rstrip("/")
+
+def _normalize_mail_api_base(raw: str) -> str:
+    """规范化邮件后端根地址。
+
+    cloudflare_temp_email 的 admin 接口挂在 Worker 根：
+      POST {base}/admin/new_address
+    常见误填：
+      - 前端 Pages 域名（仅 GET，POST 会 405 且 body 为空）
+      - 末尾带 /admin、/api、多余斜杠
+    """
+    base = (raw or "").strip().rstrip("/")
+    if not base:
+        return ""
+    # 去掉误粘贴的路径后缀
+    for suffix in ("/admin/new_address", "/admin", "/api/mails", "/api"):
+        if base.lower().endswith(suffix):
+            base = base[: -len(suffix)].rstrip("/")
+    return base
+
+
+def _reload_mail_conf() -> None:
+    """每轮创建前热读 config.json，避免进程内常量过期。"""
+    global _conf, MAIL_API_BASE, MAIL_ADMIN_AUTH, MAIL_DOMAIN, PROXY
+    try:
+        if _config_path.exists():
+            with _config_path.open("r", encoding="utf-8") as f:
+                _conf = json.load(f)
+    except Exception:
+        pass
+    MAIL_API_BASE = _normalize_mail_api_base(str(_conf.get("mail_api_base", "")))
+    MAIL_ADMIN_AUTH = str(_conf.get("mail_admin_auth", "") or "")
+    MAIL_DOMAIN = str(_conf.get("mail_domain", "") or "").strip().lstrip("@")
+    PROXY = str(_conf.get("proxy", "") or "")
+
+
+MAIL_API_BASE = _normalize_mail_api_base(str(_conf.get("mail_api_base", "")))
 MAIL_ADMIN_AUTH = str(_conf.get("mail_admin_auth", ""))
-MAIL_DOMAIN = str(_conf.get("mail_domain", ""))
+MAIL_DOMAIN = str(_conf.get("mail_domain", "")).strip().lstrip("@")
 PROXY = str(_conf.get("proxy", ""))
 
 # 邮箱域名池（可选）；轮换逻辑见 pools.next_mail_domain
@@ -129,16 +164,25 @@ def create_temp_email() -> Tuple[str, str, str]:
     后端返回 {jwt, address, password}，jwt 即用于读邮件的 Bearer。
     域名：优先邮箱域名池轮换，否则用 MAIL_DOMAIN。
     """
-    if not MAIL_ADMIN_AUTH:
-        raise Exception("mail_admin_auth 未设置，无法创建邮箱地址")
-
-    headers = {"x-admin-auth": MAIL_ADMIN_AUTH}
-    # 每轮创建前刷新池配置（支持热更新 config）
+    # 每轮创建前热读邮件配置 + 池（支持 UI 改完立刻生效）
+    _reload_mail_conf()
     try:
         reload_pools(force=True)
     except Exception:
         pass
+
+    if not MAIL_API_BASE:
+        raise Exception(
+            "mail_api_base 未设置。请填 cloudflare_temp_email 的 **Worker API 根地址**"
+            "（不是前端 Pages 域名），例如 https://xxx.workers.dev"
+        )
+    if not MAIL_ADMIN_AUTH:
+        raise Exception("mail_admin_auth 未设置，无法创建邮箱地址")
+
+    headers = {"x-admin-auth": MAIL_ADMIN_AUTH, "Content-Type": "application/json"}
     session, use_cffi = _create_session()
+    create_url = f"{MAIL_API_BASE}/admin/new_address"
+    print(f"[*] 邮件 API: {MAIL_API_BASE} → POST /admin/new_address")
 
     last_err = ""
     for _ in range(5):
@@ -149,7 +193,7 @@ def create_temp_email() -> Tuple[str, str, str]:
         try:
             res = _do_request(
                 session, use_cffi, "post",
-                f"{MAIL_API_BASE}/admin/new_address",
+                create_url,
                 json={"name": local, "domain": domain, "enablePrefix": False},
                 headers=headers,
                 timeout=15,
@@ -164,13 +208,23 @@ def create_temp_email() -> Tuple[str, str, str]:
                     return address, password, jwt
                 last_err = f"响应缺少 jwt/address: {data}"
             else:
-                last_err = f"HTTP {res.status_code}: {res.text[:200]}"
+                body = (res.text or "").strip()
+                if len(body) > 200:
+                    body = body[:200] + "..."
+                last_err = f"HTTP {res.status_code}: {body} | url={create_url}"
+                if res.status_code == 405:
+                    last_err += (
+                        " | 提示: 405 多为 API 地址填成了前端/Pages 或错误路径；"
+                        "应填 Worker 根地址，且路径为 /admin/new_address（POST）"
+                    )
+                if res.status_code in (401, 403):
+                    last_err += " | 提示: 管理密码 x-admin-auth 可能不对"
                 # 地址冲突就换个 local 再试
                 if res.status_code in (400, 409):
                     continue
                 break
         except Exception as e:
-            last_err = str(e)
+            last_err = f"{e} | url={create_url}"
 
     raise Exception(f"创建邮箱失败: {last_err}")
 

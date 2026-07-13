@@ -13,6 +13,7 @@ import { registerBot } from './bot/registerBot.js';
 import { listAccounts, resyncAccountsFromDisk } from './accountStore.js';
 import { checkForUpdate, currentVersion } from './updateCheck.js';
 import { fetchEmails, extractVerificationCode, fetchLatestCodeByAddress } from './api/emailApi.js';
+import { probeProxy } from './api/proxyApi.js';
 import { checkSso } from './ssoCheck.js';
 import {
   authBootstrapInfo,
@@ -284,6 +285,20 @@ app.post('/api/test/mail', async (req, res) => {
     }
   } catch (e: any) {
     return res.json({ ok: false, message: `连接失败: ${e.message}` });
+  }
+});
+
+/** 代理池单条测活 */
+app.post('/api/test/proxy', async (req, res) => {
+  try {
+    const proxy = String(req.body?.proxy || req.body?.url || '').trim();
+    if (!proxy) {
+      return res.json({ ok: false, message: '缺少 proxy 参数' });
+    }
+    const result = await probeProxy(proxy);
+    return res.json(result);
+  } catch (e: any) {
+    return res.json({ ok: false, message: `测活异常: ${e?.message || e}` });
   }
 });
 

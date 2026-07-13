@@ -30,8 +30,24 @@ def _config_path() -> Path:
     return Path(__file__).resolve().parent / "config.json"
 
 
-def _parse_lines(raw) -> List[str]:
-    """支持 list / 多行字符串 / 逗号分隔。"""
+def _strip_proxy_comment(line: str) -> str:
+    """去掉代理行尾 #备注（如 http://u:p@ip:port#香港-01 或 #%E9%A6%99%E6%B8%AF-02）。"""
+    s = (line or "").strip()
+    if not s or s.startswith("#"):
+        return ""
+    scheme_idx = s.find("://")
+    search_from = scheme_idx + 3 if scheme_idx >= 0 else 0
+    hash_idx = s.find("#", search_from)
+    if hash_idx >= 0:
+        return s[:hash_idx].strip()
+    return s
+
+
+def _parse_lines(raw, *, strip_proxy_hash: bool = False) -> List[str]:
+    """支持 list / 多行字符串 / 逗号分隔。
+
+    strip_proxy_hash=True 时剥离行尾 #备注（代理池专用）。
+    """
     if raw is None:
         return []
     if isinstance(raw, list):
@@ -43,6 +59,10 @@ def _parse_lines(raw) -> List[str]:
     for it in items:
         if not it or it.startswith("#"):
             continue
+        if strip_proxy_hash:
+            it = _strip_proxy_comment(it)
+            if not it:
+                continue
         out.append(it)
     # 去重保序
     seen = set()
@@ -77,10 +97,12 @@ def reload_pools(force: bool = False) -> None:
         if single:
             domains = [single]
 
-    proxies = _parse_lines(conf.get("proxy_pool") or conf.get("proxies"))
+    proxies = _parse_lines(conf.get("proxy_pool") or conf.get("proxies"), strip_proxy_hash=True)
     if not proxies:
         # 单代理仍作为池的唯一项（可选）
-        single_p = str(conf.get("browser_proxy") or conf.get("proxy") or "").strip()
+        single_p = _strip_proxy_comment(
+            str(conf.get("browser_proxy") or conf.get("proxy") or "")
+        )
         if single_p:
             proxies = [single_p]
 

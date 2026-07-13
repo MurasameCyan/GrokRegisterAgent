@@ -157,6 +157,10 @@ const webApi: RendererApi = {
   },
 
   testMail: (b) => http<TestResult>('POST', '/api/test/mail', b),
+  testProxy: (proxy) =>
+    http<TestResult & { exitIp?: string; latencyMs?: number }>('POST', '/api/test/proxy', {
+      proxy
+    }),
 
   getSystemHealth: () => http('GET', '/api/system/health'),
   checkUpdate: () => http('GET', '/api/system/update-check')

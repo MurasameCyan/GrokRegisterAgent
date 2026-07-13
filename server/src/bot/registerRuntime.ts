@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import type { AppSettings } from '@shared/settings';
+import { parseProxyPool, parseStringList, stripProxyComment } from '@shared/settings';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -41,20 +42,9 @@ function normalizeRegisterPath(value?: string): string {
   return resolved;
 }
 
-/** 多行 / 逗号分隔 → 去重列表 */
+/** 多行 / 逗号分隔 → 去重列表（通用，不含代理 # 备注剥离） */
 function parseList(raw?: string): string[] {
-  if (!raw || !String(raw).trim()) return [];
-  const text = String(raw).replace(/\r\n/g, '\n').replace(/,/g, '\n');
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const line of text.split('\n')) {
-    const it = line.trim();
-    if (!it || it.startsWith('#')) continue;
-    if (seen.has(it)) continue;
-    seen.add(it);
-    out.push(it);
-  }
-  return out;
+  return parseStringList(raw);
 }
 
 export function findRegisterScript(registerDir: string): string | null {
@@ -115,11 +105,22 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
     config = {};
   }
 
-  config.mail_api_base = settings.mail?.apiBase || '';
+  // 规范化：去掉尾斜杠与误填的 /admin|/api 后缀（否则 POST 会 405）
+  let mailBase = String(settings.mail?.apiBase || '').trim().replace(/\/+$/, '');
+  for (const suffix of ['/admin/new_address', '/admin', '/api/mails', '/api']) {
+    if (mailBase.toLowerCase().endsWith(suffix)) {
+      mailBase = mailBase.slice(0, -suffix.length).replace(/\/+$/, '');
+    }
+  }
+  config.mail_api_base = mailBase;
   config.mail_admin_auth = settings.mail?.adminAuth || '';
-  config.mail_domain = settings.mail?.domain || '';
+  config.mail_domain = String(settings.mail?.domain || '')
+    .trim()
+    .replace(/^@+/, '');
 
-  const domains = parseList(settings.mailDomains);
+  // 域名池开关：开=写入 mail_domains；关=只用 mail_domain
+  const mailPoolOn = settings.mailDomainPoolEnabled === true;
+  const domains = mailPoolOn ? parseList(settings.mailDomains) : [];
   if (domains.length > 0) {
     config.mail_domains = domains;
   } else {
@@ -128,16 +129,36 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
   config.mail_domain_mode = settings.mailDomainMode || 'round_robin';
   config.email_domain_mode = settings.mailDomainMode || 'round_robin';
 
-  config.proxy = settings.proxy || '';
-  const proxies = parseList(settings.proxyPool);
-  if (proxies.length > 0) {
-    config.proxy_pool = proxies;
-  } else {
+  // 代理总开关 / 池开关
+  const proxyOn = settings.proxyEnabled === true;
+  const proxyPoolOn = proxyOn && settings.proxyPoolEnabled === true;
+  if (!proxyOn) {
+    config.proxy = '';
+    config.browser_proxy = '';
     delete config.proxy_pool;
+    config.proxy_mode = settings.proxyMode || 'round_robin';
+  } else if (proxyPoolOn) {
+    // 池模式：剥离 #备注 后写入；单代理字段清空避免干扰
+    const proxies = parseProxyPool(settings.proxyPool);
+    config.proxy = '';
+    if (proxies.length > 0) {
+      config.proxy_pool = proxies;
+    } else {
+      delete config.proxy_pool;
+    }
+    config.proxy_mode = settings.proxyMode || 'round_robin';
+    // 浏览器跟随池轮换（Python 侧 next_proxy）；此处不写死单条
+    config.browser_proxy = '';
+  } else {
+    // 单代理
+    const single = stripProxyComment(settings.proxy || '');
+    const browser = stripProxyComment(settings.browserProxy || '') || single;
+    config.proxy = single;
+    config.browser_proxy = browser;
+    delete config.proxy_pool;
+    config.proxy_mode = settings.proxyMode || 'round_robin';
   }
-  config.proxy_mode = settings.proxyMode || 'round_robin';
 
-  config.browser_proxy = settings.browserProxy || settings.proxy || '';
   config.browser_path = settings.browserPath || '';
 
   config.random_fingerprint =

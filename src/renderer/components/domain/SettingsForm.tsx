@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { FolderCode, Github, KeyRound, Save, Shield, Terminal } from 'lucide-react';
+import { Activity, Github, KeyRound, Loader2, Save, Shield } from 'lucide-react';
 import { Card, CardBody, CardHeader } from '@renderer/components/ui/Card';
 import { Button } from '@renderer/components/ui/Button';
 import { Input } from '@renderer/components/ui/Input';
@@ -8,8 +8,8 @@ import { Slider } from '@renderer/components/ui/Slider';
 import { ConnectionTestButton } from '@renderer/components/domain/ConnectionTestButton';
 import { useSettingsStore } from '@renderer/store/settingsStore';
 import { useToastStore } from '@renderer/store/toastStore';
-import type { AppSettings, PoolMode } from '@shared/settings';
-import { validateSettings } from '@shared/settings';
+import type { AppSettings, PoolMode, ProxyPoolEntry } from '@shared/settings';
+import { parseProxyPoolEntries, validateSettings } from '@shared/settings';
 import { cn } from '@renderer/lib/cn';
 
 const TEXTAREA_CLASS =
@@ -102,12 +102,104 @@ function PoolModeSelect({
   );
 }
 
+type ProxyProbeUi = {
+  status: 'idle' | 'loading' | 'ok' | 'fail';
+  message?: string;
+};
+
+function ProxyPoolPreview({
+  entries,
+  probes,
+  probingKey,
+  onProbeOne,
+  onProbeAll
+}: {
+  entries: ProxyPoolEntry[];
+  probes: Record<string, ProxyProbeUi>;
+  probingKey: string | null;
+  onProbeOne: (proxy: string) => void;
+  onProbeAll: () => void;
+}) {
+  if (entries.length === 0) return null;
+  const busy = probingKey !== null;
+  return (
+    <div className="mt-3 space-y-2 rounded-xl border border-border/60 bg-muted/40 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-[12px] text-muted-foreground">
+          已识别 {entries.length} 条（# 后标签已解码展示）
+        </p>
+        <Button
+          type="button"
+          size="sm"
+          variant="secondary"
+          disabled={busy || entries.length === 0}
+          onClick={onProbeAll}
+        >
+          {probingKey === '__all__' ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Activity className="h-3.5 w-3.5" />
+          )}
+          全部测活
+        </Button>
+      </div>
+      <ul className="max-h-56 space-y-1.5 overflow-y-auto">
+        {entries.map((e) => {
+          const probe = probes[e.proxy] || { status: 'idle' as const };
+          const loading = probingKey === e.proxy || probingKey === '__all__';
+          return (
+            <li
+              key={e.proxy}
+              className="flex flex-wrap items-center gap-2 rounded-lg bg-card/80 px-2.5 py-2 text-[12px]"
+            >
+              {e.label ? (
+                <span className="chip shrink-0 bg-primary/10 text-primary">{e.label}</span>
+              ) : (
+                <span className="chip shrink-0 text-muted-foreground">无标签</span>
+              )}
+              <span className="min-w-0 flex-1 truncate font-mono text-muted-foreground" title={e.proxy}>
+                {e.host}
+              </span>
+              {probe.status === 'ok' && (
+                <span className="max-w-[12rem] truncate text-emerald-600 dark:text-emerald-400" title={probe.message}>
+                  {probe.message || 'OK'}
+                </span>
+              )}
+              {probe.status === 'fail' && (
+                <span className="max-w-[12rem] truncate text-danger" title={probe.message}>
+                  {probe.message || '失败'}
+                </span>
+              )}
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="h-7 shrink-0 px-2"
+                disabled={loading}
+                onClick={() => onProbeOne(e.proxy)}
+              >
+                {probingKey === e.proxy ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  '测活'
+                )}
+              </Button>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
 export function SettingsForm() {
   const data = useSettingsStore((s) => s.data);
   const reload = useSettingsStore((s) => s.reload);
   const push = useToastStore((s) => s.push);
   const [draft, setDraft] = useState<AppSettings | null>(null);
   const [saving, setSaving] = useState(false);
+  const [proxyProbes, setProxyProbes] = useState<Record<string, ProxyProbeUi>>({});
+  const [probingKey, setProbingKey] = useState<string | null>(null);
 
   useEffect(() => {
     if (data && !draft) setDraft(data);
@@ -120,6 +212,11 @@ export function SettingsForm() {
 
   const errors = useMemo(() => (draft ? validateSettings(draft) : {}), [draft]);
 
+  const proxyPoolEntries = useMemo(() => {
+    if (!draft?.proxyPool) return [] as ProxyPoolEntry[];
+    return parseProxyPoolEntries(draft.proxyPool);
+  }, [draft?.proxyPool]);
+
   if (!draft) {
     return <div className="p-8 text-muted-foreground">加载设置…</div>;
   }
@@ -130,6 +227,53 @@ export function SettingsForm() {
     setDraft({ ...draft, mail: { ...draft.mail, [key]: value } });
   const update = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) =>
     setDraft({ ...draft, [key]: value });
+
+  const probeOne = async (proxy: string) => {
+    setProbingKey(proxy);
+    setProxyProbes((prev) => ({ ...prev, [proxy]: { status: 'loading' } }));
+    try {
+      const r = await window.api.testProxy(proxy);
+      setProxyProbes((prev) => ({
+        ...prev,
+        [proxy]: {
+          status: r.ok ? 'ok' : 'fail',
+          message: r.message || (r.ok ? 'OK' : '失败')
+        }
+      }));
+    } catch (err) {
+      setProxyProbes((prev) => ({
+        ...prev,
+        [proxy]: { status: 'fail', message: String(err) }
+      }));
+    } finally {
+      setProbingKey(null);
+    }
+  };
+
+  const probeAll = async () => {
+    if (proxyPoolEntries.length === 0) return;
+    setProbingKey('__all__');
+    for (const e of proxyPoolEntries) {
+      setProxyProbes((prev) => ({ ...prev, [e.proxy]: { status: 'loading' } }));
+      try {
+        const r = await window.api.testProxy(e.proxy);
+        setProxyProbes((prev) => ({
+          ...prev,
+          [e.proxy]: {
+            status: r.ok ? 'ok' : 'fail',
+            message: r.message || (r.ok ? 'OK' : '失败')
+          }
+        }));
+      } catch (err) {
+        setProxyProbes((prev) => ({
+          ...prev,
+          [e.proxy]: { status: 'fail', message: String(err) }
+        }));
+      }
+    }
+    setProbingKey(null);
+    push({ tone: 'ok', title: '代理池测活完成', description: `共 ${proxyPoolEntries.length} 条` });
+  };
 
   const save = async () => {
     setSaving(true);
@@ -149,7 +293,7 @@ export function SettingsForm() {
       <Card>
         <CardHeader
           title="邮件后端"
-          description="兼容 cloudflare_temp_email；域名可填单项或域名池"
+          description="兼容 cloudflare_temp_email；域名可填单项或开启域名池"
           right={
             <div className="flex flex-wrap items-center gap-2">
               <RepoLink
@@ -161,22 +305,15 @@ export function SettingsForm() {
           }
         />
         <CardBody className="grid gap-4 lg:grid-cols-2">
-          <Field label="API 地址" hint="例如 https://mail.example.com" error={errors['mail.apiBase']}>
+          <Field
+            label="API 地址"
+            hint="Worker API 根地址（如 https://xxx.workers.dev），不要填前端 Pages 域名"
+            error={errors['mail.apiBase']}
+          >
             <Input
               value={draft.mail.apiBase}
               onChange={(e) => updateMail('apiBase', e.target.value)}
               invalid={!!errors['mail.apiBase']}
-            />
-          </Field>
-          <Field
-            label="默认邮件域名"
-            hint="单域名；与下方域名池二选一或并存（池优先）"
-            error={errors['mail.domain']}
-          >
-            <Input
-              value={draft.mail.domain}
-              onChange={(e) => updateMail('domain', e.target.value)}
-              invalid={!!errors['mail.domain']}
             />
           </Field>
           <div className="lg:col-span-2">
@@ -188,54 +325,139 @@ export function SettingsForm() {
               />
             </Field>
           </div>
+
           <div className="lg:col-span-2">
+            <ToggleRow
+              label="启用域名池"
+              hint="开：多域名轮换；关：只用默认邮件域名"
+              checked={!!draft.mailDomainPoolEnabled}
+              onChange={(v) => update('mailDomainPoolEnabled', v)}
+            />
+          </div>
+
+          {!draft.mailDomainPoolEnabled && (
             <Field
-              label="邮箱域名池"
-              hint="每行一个，或逗号分隔；非空时优先于默认域名轮换"
+              label="默认邮件域名"
+              hint="单域名，例如 example.com"
+              error={errors['mail.domain']}
             >
-              <textarea
-                className={TEXTAREA_CLASS}
-                value={draft.mailDomains}
-                onChange={(e) => update('mailDomains', e.target.value)}
-                placeholder={'example.com\nother.com'}
+              <Input
+                value={draft.mail.domain}
+                onChange={(e) => updateMail('domain', e.target.value)}
+                invalid={!!errors['mail.domain']}
               />
             </Field>
-          </div>
-          <Field label="域名池模式">
-            <PoolModeSelect
-              value={draft.mailDomainMode}
-              onChange={(v) => update('mailDomainMode', v)}
-            />
-          </Field>
+          )}
+
+          {draft.mailDomainPoolEnabled && (
+            <>
+              <div className="lg:col-span-2">
+                <Field
+                  label="邮箱域名池"
+                  hint="每行一个，或逗号分隔"
+                  error={errors['mail.domain']}
+                >
+                  <textarea
+                    className={TEXTAREA_CLASS}
+                    value={draft.mailDomains}
+                    onChange={(e) => update('mailDomains', e.target.value)}
+                    placeholder={'example.com\nother.com'}
+                  />
+                </Field>
+              </div>
+              <Field label="域名池模式">
+                <PoolModeSelect
+                  value={draft.mailDomainMode}
+                  onChange={(v) => update('mailDomainMode', v)}
+                />
+              </Field>
+            </>
+          )}
         </CardBody>
       </Card>
 
       <Card>
-        <CardHeader title="代理" description="单代理与代理池；池非空时优先轮换" />
+        <CardHeader
+          title="代理"
+          description="总开关关闭时直连；开启后可切换单代理或代理池"
+        />
         <CardBody className="grid gap-4 lg:grid-cols-2">
-          <Field label="HTTP 代理" hint="例如 http://127.0.0.1:7890">
-            <Input value={draft.proxy} onChange={(e) => update('proxy', e.target.value)} />
-          </Field>
-          <Field label="浏览器代理" hint="空则跟随 HTTP 代理">
-            <Input
-              value={draft.browserProxy}
-              onChange={(e) => update('browserProxy', e.target.value)}
-              placeholder="留空跟随 HTTP 代理"
-            />
-          </Field>
           <div className="lg:col-span-2">
-            <Field label="代理池" hint="每行一个，或逗号分隔；非空时优先于单代理">
-              <textarea
-                className={TEXTAREA_CLASS}
-                value={draft.proxyPool}
-                onChange={(e) => update('proxyPool', e.target.value)}
-                placeholder={'http://user:pass@1.2.3.4:8080\nhttp://5.6.7.8:8080'}
-              />
-            </Field>
+            <ToggleRow
+              label="启用代理"
+              hint="关：直连；开：使用下方单代理或代理池"
+              checked={!!draft.proxyEnabled}
+              onChange={(v) => update('proxyEnabled', v)}
+            />
           </div>
-          <Field label="代理池模式">
-            <PoolModeSelect value={draft.proxyMode} onChange={(v) => update('proxyMode', v)} />
-          </Field>
+
+          {draft.proxyEnabled && (
+            <>
+              <div className="lg:col-span-2">
+                <ToggleRow
+                  label="使用代理池"
+                  hint="开：从池中轮换；关：使用单条 HTTP/浏览器代理"
+                  checked={!!draft.proxyPoolEnabled}
+                  onChange={(v) => update('proxyPoolEnabled', v)}
+                />
+              </div>
+
+              {!draft.proxyPoolEnabled && (
+                <>
+                  <Field label="HTTP 代理" hint="例如 http://127.0.0.1:7890" error={errors.proxy}>
+                    <Input
+                      value={draft.proxy}
+                      onChange={(e) => update('proxy', e.target.value)}
+                      invalid={!!errors.proxy}
+                    />
+                  </Field>
+                  <Field label="浏览器代理" hint="空则跟随 HTTP 代理">
+                    <Input
+                      value={draft.browserProxy}
+                      onChange={(e) => update('browserProxy', e.target.value)}
+                      placeholder="留空跟随 HTTP 代理"
+                    />
+                  </Field>
+                </>
+              )}
+
+              {draft.proxyPoolEnabled && (
+                <>
+                  <div className="lg:col-span-2">
+                    <Field
+                      label="代理池"
+                      hint="每行一条；支持行尾 #备注，保存时自动剥离。例：http://user:pass@ip:port#香港-02"
+                      error={errors.proxyPool}
+                    >
+                      <textarea
+                        className={TEXTAREA_CLASS}
+                        value={draft.proxyPool}
+                        onChange={(e) => update('proxyPool', e.target.value)}
+                        placeholder={
+                          'http://user:pass@1.2.3.4:8080#香港-02\nhttp://user:pass@5.6.7.8:8080#台湾-01'
+                        }
+                      />
+                    </Field>
+                    {proxyPoolEntries.length > 0 && (
+                      <ProxyPoolPreview
+                        entries={proxyPoolEntries}
+                        probes={proxyProbes}
+                        probingKey={probingKey}
+                        onProbeOne={probeOne}
+                        onProbeAll={probeAll}
+                      />
+                    )}
+                  </div>
+                  <Field label="代理池模式">
+                    <PoolModeSelect
+                      value={draft.proxyMode}
+                      onChange={(v) => update('proxyMode', v)}
+                    />
+                  </Field>
+                </>
+              )}
+            </>
+          )}
         </CardBody>
       </Card>
 
@@ -298,60 +520,13 @@ export function SettingsForm() {
             checked={draft.autoAuthExport}
             onChange={(v) => update('autoAuthExport', v)}
           />
-          <Field
-            label="Auth 目录"
-            hint="空则 DATA_DIR/auth（容器内多为 /data/auth）"
-          >
+          <Field label="Auth 目录" hint="空则 DATA_DIR/auth（容器内多为 /data/auth）">
             <Input
               value={draft.authDir}
               onChange={(e) => update('authDir', e.target.value)}
               placeholder="/data/auth"
             />
           </Field>
-        </CardBody>
-      </Card>
-
-      <Card>
-        <CardHeader
-          title="运行环境"
-          description="注册机 Python 解释器与脚本目录"
-          right={
-            <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-muted text-muted-foreground">
-              <FolderCode className="h-4 w-4" aria-hidden />
-            </span>
-          }
-        />
-        <CardBody className="grid gap-4 lg:grid-cols-2">
-          <Field label="Python 路径" hint="留空则用系统 PATH 中的 python">
-            <Input
-              value={draft.pythonPath}
-              onChange={(e) => update('pythonPath', e.target.value)}
-              placeholder="python"
-            />
-          </Field>
-          <Field label="注册脚本目录" hint="留空用内置 register/">
-            <Input
-              value={draft.registerDir}
-              onChange={(e) => update('registerDir', e.target.value)}
-              placeholder="/app/register"
-            />
-          </Field>
-          <Field label="浏览器路径" hint="Chromium/Chrome/Edge；空则自动探测">
-            <Input
-              value={draft.browserPath}
-              onChange={(e) => update('browserPath', e.target.value)}
-              placeholder="留空自动探测"
-            />
-          </Field>
-          <div className="lg:col-span-2 rounded-xl bg-muted/60 px-3.5 py-3 text-[12px] leading-5 text-muted-foreground">
-            <div className="mb-1 flex items-center gap-1.5 font-medium text-foreground">
-              <Terminal className="h-3.5 w-3.5" aria-hidden />
-              Docker 默认
-            </div>
-            容器内一般为 <code className="text-[11px]">/usr/local/bin/python3</code> 与{' '}
-            <code className="text-[11px]">/app/register</code>；热更新脚本目录请挂载到{' '}
-            <code className="text-[11px]">/opt/register-host</code>。
-          </div>
         </CardBody>
       </Card>
 

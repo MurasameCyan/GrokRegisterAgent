@@ -57,16 +57,41 @@ function applyEnvOverrides(s: AppSettings, source: Partial<AppSettings>): AppSet
   };
 }
 
+function asBool(v: unknown, fallback: boolean): boolean {
+  return typeof v === 'boolean' ? v : fallback;
+}
+
 function merge(partial: unknown): AppSettings {
-  const p = (partial ?? {}) as Partial<AppSettings>;
+  const p = (partial ?? {}) as Partial<AppSettings> & Record<string, unknown>;
+  const mailDomains =
+    typeof p.mailDomains === 'string' ? p.mailDomains : DEFAULT_SETTINGS.mailDomains;
+  const proxyPool = typeof p.proxyPool === 'string' ? p.proxyPool : DEFAULT_SETTINGS.proxyPool;
+  const proxy = typeof p.proxy === 'string' ? p.proxy : DEFAULT_SETTINGS.proxy;
+  const browserProxy =
+    typeof p.browserProxy === 'string' ? p.browserProxy : DEFAULT_SETTINGS.browserProxy;
+
+  // 旧配置无开关字段：按是否已有内容推断，避免升级后行为突变
+  const inferProxyOn = !!(
+    String(proxy || '').trim() ||
+    String(proxyPool || '').trim() ||
+    String(browserProxy || '').trim()
+  );
+  const inferProxyPoolOn = !!String(proxyPool || '').trim();
+  const inferMailPoolOn = !!String(mailDomains || '').trim();
+
   const merged: AppSettings = {
     ...DEFAULT_SETTINGS,
     ...p,
     mail: { ...DEFAULT_SETTINGS.mail, ...(p.mail ?? {}) },
-    mailDomains: typeof p.mailDomains === 'string' ? p.mailDomains : DEFAULT_SETTINGS.mailDomains,
+    mailDomains,
+    mailDomainPoolEnabled: asBool(p.mailDomainPoolEnabled, inferMailPoolOn),
     mailDomainMode: asPoolMode(p.mailDomainMode, DEFAULT_SETTINGS.mailDomainMode),
-    proxyPool: typeof p.proxyPool === 'string' ? p.proxyPool : DEFAULT_SETTINGS.proxyPool,
+    proxyEnabled: asBool(p.proxyEnabled, inferProxyOn),
+    proxy,
+    proxyPool,
+    proxyPoolEnabled: asBool(p.proxyPoolEnabled, inferProxyPoolOn),
     proxyMode: asPoolMode(p.proxyMode, DEFAULT_SETTINGS.proxyMode),
+    browserProxy,
     randomFingerprint:
       typeof p.randomFingerprint === 'boolean'
         ? p.randomFingerprint
