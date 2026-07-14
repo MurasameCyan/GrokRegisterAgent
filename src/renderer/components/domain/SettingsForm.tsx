@@ -1636,6 +1636,66 @@ export function SettingsForm() {
         </CardBody>
       </Card>
 
+      <Card>
+        <CardHeader>
+          <CardTitle>grok2api 推送</CardTitle>
+        </CardHeader>
+        <CardBody className="space-y-3">
+          <ToggleRow
+            label="自动推送 grok2api"
+            hint="注册成功后：Web 导入 SSO → Convert to Build（需配置 URL/账号密码）；失败不阻断本轮"
+            checked={draft.grok2apiAutoUpload === true}
+            onChange={(v) => update('grok2apiAutoUpload', v)}
+          />
+          <Field label="grok2api URL" hint="管理面板根地址，如 http://127.0.0.1:8000">
+            <Input
+              value={draft.grok2apiUrl || ''}
+              onChange={(e) => update('grok2apiUrl', e.target.value)}
+              placeholder="http://127.0.0.1:8000"
+            />
+          </Field>
+          <Field label="grok2api 用户名">
+            <Input
+              value={draft.grok2apiUsername || ''}
+              onChange={(e) => update('grok2apiUsername', e.target.value)}
+              placeholder="admin"
+              autoComplete="off"
+            />
+          </Field>
+          <Field label="grok2api 密码">
+            <Input
+              type="password"
+              value={draft.grok2apiPassword || ''}
+              onChange={(e) => update('grok2apiPassword', e.target.value)}
+              placeholder="密码"
+              autoComplete="off"
+            />
+          </Field>
+          <Field
+            label="上传模式"
+            hint="web_convert=与 grok-register-web 一致；build_direct=本地 Device Flow 后 import"
+          >
+            <select
+              className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
+              value={
+                draft.grok2apiUploadMode === 'build_direct'
+                  ? 'build_direct'
+                  : 'web_convert'
+              }
+              onChange={(e) =>
+                update(
+                  'grok2apiUploadMode',
+                  e.target.value === 'build_direct' ? 'build_direct' : 'web_convert'
+                )
+              }
+            >
+              <option value="web_convert">web_convert（推荐）</option>
+              <option value="build_direct">build_direct</option>
+            </select>
+          </Field>
+        </CardBody>
+      </Card>
+
       <div className="sticky bottom-4 z-10 flex justify-end">
         <div
           className={cn(

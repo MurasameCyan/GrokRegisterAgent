@@ -134,6 +134,18 @@ export interface AppSettings {
    * 网页拉取代理：默认源（hide.mn 列表页或其它 ip:port 文本页）
    */
   proxyFetchUrl: string;
+  /** 是否自动推送到 grok2api（Web 导入 + Convert to Build） */
+  grok2apiAutoUpload: boolean;
+  /** grok2api 管理面板根 URL，如 http://127.0.0.1:8000 */
+  grok2apiUrl: string;
+  grok2apiUsername: string;
+  grok2apiPassword: string;
+  /**
+   * grok2api 上传模式：
+   * - web_convert：SSO → Web 账号 → convert-to-build（与 grok-register-web 一致，推荐）
+   * - build_direct：本地 Device Flow 换 Build token 后 import
+   */
+  grok2apiUploadMode: 'web_convert' | 'build_direct';
   /** 主题模式 */
   theme: ThemeMode;
 }
@@ -178,6 +190,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
   /** Auth mint/重签/测活默认走代理 */
   cpaAuthUseProxy: true,
   proxyFetchUrl: 'https://hide.mn/en/proxy-list/',
+  grok2apiAutoUpload: false,
+  grok2apiUrl: '',
+  grok2apiUsername: '',
+  grok2apiPassword: '',
+  grok2apiUploadMode: 'web_convert',
   theme: 'system'
 };
 

@@ -238,7 +238,7 @@ except Exception:
     _stop_local_forward_early = None
 
 # 启动自检：新代码是否在容器内
-_REGISTER_BUILD = "bot-flag+stealth-v2-2026-07-14"
+_REGISTER_BUILD = "grok2api-push-2026-07-14"
 print(f"[*] register build: {_REGISTER_BUILD}")
 if apply_proxy_to_chromium_options is None:
     print("[Warn] 缺少 proxy_auth_ext —— 请确认 ./register 已挂载并重启容器")
@@ -3437,6 +3437,91 @@ def run_single_registration(output_path=DEFAULT_SSO_FILE, extract_numbers=False)
             print(f"[Warn] SSO→auth 导出异常（不影响 sso 落盘）: {e}")
             auth_status = {"attempted": True, "ok": False, "error": str(e)}
 
+    # grok2api 推送（移植自 grok-register-web；失败不阻断）
+    grok2api_status = {"attempted": False, "ok": False}
+    if sso_value:
+        try:
+            from grok2api_client import (
+                load_grok2api_settings_from_config,
+                upload_registered_sso,
+            )
+
+            g2_settings = load_grok2api_settings_from_config()
+            # 合并扁平 config 字段
+            try:
+                with open(
+                    os.path.join(os.path.dirname(__file__), "config.json"),
+                    "r",
+                    encoding="utf-8",
+                ) as _gf:
+                    _gconf = _json_mod.load(_gf)
+                for _gk in (
+                    "grok2api_auto_upload",
+                    "grok2api_url",
+                    "grok2api_username",
+                    "grok2api_password",
+                    "grok2api_upload_mode",
+                ):
+                    if _gk in _gconf and _gk not in g2_settings:
+                        g2_settings[_gk] = _gconf[_gk]
+            except Exception:
+                pass
+
+            # 尽量附带浏览器 UA / CF cookie（web egress 上下文）
+            ua_hint = ""
+            cf_hint = ""
+            try:
+                if page is not None:
+                    try:
+                        ua_hint = str(page.run_js("return navigator.userAgent") or "")
+                    except Exception:
+                        pass
+                    try:
+                        cookies = page.cookies()
+                        if isinstance(cookies, dict):
+                            items = [{"name": k, "value": v} for k, v in cookies.items()]
+                        else:
+                            items = list(cookies or [])
+                        cf_parts = []
+                        for c in items:
+                            if not isinstance(c, dict):
+                                continue
+                            n = str(c.get("name") or "")
+                            if n.lower() in ("cf_clearance", "__cf_bm", "sso-rw"):
+                                cf_parts.append(f"{n}={c.get('value') or ''}")
+                        cf_hint = "; ".join(cf_parts)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            grok2api_status["attempted"] = True
+            up = upload_registered_sso(
+                g2_settings,
+                sso_value,
+                email=email or "",
+                user_agent=ua_hint,
+                cloudflare_cookies=cf_hint,
+                log=lambda m: print(m),
+            )
+            if up is None:
+                grok2api_status = {"attempted": False, "ok": False, "skipped": True}
+            else:
+                grok2api_status = {
+                    "attempted": True,
+                    "ok": True,
+                    "mode": up.get("mode"),
+                    "result": {
+                        k: up.get(k)
+                        for k in ("import", "conversion", "mode")
+                        if k in up
+                    },
+                }
+                print(f"[*] grok2api 上传成功 mode={up.get('mode')}")
+        except Exception as e:
+            print(f"[Warn] grok2api 上传失败（不影响 sso 落盘）: {e}")
+            grok2api_status = {"attempted": True, "ok": False, "error": str(e)[:300]}
+
     if extract_numbers:
         extract_visible_numbers()
 
@@ -3445,6 +3530,7 @@ def run_single_registration(output_path=DEFAULT_SSO_FILE, extract_numbers=False)
         "sso": sso_value,
         "age_gate": age_status,
         "auth": auth_status,
+        "grok2api": grok2api_status,
         **profile,
     }
 

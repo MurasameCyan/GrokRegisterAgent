@@ -163,7 +163,27 @@ function merge(partial: unknown): AppSettings {
     proxyFetchUrl:
       typeof (p as AppSettings).proxyFetchUrl === 'string'
         ? (p as AppSettings).proxyFetchUrl
-        : DEFAULT_SETTINGS.proxyFetchUrl
+        : DEFAULT_SETTINGS.proxyFetchUrl,
+    grok2apiAutoUpload: asBool(
+      (p as AppSettings).grok2apiAutoUpload,
+      DEFAULT_SETTINGS.grok2apiAutoUpload
+    ),
+    grok2apiUrl:
+      typeof (p as AppSettings).grok2apiUrl === 'string'
+        ? (p as AppSettings).grok2apiUrl
+        : DEFAULT_SETTINGS.grok2apiUrl,
+    grok2apiUsername:
+      typeof (p as AppSettings).grok2apiUsername === 'string'
+        ? (p as AppSettings).grok2apiUsername
+        : DEFAULT_SETTINGS.grok2apiUsername,
+    grok2apiPassword:
+      typeof (p as AppSettings).grok2apiPassword === 'string'
+        ? (p as AppSettings).grok2apiPassword
+        : DEFAULT_SETTINGS.grok2apiPassword,
+    grok2apiUploadMode:
+      (p as AppSettings).grok2apiUploadMode === 'build_direct'
+        ? 'build_direct'
+        : 'web_convert'
   };
   // 旧配置无此字段时回落到默认 60
   if (

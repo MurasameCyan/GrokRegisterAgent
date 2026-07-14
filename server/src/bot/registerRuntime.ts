@@ -226,6 +226,22 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
   config.cpa_auto_add =
     settings.autoAuthExport === undefined ? true : !!settings.autoAuthExport;
 
+  // grok2api 推送（移植自 grok-register-web-master）
+  config.grok2api_auto_upload = settings.grok2apiAutoUpload === true;
+  const g2url = String(settings.grok2apiUrl || '').trim();
+  const g2user = String(settings.grok2apiUsername || '').trim();
+  const g2pass = String(settings.grok2apiPassword || '');
+  if (g2url) config.grok2api_url = g2url;
+  else delete config.grok2api_url;
+  if (g2user) config.grok2api_username = g2user;
+  else delete config.grok2api_username;
+  if (g2pass) config.grok2api_password = g2pass;
+  else delete config.grok2api_password;
+  config.grok2api_upload_mode =
+    settings.grok2apiUploadMode === 'build_direct' ? 'build_direct' : 'web_convert';
+  // 清理历史引擎字段（若旧 config 残留）
+  delete config.register_engine;
+
   if (typeof count === 'number') {
     config.run = { ...(config.run || {}), count };
   }
