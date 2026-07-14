@@ -1399,9 +1399,13 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                             无sso
                           </span>
                         )}
-                        {!rowNoEmail && !rowNoSso && (
-                          <span className="inline-block w-4 shrink-0 text-center text-[11px] text-muted-foreground">
-                            —
+                        {/* SSO 转换 / 已含 sso：绿色 sso 标记 */}
+                        {!rowNoSso && (
+                          <span
+                            className="shrink-0 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400"
+                            title="已含 sso（SSO→Auth 转换或已回填）"
+                          >
+                            sso
                           </span>
                         )}
                       </div>

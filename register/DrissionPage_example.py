@@ -238,7 +238,7 @@ except Exception:
     _stop_local_forward_early = None
 
 # 启动自检：新代码是否在容器内
-_REGISTER_BUILD = "no-exit-ip+g2api-2026-07-14"
+_REGISTER_BUILD = "plan-a+b-2026-07-14"
 print(f"[*] register build: {_REGISTER_BUILD}")
 if apply_proxy_to_chromium_options is None:
     print("[Warn] 缺少 proxy_auth_ext —— 请确认 ./register 已挂载并重启容器")
@@ -2255,16 +2255,33 @@ def build_profile():
     return given_name, family_name, password
 
 
-def fill_profile_and_submit(timeout=None):
+def fill_profile_and_submit(timeout=None, *, mode: str = "a"):
     # 覆盖 Turnstile 自动通过（30~n 秒随机）+ 短点击 + 表单填写。
     # timeout 默认随 config turnstile.auto_wait_max 放宽。
+    # mode="b"：Plan B —— 先等自然成功证据，再 simulate 点击（FlowPilot 思路）
+    plan_b = str(mode or "a").lower() in ("b", "plan_b", "plan-b", "2")
     if timeout is None:
-        timeout = float(_load_turnstile_auto_wait_max() + 30)
+        base = float(_load_turnstile_auto_wait_max() + 30)
+        timeout = base + (45 if plan_b else 0)
 
     given_name, family_name, password = build_profile()
     deadline = time.time() + timeout
     turnstile_token = ""
     turnstile_attempted = False
+
+    if plan_b:
+        print("[plan-b] 资料页：拟人延迟 + 等人机成功证据后再提交")
+        try:
+            from plan_b import detect_cf_security_block, human_pause, human_pause_major
+
+            blk = detect_cf_security_block(page)
+            if blk:
+                raise Exception(f"CF 安全拦截({blk})，Plan B 放弃")
+            human_pause_major(800, 1600)
+        except Exception as e:
+            if "CF 安全拦截" in str(e):
+                raise
+            print(f"[plan-b] 预检跳过: {e}")
 
     while time.time() < deadline:
         filled = page.run_js(
@@ -2358,6 +2375,17 @@ return [
         )
 
         if filled == 'not-ready':
+            if plan_b:
+                try:
+                    from plan_b import detect_cf_security_block, human_pause
+
+                    blk = detect_cf_security_block(page)
+                    if blk:
+                        raise Exception(f"CF 安全拦截({blk})，Plan B 放弃")
+                    human_pause(300, 900)
+                except Exception as e:
+                    if "CF 安全拦截" in str(e):
+                        raise
             time.sleep(0.5)
             continue
 
@@ -2422,19 +2450,37 @@ return value ? 'ready' : 'pending';
             """
         )
 
+        # ── Plan B：先等自然成功证据，再模拟点击；失败再回落到 getTurnstileToken ──
+        if plan_b and not turnstile_attempted:
+            turnstile_attempted = True
+            try:
+                from plan_b import wait_turnstile_success, human_pause
+
+                remain = max(30.0, min(120.0, deadline - time.time() - 5))
+                print(f"[plan-b] 等待 Turnstile 成功证据（最长 {int(remain)}s）…")
+                ev = wait_turnstile_success(page, timeout=remain, log=lambda m: print(m))
+                if not ev.get("ok"):
+                    print("[plan-b] 自然成功证据超时，尝试 getTurnstileToken 兜底…")
+                else:
+                    print(f"[plan-b] 人机证据就绪 type={ev.get('type')}")
+                human_pause(400, 1000)
+            except Exception as e:
+                print(f"[plan-b] wait_turnstile: {e}")
+
         if turnstile_state == "pending" and not turnstile_token:
-            if turnstile_attempted:
+            if turnstile_attempted and not plan_b:
                 remain = max(5, deadline - time.time() - 3)
             else:
                 # 自动通过上限 n（默认 60，WebUI 可配）+ 点击缓冲；总预算随 n 放宽
                 auto_max = _load_turnstile_auto_wait_max()
                 remain = max(auto_max + 15, min(auto_max + 25, deadline - time.time() - 3))
-            print("[*] 检测到最终注册页存在 Turnstile，优先等待自动通过。")
-            turnstile_attempted = True
-            turnstile_token = getTurnstileToken(timeout=remain)
-            if turnstile_token:
-                synced = page.run_js(
-                    """
+            if not plan_b or not turnstile_token:
+                print("[*] 检测到最终注册页存在 Turnstile，优先等待自动通过。")
+                turnstile_attempted = True
+                turnstile_token = getTurnstileToken(timeout=remain)
+                if turnstile_token:
+                    synced = page.run_js(
+                        """
 const token = arguments[0];
 const challengeInput = document.querySelector('input[name="cf-turnstile-response"]');
 if (!challengeInput) {
@@ -2449,22 +2495,39 @@ if (nativeSetter) {
 challengeInput.dispatchEvent(new Event('input', { bubbles: true }));
 challengeInput.dispatchEvent(new Event('change', { bubbles: true }));
 return String(challengeInput.value || '').trim() === String(token || '').trim();
-                    """,
-                    turnstile_token,
-                )
-                if synced:
-                    print("[*] Turnstile 响应已同步到最终注册表单。")
+                        """,
+                        turnstile_token,
+                    )
+                    if synced:
+                        print("[*] Turnstile 响应已同步到最终注册表单。")
 
-        time.sleep(0.6)
+        time.sleep(0.6 if not plan_b else 0.9)
 
-        try:
-            submit_button = page.ele('tag:button@@text()=完成注册') or page.ele('tag:button@@text():Create Account') or page.ele('tag:button@@text():Sign up')
-        except Exception:
-            submit_button = None
+        clicked = False
+        if plan_b:
+            try:
+                from plan_b import simulate_submit_click, human_pause
 
-        if not submit_button:
-            clicked = page.run_js(
-                r"""
+                human_pause(200, 600)
+                r = simulate_submit_click(page)
+                clicked = bool(r.get("ok"))
+                if clicked:
+                    print(f"[plan-b] 模拟点击提交: {r.get('text') or 'ok'}")
+                elif r.get("reason") == "turnstile-empty":
+                    print("[plan-b] 人机 token 仍空，暂不提交")
+            except Exception as e:
+                print(f"[plan-b] simulate_click 失败: {e}")
+                clicked = False
+
+        if not clicked:
+            try:
+                submit_button = page.ele('tag:button@@text()=完成注册') or page.ele('tag:button@@text():Create Account') or page.ele('tag:button@@text():Sign up')
+            except Exception:
+                submit_button = None
+
+            if not submit_button:
+                clicked = page.run_js(
+                    r"""
 const challengeInput = document.querySelector('input[name="cf-turnstile-response"]');
 if (challengeInput && !String(challengeInput.value || '').trim()) {
     return false;
@@ -2480,30 +2543,32 @@ if (!submitButton || submitButton.disabled || submitButton.getAttribute('aria-di
 submitButton.focus();
 submitButton.click();
 return true;
-                """
-            )
-        else:
-            challenge_value = page.run_js(
-                """
+                    """
+                )
+            else:
+                challenge_value = page.run_js(
+                    """
 const challengeInput = document.querySelector('input[name="cf-turnstile-response"]');
 return challengeInput ? String(challengeInput.value || '').trim() : 'not-found';
-                """
-            )
-            if challenge_value not in ('not-found', ''):
-                submit_button.click()
-                clicked = True
-            else:
-                clicked = False
+                    """
+                )
+                if challenge_value not in ('not-found', ''):
+                    submit_button.click()
+                    clicked = True
+                else:
+                    clicked = False
 
         if clicked:
-            print(f"[*] 已填写注册资料并点击完成注册: {given_name} {family_name} / {password}")
+            tag = "plan-b" if plan_b else "*"
+            print(f"[{tag}] 已填写注册资料并点击完成注册: {given_name} {family_name} / {password}")
             return {
                 "given_name": given_name,
                 "family_name": family_name,
                 "password": password,
+                "plan": "b" if plan_b else "a",
             }
 
-        time.sleep(0.5)
+        time.sleep(0.5 if not plan_b else 0.8)
 
     raise Exception("未找到最终注册表单或完成注册按钮")
 
@@ -3302,12 +3367,31 @@ def push_sso_to_api(new_tokens: list):
         print(f"[Warn] 推送 API 失败: {e}")
 
 
-def run_single_registration(output_path=DEFAULT_SSO_FILE, extract_numbers=False):
+def run_single_registration(
+    output_path=DEFAULT_SSO_FILE, extract_numbers=False, *, plan: str = "a"
+):
     # 单轮流程：打开注册页 -> 完成注册 -> 触发生日门(可选) -> 获取 sso -> 写 txt。
+    # plan="a"：本项目主流程；plan="b"：Plan B 兜底（FlowPilot 人机等待/模拟点击/CF 拦截）
+    plan_mode = "b" if str(plan or "a").lower() in ("b", "plan_b", "plan-b", "2") else "a"
+    if plan_mode == "b":
+        print("[plan-b] ═══ Plan B 兜底注册开始 ═══")
     open_signup_page()
+    if plan_mode == "b":
+        try:
+            from plan_b import detect_cf_security_block, human_pause_major
+
+            human_pause_major(600, 1400)
+            blk = detect_cf_security_block(page)
+            if blk:
+                raise Exception(f"CF 安全拦截({blk})，Plan B 放弃")
+        except Exception as e:
+            if "CF 安全拦截" in str(e):
+                raise
+            print(f"[plan-b] 开页预检跳过: {e}")
     email, dev_token = fill_email_and_submit()
     fill_code_and_submit(email, dev_token)
-    profile = fill_profile_and_submit()
+    print(f"[*] 填写注册资料并提交（Plan {plan_mode.upper()}）…")
+    profile = fill_profile_and_submit(mode=plan_mode)
     # 注册完成后等浏览器跑完 SSO 重定向链落到 grok.com 并登录——grok.com 域的
     # 会话 cookie（含 cf_clearance / sso / sso-rw）此时才会真正写下来。
     if not wait_for_grok_com_landing():
@@ -3318,6 +3402,8 @@ def run_single_registration(output_path=DEFAULT_SSO_FILE, extract_numbers=False)
 
     sso_value = wait_for_sso_cookie()
     password = str(profile.get("password", "") or "")
+    if isinstance(profile, dict):
+        profile = {**profile, "plan": plan_mode}
     append_sso_to_txt(sso_value, output_path, email=email, password=password)
 
     # SSO → CPA auth（data/auth/xai-<email>.json）；失败不阻断本轮成功
@@ -3361,6 +3447,9 @@ def run_single_registration(output_path=DEFAULT_SSO_FILE, extract_numbers=False)
                     _gconf = _json_mod.load(_gf)
                 for _gk in (
                     "grok2api_auto_upload",
+                    "push_sso_to_grok2api",
+                    "push_auth_to_grok2api",
+                    "push_auth_to_cpa",
                     "grok2api_url",
                     "grok2api_username",
                     "grok2api_password",
@@ -3521,12 +3610,98 @@ def main():
                 pass
             print(f"─── 第 {current_round}/{total} 轮 ────────────────────────")
 
+            # Plan A 优先；失败则 Plan B 兜底一次；再失败跳过下一账号
             try:
-                result = run_single_registration(args.output, extract_numbers=args.extract_numbers)
+                from plan_b import load_plan_b_enabled_from_config
+
+                plan_b_enabled = load_plan_b_enabled_from_config()
+            except Exception:
+                plan_b_enabled = True
+
+            used_plan = "a"
+            result = None
+            plan_a_err: Exception | None = None
+            try:
+                print("[plan-a] 优先使用本项目主流程…")
+                result = run_single_registration(
+                    args.output, extract_numbers=args.extract_numbers, plan="a"
+                )
+                used_plan = "a"
+            except KeyboardInterrupt:
+                print("")
+                print("[Info] 收到中断信号，停止后续轮次。")
+                break
+            except Exception as e:
+                plan_a_err = e
+                print(f"[plan-a] ✘ 失败: {e}")
+                if not plan_b_enabled:
+                    print("[plan-b] 已关闭，跳过本账号")
+                else:
+                    print("[plan-b] Plan A 失败，尝试 Plan B 兜底一次…")
+                    try:
+                        stop_browser()
+                    except Exception:
+                        pass
+                    time.sleep(0.5 + secrets.randbelow(40) / 100.0)
+                    try:
+                        start_browser()
+                        log_runtime_fingerprint(page, force=False)
+                        try:
+                            print(
+                                f"[*] 本轮代理(Plan B): {_format_proxy_for_log(_browser_proxy)}"
+                            )
+                        except Exception:
+                            pass
+                        result = run_single_registration(
+                            args.output,
+                            extract_numbers=args.extract_numbers,
+                            plan="b",
+                        )
+                        used_plan = "b"
+                    except KeyboardInterrupt:
+                        print("")
+                        print("[Info] 收到中断信号，停止后续轮次。")
+                        break
+                    except Exception as e2:
+                        fail_count += 1
+                        print(f"[plan-b] ✘ 兜底仍失败: {e2}")
+                        print(
+                            f"✘ 第 {current_round} 轮跳过"
+                            f"（Plan A: {str(plan_a_err)[:80]} | Plan B: {str(e2)[:80]}）"
+                        )
+                        try:
+                            from pools import demote_proxy_to_pending
+
+                            if _browser_proxy:
+                                demote_proxy_to_pending(
+                                    _browser_proxy,
+                                    reason=f"A+B失败:{str(e2)[:36]}",
+                                )
+                        except Exception as de:
+                            print(f"[Warn] 失败降级回调异常: {de}")
+                        if args.count == 0 or current_round < args.count:
+                            time.sleep(0.5)
+                        continue
+
+            if result is None:
+                fail_count += 1
+                print(f"✘ 第 {current_round} 轮失败 | {plan_a_err}")
+                try:
+                    from pools import demote_proxy_to_pending
+
+                    if _browser_proxy:
+                        demote_proxy_to_pending(
+                            _browser_proxy,
+                            reason=f"注册失败:{str(plan_a_err)[:40]}",
+                        )
+                except Exception as de:
+                    print(f"[Warn] 失败降级回调异常: {de}")
+            else:
                 collected_sso.append(result["sso"])
                 success_count += 1
-                print(f"✔ 第 {current_round} 轮成功 | {result['email']}")
-                # 可用池对应代理成功计数 +1（绿色 UI 展示）
+                tag = "Plan B" if used_plan == "b" else "Plan A"
+                # 邮箱已在「注册成功 | email=…」行输出，此处不再重复
+                print(f"✔ 第 {current_round} 轮成功（{tag}）")
                 try:
                     from pools import bump_proxy_register_success
 
@@ -3534,13 +3709,6 @@ def main():
                         bump_proxy_register_success(_browser_proxy, delta=1)
                 except Exception as be:
                     print(f"[Warn] 代理成功计数回调异常: {be}")
-            except KeyboardInterrupt:
-                print(f"")
-                print(f"[Info] 收到中断信号，停止后续轮次。")
-                break
-            except Exception as error:
-                fail_count += 1
-                print(f"✘ 第 {current_round} 轮失败 | {error}")
 
             if args.count == 0 or current_round < args.count:
                 time.sleep(0.5)

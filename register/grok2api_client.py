@@ -374,15 +374,25 @@ def upload_registered_sso(
 ) -> dict[str, Any] | None:
     """按 settings 决定是否上传；返回 import/conversion 结果或 None（未启用）。"""
     log = log or _noop
-    # 兼容 Python config / TS 字段
+    # 兼容：push_sso / push_auth / grok2api_auto_upload
+    def _truthy(v: Any) -> bool:
+        if v is True:
+            return True
+        if v is False or v is None:
+            return False
+        return str(v).lower() in ("1", "true", "yes", "on")
+
+    push_sso = settings.get("push_sso_to_grok2api")
+    if push_sso is None:
+        push_sso = settings.get("pushSsoToGrok2api")
+    push_auth = settings.get("push_auth_to_grok2api")
+    if push_auth is None:
+        push_auth = settings.get("pushAuthToGrok2api")
     auto = settings.get("grok2api_auto_upload")
     if auto is None:
         auto = settings.get("grok2apiAutoUpload")
-    if auto is True:
-        pass
-    elif auto is False or auto is None:
-        return None
-    elif str(auto).lower() not in ("1", "true", "yes", "on"):
+    # SSO 或 Auth 任一目标开，或旧 auto_upload
+    if not (_truthy(push_sso) or _truthy(push_auth) or _truthy(auto)):
         return None
 
     base_url = str(
@@ -407,13 +417,9 @@ def upload_registered_sso(
         except Exception as e:
             log(f"[grok2api] egress update skipped: {e}")
 
-    mode = str(settings.get("grok2api_upload_mode") or settings.get("grok2apiUploadMode") or "web_convert").strip()
+    # 固定 web_convert（UI 已移除上传模式；与 grok-register-web 一致）
+    mode = "web_convert"
     log(f"[grok2api] Uploading SSO mode={mode} email={email or '-'}")
-    if mode == "build_direct":
-        cred = sso_to_build_credential(sso_cookie, email=email)
-        result = client.import_build_credential(cred)
-        return {"mode": "build_direct", "import": result}
-    # 默认：Web 导入 + convert-to-build（与 grok-register-web 一致）
     result = client.import_web_sso_and_convert(sso_cookie, email=email)
     result["mode"] = "web_convert"
     return result

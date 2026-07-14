@@ -1,8 +1,9 @@
 import express, { type Request, type Response } from 'express';
 import { createServer } from 'node:http';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
-import { existsSync, promises as fsp } from 'node:fs';
+import { existsSync, promises as fsp, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { WebSocket, WebSocketServer } from 'ws';
 
 import type { RegisterStartArgs, SystemHealth, SystemHealthCheck } from '@shared/ipc';
@@ -51,6 +52,75 @@ import {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 6657);
 const HOST = process.env.BIND_HOST || '0.0.0.0';
+
+/**
+ * Python 注册机 → Node 内部回调密钥（代理成功计数 / 降级）。
+ * 优先 GRA_INTERNAL_KEY 环境变量；否则读写 DATA_DIR/internal-api-key。
+ */
+function ensureInternalApiKey(): string {
+  const fromEnv = String(process.env.GRA_INTERNAL_KEY || '').trim();
+  if (fromEnv) {
+    process.env.GRA_INTERNAL_KEY = fromEnv;
+    return fromEnv;
+  }
+  const keyPath = join(dataDir(), 'internal-api-key');
+  try {
+    if (existsSync(keyPath)) {
+      const disk = readFileSync(keyPath, 'utf-8').trim();
+      if (disk.length >= 16) {
+        process.env.GRA_INTERNAL_KEY = disk;
+        return disk;
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  const generated = randomBytes(24).toString('hex');
+  try {
+    mkdirSync(dataDir(), { recursive: true });
+    writeFileSync(keyPath, generated, 'utf-8');
+  } catch {
+    /* 写盘失败仍用内存密钥，本进程 spawn 的 Python 可读 process.env */
+  }
+  process.env.GRA_INTERNAL_KEY = generated;
+  return generated;
+}
+
+const INTERNAL_API_KEY = ensureInternalApiKey();
+
+function safeEqualStr(a: string, b: string): boolean {
+  try {
+    const ba = Buffer.from(a);
+    const bb = Buffer.from(b);
+    if (ba.length !== bb.length) return false;
+    return timingSafeEqual(ba, bb);
+  } catch {
+    return false;
+  }
+}
+
+function isLoopbackReq(req: Request): boolean {
+  const ip = String(req.socket?.remoteAddress || req.ip || '');
+  return (
+    ip === '127.0.0.1' ||
+    ip === '::1' ||
+    ip === '::ffff:127.0.0.1' ||
+    ip.endsWith('/127.0.0.1')
+  );
+}
+
+/** 仅供本机 Python 回调的代理内部写接口（无 session 时需 internal key 或 loopback） */
+function isInternalProxyCallbackPath(req: Request): boolean {
+  const p = String(req.path || req.url || '').split('?')[0];
+  return (
+    p === '/proxy/register-success' ||
+    p === '/proxy/demote' ||
+    p === '/api/proxy/register-success' ||
+    p === '/api/proxy/demote' ||
+    p.endsWith('/proxy/register-success') ||
+    p.endsWith('/proxy/demote')
+  );
+}
 const STATIC_ROOT = resolve(
   process.env.STATIC_ROOT || join(__dirname, '..', '..', '..', '..', 'out', 'renderer')
 );
@@ -69,6 +139,22 @@ app.use((_req, res, next) => {
 async function requireApiAuth(req: Request, res: Response, next: () => void) {
   const state = await getAuthState(req);
   if (state.authenticated) {
+    next();
+    return;
+  }
+  // Python 内部回调：X-GRA-Internal 共享密钥
+  const hdr = String(
+    req.headers['x-gra-internal'] ||
+      req.headers['x-internal-key'] ||
+      req.headers['x-gra-internal-key'] ||
+      ''
+  ).trim();
+  if (INTERNAL_API_KEY && hdr && safeEqualStr(hdr, INTERNAL_API_KEY)) {
+    next();
+    return;
+  }
+  // 兼容：本机 loopback 访问代理成功/降级回调（无密钥的旧进程）
+  if (isInternalProxyCallbackPath(req) && isLoopbackReq(req)) {
     next();
     return;
   }
@@ -172,6 +258,15 @@ app.post('/api/run/stop', async (req: Request, res: Response) => {
     const runId = req.body?.runId != null ? String(req.body.runId) : undefined;
     const stopAll = req.body?.stopAll === true;
     res.json(await registerBot.stop(runId, { stopAll }));
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+  }
+});
+
+/** 清理已停止/完成/失败的任务队列（不杀仍在运行的进程） */
+app.post('/api/run/jobs/clear-finished', async (_req: Request, res: Response) => {
+  try {
+    res.json(registerBot.clearFinishedJobs());
   } catch (err) {
     res.status(400).json({ error: (err as Error).message });
   }

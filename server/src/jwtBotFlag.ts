@@ -33,6 +33,25 @@ export function decodeJwtPayload(token: string): Record<string, unknown> | null 
   return b64urlJson(t.split('.')[1]);
 }
 
+/** 从 payload 取 bot_flag 类 claim（含 0 / "None"） */
+function pickBotFlagRaw(pl: Record<string, unknown>): unknown {
+  const keys = [
+    'bot_flag_source',
+    'botFlagSource',
+    'bot_flag',
+    'botFlag',
+    'bot_flag_src'
+  ];
+  for (const k of keys) {
+    if (pl[k] !== undefined && pl[k] !== null && pl[k] !== '') {
+      return pl[k];
+    }
+    // 显式 0 也要取（上面 !== '' 已放过 number 0）
+    if (pl[k] === 0 || pl[k] === '0') return pl[k];
+  }
+  return undefined;
+}
+
 export function readBotFlagFromToken(token: string): BotFlagInfo {
   const t = String(token || '')
     .replace(/^sso=/i, '')
@@ -45,16 +64,13 @@ export function readBotFlagFromToken(token: string): BotFlagInfo {
     return { botFlagSource: null, isBotFlag1: false, error: 'not a jwt' };
   }
   // 兼容 claim 名变体；0 是合法 None
-  const raw =
-    pl.bot_flag_source !== undefined && pl.bot_flag_source !== null
-      ? pl.bot_flag_source
-      : pl.botFlagSource !== undefined && pl.botFlagSource !== null
-        ? pl.botFlagSource
-        : pl.bot_flag !== undefined && pl.bot_flag !== null
-          ? pl.bot_flag
-          : undefined;
+  const raw = pickBotFlagRaw(pl);
   if (raw === undefined || raw === null) {
     return { botFlagSource: null, isBotFlag1: false };
+  }
+  // 文案 None / none
+  if (typeof raw === 'string' && /^none$/i.test(raw.trim())) {
+    return { botFlagSource: 0, isBotFlag1: false };
   }
   const num = typeof raw === 'number' ? raw : Number(String(raw).trim());
   const isBotFlag1 =
@@ -70,29 +86,38 @@ export function readBotFlagFromToken(token: string): BotFlagInfo {
 }
 
 /**
- * 优先 access_token，其次 sso。
+ * 优先 access_token，其次 sso / id_token / extra.sso。
  * 注意：access 无 bot_flag_source claim 时必须继续读 sso，
  * 旧逻辑 `!r.error` 会在 null claim 时提前返回，导致 None(0) 永远显示为 —。
  */
 export function readBotFlagFromAuthRecord(data: Record<string, unknown>): BotFlagInfo {
   const access = String(data.access_token || data.key || '').trim();
-  const sso = String(data.sso || '').trim();
+  let sso = String(data.sso || '').trim();
+  if (!sso) {
+    const extra = data.extra;
+    if (extra && typeof extra === 'object') {
+      sso = String((extra as Record<string, unknown>).sso || '').trim();
+    }
+  }
+  const idToken = String(data.id_token || '').trim();
 
-  if (access) {
-    const r = readBotFlagFromToken(access);
-    // 有明确 claim（含 0 / "0"）→ 用 access
+  const tryToken = (tok: string): BotFlagInfo | null => {
+    if (!tok) return null;
+    const r = readBotFlagFromToken(tok);
+    // 有明确 claim（含 0）→ 采用；0 绝不能被当缺失
     if (r.botFlagSource != null && r.botFlagSource !== '') return r;
-    // token 非法时再试 sso；合法但无 claim 也试 sso
-  }
-  if (sso) {
-    const r = readBotFlagFromToken(sso);
-    if (r.botFlagSource != null && r.botFlagSource !== '') return r;
-    // sso 也无 claim
-    if (!access) return r;
-    return { botFlagSource: null, isBotFlag1: false };
-  }
-  if (access) {
-    // 仅有 access 且无 claim
+    if (r.botFlagSource === 0) return r;
+    return null;
+  };
+
+  const fromAccess = tryToken(access);
+  if (fromAccess) return fromAccess;
+  const fromSso = tryToken(sso);
+  if (fromSso) return fromSso;
+  const fromId = tryToken(idToken);
+  if (fromId) return fromId;
+
+  if (access || sso || idToken) {
     return { botFlagSource: null, isBotFlag1: false };
   }
   return { botFlagSource: null, isBotFlag1: false, error: 'no token' };

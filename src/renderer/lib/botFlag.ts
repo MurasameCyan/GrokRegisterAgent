@@ -10,11 +10,29 @@ export function decodeJwtPayload(token: string): Record<string, unknown> | null 
     let seg = parts[1].replace(/-/g, '+').replace(/_/g, '/');
     const pad = seg.length % 4;
     if (pad) seg += '='.repeat(4 - pad);
+    // atob 仅支持 latin1；JWT payload 多为 ascii JSON
     const json = atob(seg);
     return JSON.parse(json) as Record<string, unknown>;
   } catch {
     return null;
   }
+}
+
+function pickBotFlagRaw(pl: Record<string, unknown>): unknown {
+  const keys = [
+    'bot_flag_source',
+    'botFlagSource',
+    'bot_flag',
+    'botFlag',
+    'bot_flag_src'
+  ];
+  for (const k of keys) {
+    if (pl[k] !== undefined && pl[k] !== null && pl[k] !== '') {
+      return pl[k];
+    }
+    if (pl[k] === 0 || pl[k] === '0') return pl[k];
+  }
+  return undefined;
 }
 
 export function readBotFlagFromSso(sso: string | undefined | null): {
@@ -23,15 +41,12 @@ export function readBotFlagFromSso(sso: string | undefined | null): {
 } {
   const pl = decodeJwtPayload(String(sso || ''));
   if (!pl) return { botFlagSource: null, isBotFlag1: false };
-  // 兼容 claim 名变体
-  const raw =
-    pl.bot_flag_source !== undefined
-      ? pl.bot_flag_source
-      : pl.botFlagSource !== undefined
-        ? pl.botFlagSource
-        : pl.bot_flag;
+  const raw = pickBotFlagRaw(pl);
   if (raw === undefined || raw === null) {
     return { botFlagSource: null, isBotFlag1: false };
+  }
+  if (typeof raw === 'string' && /^none$/i.test(raw.trim())) {
+    return { botFlagSource: 0, isBotFlag1: false };
   }
   // 0 是合法 None，不可用 !raw / || 吞掉
   const n = typeof raw === 'number' ? raw : Number(String(raw).trim());

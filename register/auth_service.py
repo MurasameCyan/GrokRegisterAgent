@@ -218,13 +218,22 @@ def sso_to_cpa_auth(
         elif r_url and not r_key:
             log("[auth] 已配置 cpa_remote_url 但无 management_key，跳过远程推送")
 
-    # mint 后 cehuo 风格 /responses 测活；dead 时是否删文件由 delete_on_dead 控制
+    # mint 后 cehuo 风格 /responses 测活；瞬时 403 软重试，勿因 permission-denied 误杀
     probe = probe_and_cleanup(
-        path, proxy=proxy or "", delete_on_dead=bool(delete_on_dead)
+        path,
+        proxy=proxy or "",
+        delete_on_dead=bool(delete_on_dead),
+        mint_soft_retry=True,
     )
+    soft_note = ""
+    if probe.get("mint_soft_warn"):
+        soft_note = f" soft_warn={probe.get('mint_soft_warn')}"
+    elif probe.get("soft_403"):
+        soft_note = " soft_403_retried"
     log(
         f"[auth] probe action={probe.get('action')} http={probe.get('http_status')} "
-        f"deleted={probe.get('deleted')} {probe.get('summary') or probe.get('error') or ''}"
+        f"deleted={probe.get('deleted')} "
+        f"{probe.get('summary') or probe.get('error') or ''}{soft_note}"
     )
     if probe.get("action") == "dead":
         still = path.is_file()
@@ -239,7 +248,8 @@ def sso_to_cpa_auth(
             "referrer": ref,
             "remote": remote_result,
         }
-    if probe.get("action") == "error":
+    # keep / error / soft_warn：文件已写出 → mint 成功，probe 仅警告
+    if probe.get("action") in ("error", "keep") or probe.get("mint_soft_warn"):
         return {
             "ok": True,
             "email": payload.get("email") or email,
@@ -248,7 +258,9 @@ def sso_to_cpa_auth(
             "sub": payload.get("sub") or "",
             "agent_id": (headers or {}).get("x-grok-agent-id", ""),
             "probe": probe,
-            "probe_warn": probe.get("error") or "probe error",
+            "probe_warn": probe.get("mint_soft_warn")
+            or probe.get("error")
+            or "probe keep/error",
             "referrer": ref,
             "remote": remote_result,
         }
@@ -407,8 +419,9 @@ def resign_auth_file(
             # 重签：强制不因 probe dead 删文件（避免「点重签后文件没了」）。
             # 需要删死号请用「测活」且开启 cpaProbeDeleteOnDead。
             # 即使调用方传 delete_on_dead=True，重签路径也绝不删（仅测活可删）。
+            # mint_soft_retry：刚 refresh 后同样可能瞬时 403
             probe = probe_and_cleanup(
-                p, proxy=proxy or "", delete_on_dead=False
+                p, proxy=proxy or "", delete_on_dead=False, mint_soft_retry=True
             )
             log(
                 f"[auth] resign probe action={probe.get('action')} http={probe.get('http_status')} "

@@ -108,18 +108,17 @@ function isSocks(scheme: string): boolean {
 
 /**
  * 测活三条件（缺一不可）：
- * 1. 代理可用：经代理 HTTPS 出站成功
+ * 1. 代理可用：经代理 HTTPS 出站成功（轻量连通，不解析出口 IP）
  * 2. 可达 xAI：grok / accounts
- * 3. 可达 Cloudflare：cdn-cgi/trace
+ * 3. 可达 Cloudflare：cdn-cgi/trace（仅此步打 CF）
  *
- * 判定：隧道建立并拿到任意 HTTP 响应（含 3xx/4xx）即该目标通。
- * 代理 407 / 连接失败 / 超时 = 该条件失败。
- * 已取消出口 IP 解析/展示（不再依赖 ipify 回包正文）。
+ * 单条与批量共用 probeProxy，无单独出口检测分支。
+ * 代理连通勿再用 ipify（像出口探测）或 CF trace（与条件 3 重复，批量易被 CF 限流全灭）。
  */
-// 代理连通：用通用 HTTPS 目标即可，不必解析出口 IP
 const PROXY_ALIVE_URLS = [
-  'https://www.cloudflare.com/cdn-cgi/trace',
-  'https://1.1.1.1/cdn-cgi/trace'
+  'https://www.google.com/generate_204',
+  'https://connectivitycheck.gstatic.com/generate_204',
+  'https://detectportal.firefox.com/success.txt'
 ];
 const XAI_PROBE_URLS = [
   'https://grok.x.ai/',
@@ -134,7 +133,6 @@ type TargetProbe = {
   ok: boolean;
   ms: number;
   detail: string;
-  exitIp?: string;
   status?: number;
 };
 
@@ -277,7 +275,7 @@ export async function probeProxy(
   const started = Date.now();
 
   const work = async (): Promise<ProxyProbeResult> => {
-    // 三条件并行：代理可用 + xAI + CF（缺一不可）
+    // 三条件并行：代理隧道 + xAI + CF（无出口 IP 解析）
     const perTargetTimeout = Math.max(2500, Math.min(tMs, 8000));
     const [alive, xai, cf] = await Promise.all([
       probeTargets(agent, PROXY_ALIVE_URLS, perTargetTimeout, 'proxy'),
@@ -285,12 +283,12 @@ export async function probeProxy(
       probeTargets(agent, CF_PROBE_URLS, perTargetTimeout, 'CF')
     ]);
     const latencyMs = Date.now() - started;
-    // 不再做「出口 IP」解析/展示（易把错误页 HTML 当 IP，且注册不依赖此字段）
     const allOk = alive.ok && xai.ok && cf.ok;
 
     const mark = (ok: boolean, name: string, t: TargetProbe) =>
       ok ? `${name}✓ ${t.ms}ms` : `${name}✗ ${t.detail}`;
 
+    // 文案仅 代理/xAI/CF 与耗时，绝不拼出口 IP
     const parts = [
       mark(alive.ok, '代理', alive),
       mark(xai.ok, 'xAI', xai),
@@ -385,8 +383,8 @@ async function mapPool<T, R>(
  */
 export async function probeProxyBatch(
   proxies: string[],
-  concurrency = 8,
-  timeoutMs = 6000
+  concurrency = 6,
+  timeoutMs = 8000
 ): Promise<{
   total: number;
   ok: number;
@@ -399,9 +397,11 @@ export async function probeProxyBatch(
   // 单次请求硬上限，防止一次塞 200+ 条
   const MAX_PER_REQUEST = 48;
   const sliced = list.slice(0, MAX_PER_REQUEST);
-  const conc = Math.max(1, Math.min(16, Math.floor(concurrency) || 8));
-  const tMs = Math.max(2000, Math.min(15000, Math.floor(timeoutMs) || 6000));
+  // 批量默认略降并发，避免 xAI/CF 被打爆导致「全灭」而单条却正常
+  const conc = Math.max(1, Math.min(10, Math.floor(concurrency) || 6));
+  const tMs = Math.max(3000, Math.min(15000, Math.floor(timeoutMs) || 8000));
 
+  // 与单条相同逻辑：仅 probeProxy，无额外出口检测
   const results = await mapPool(sliced, conc, (proxy) => probeProxy(proxy, tMs));
   // 被截断的部分直接标 fail 提示
   for (let i = sliced.length; i < list.length; i++) {

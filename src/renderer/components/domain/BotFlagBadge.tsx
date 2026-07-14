@@ -27,8 +27,9 @@ function isFlag0(flag: number | string | null | undefined): boolean {
   if (typeof flag === 'string' && flag.trim() === '0') return true;
   if (typeof flag === 'number' && Number.isFinite(flag) && flag === 0) return true;
   if (typeof flag === 'bigint' && flag === 0n) return true;
-  // 兼容文案 / 数字字符串
+  // 兼容文案 / 数字字符串 / 布尔假值误传
   if (typeof flag === 'string' && /^none$/i.test(flag.trim())) return true;
+  if (flag === false) return true;
   if (flag != null && flag !== '' && Number(flag) === 0 && !Number.isNaN(Number(flag))) {
     return true;
   }

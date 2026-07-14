@@ -564,9 +564,10 @@ export function SettingsForm() {
     setProxyProbes((prev) => ({ ...prev, ...loadingMap }));
 
     // 分块测活：避免一次 200+ 条卡死反代（Cloudflare 524 ~100s）
-    const CHUNK = 24;
-    const conc = Math.max(1, Math.min(12, Number(draft.proxyProbeConcurrency) || 8));
-    const timeoutMs = 6000;
+    // 并发略保守：单条与批量同一套 probe（无出口检测）；过高并发易被 xAI/CF 限流导致全灭
+    const CHUNK = 16;
+    const conc = Math.max(1, Math.min(8, Number(draft.proxyProbeConcurrency) || 5));
+    const timeoutMs = 8000;
     const proxies = proxyPoolEntries.map((e) => e.proxy);
     let totalOk = 0;
     let totalFail = 0;
@@ -1573,8 +1574,8 @@ export function SettingsForm() {
 
       <Card>
         <CardHeader
-          title="指纹与 Auth 导出"
-          description="随机注册特征、SSO→CPA auth 自动写出"
+          title="指纹与授权"
+          description="注册指纹随机化；本地写出 CPA Auth（xai-*.json）。远程推送目标在下方「推送授权」卡片配置：SSO 仅 grok2api，Auth 可 CPA 与 grok2api 同时开。"
           right={
             <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-muted text-muted-foreground">
               <KeyRound className="h-4 w-4" aria-hidden />
@@ -1589,8 +1590,8 @@ export function SettingsForm() {
             onChange={(v) => update('randomFingerprint', v)}
           />
           <ToggleRow
-            label="自动导出 CPA Auth"
-            hint="注册成功后走授权码流程换 token，写出 xai-*.json；最新 CPA 关闭 using_api 即可用"
+            label="自动导出本地 Auth"
+            hint="注册成功后授权码换 token，写出 xai-*.json 到 DATA_DIR/auth。远程 CPA/grok2api 见「推送授权」"
             checked={draft.autoAuthExport}
             onChange={(v) => update('autoAuthExport', v)}
           />
@@ -1606,147 +1607,250 @@ export function SettingsForm() {
             checked={draft.cpaProbeDeleteSsoOnDead === true}
             onChange={(v) => update('cpaProbeDeleteSsoOnDead', v)}
           />
-          <Field
-            label="远程 CPA 地址"
-            hint="可选。Management API 根地址，如 http://host:8317（不要带 /v1）"
-          >
-            <Input
-              value={draft.cpaRemoteUrl || ''}
-              onChange={(e) => update('cpaRemoteUrl', e.target.value)}
-              placeholder="http://127.0.0.1:8317"
-            />
-          </Field>
-          <Field
-            label="远程 CPA 管理密钥"
-            hint="remote-management.secret-key 明文；与远程地址同时配置才上传"
-          >
-            <Input
-              type="password"
-              value={draft.cpaManagementKey || ''}
-              onChange={(e) => update('cpaManagementKey', e.target.value)}
-              placeholder="管理密钥明文"
-              autoComplete="off"
-            />
-          </Field>
-          <div className="flex flex-wrap items-center gap-3 pt-1">
-            <ConnectionTestButton
-              label="检测远程连通性"
-              disabled={
-                !String(draft.cpaRemoteUrl || '').trim() ||
-                !String(draft.cpaManagementKey || '').trim()
-              }
-              onTest={() =>
-                window.api.testCpaRemote({
-                  url: draft.cpaRemoteUrl,
-                  key: draft.cpaManagementKey
-                })
-              }
-            />
-            <span className="text-[12px] text-muted-foreground">
-              调用 Management API（不上传文件）
-            </span>
+        </CardBody>
+      </Card>
+
+      <Card>
+        <CardHeader
+          title="注册 Plan B 兜底"
+          description="优先 Plan A（本项目主流程）。失败后按 FlowPilot 思路再试一次：等人机成功证据、模拟点击、识别 CF 拦截。仍失败则跳过本账号进入下一轮。"
+        />
+        <CardBody className="space-y-3">
+          <ToggleRow
+            label="启用 Plan B 兜底"
+            hint="默认开。关闭后 Plan A 失败即跳过，不再二次尝试"
+            checked={draft.registerPlanBEnabled !== false}
+            onChange={(v) => update('registerPlanBEnabled', v)}
+          />
+          <div className="space-y-1.5 rounded-xl border border-border/60 bg-muted/40 p-3 text-[12px] leading-5 text-muted-foreground">
+            <p className="font-medium text-foreground">执行顺序</p>
+            <ol className="list-decimal space-y-1 pl-4">
+              <li>
+                <span className="text-foreground">Plan A</span>
+                ：现有临时邮 + Drission 填表 + 现有 Turnstile 处理
+              </li>
+              <li>
+                <span className="text-foreground">Plan B</span>
+                （仅 A 失败且本开关开启）：重启浏览器 → 更长拟人延迟 → 等
+                Turnstile 自然成功 → 模拟点击提交 → CF 拦截则立即放弃
+              </li>
+              <li>A+B 都失败：记失败、可选降级代理、进入下一账号</li>
+            </ol>
           </div>
         </CardBody>
       </Card>
 
       <Card>
         <CardHeader
-          title="grok2api 推送"
-          description="注册成功拿到 SSO 后，按所选模式上传到 grok2api 管理面板。失败只打日志/不阻断本轮 SSO 落盘与 CPA 导出。"
+          title="推送授权"
+          description="按来源选择推送目标。SSO 只推 grok2api；Auth 可同时推 CPA 与 grok2api。目标按钮点亮=启用；需连接信息时展开填写。"
+          right={
+            <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-muted text-muted-foreground">
+              <KeyRound className="h-4 w-4" aria-hidden />
+            </span>
+          }
         />
-        <CardBody className="space-y-3">
-          <ToggleRow
-            label="自动推送 grok2api"
-            hint="开启且 URL/账号/密码齐全时，每轮注册成功后自动上传；默认关闭"
-            checked={draft.grok2apiAutoUpload === true}
-            onChange={(v) => update('grok2apiAutoUpload', v)}
-          />
-          <Field
-            label="grok2api URL"
-            hint="管理面板根地址（不要带尾斜杠路径），如 http://127.0.0.1:8000 或 https://g2.example.com"
-          >
-            <Input
-              value={draft.grok2apiUrl || ''}
-              onChange={(e) => update('grok2apiUrl', e.target.value)}
-              placeholder="http://127.0.0.1:8000"
-            />
-          </Field>
-          <Field
-            label="grok2api 用户名"
-            hint="管理后台登录用户名（POST /api/admin/v1/auth/login）"
-          >
-            <Input
-              value={draft.grok2apiUsername || ''}
-              onChange={(e) => update('grok2apiUsername', e.target.value)}
-              placeholder="admin"
-              autoComplete="off"
-            />
-          </Field>
-          <Field label="grok2api 密码" hint="管理后台登录密码，仅保存在本机配置中">
-            <Input
-              type="password"
-              value={draft.grok2apiPassword || ''}
-              onChange={(e) => update('grok2apiPassword', e.target.value)}
-              placeholder="密码"
-              autoComplete="off"
-            />
-          </Field>
-          <Field
-            label="上传模式"
-            hint={
-              draft.grok2apiUploadMode === 'build_direct'
-                ? 'build_direct：本机用 SSO 走 OAuth Device Flow 换 Build access/refresh token，再调用 grok2api accounts/import。需 curl_cffi，且 SSO 须能访问 accounts.x.ai / auth.x.ai。'
-                : 'web_convert（推荐）：与 grok-register-web 相同——先 Web 账号 import（SSO），再 convert-to-build。可选同步浏览器 UA/CF cookie 到 egress-nodes。'
-            }
-          >
-            <select
-              className={SELECT_CLASS}
-              value={
-                draft.grok2apiUploadMode === 'build_direct'
-                  ? 'build_direct'
-                  : 'web_convert'
-              }
-              onChange={(e) =>
-                update(
-                  'grok2apiUploadMode',
-                  e.target.value === 'build_direct' ? 'build_direct' : 'web_convert'
-                )
-              }
-            >
-              <option value="web_convert">
-                web_convert — Web 导入 SSO → Convert to Build（推荐）
-              </option>
-              <option value="build_direct">
-                build_direct — 本地 Device Flow 换 Build 后 import
-              </option>
-            </select>
-          </Field>
-          <div className="space-y-2 rounded-xl border border-border/60 bg-muted/40 p-3 text-[12px] leading-5 text-muted-foreground">
-            <p className="font-medium text-foreground">模式说明（已适配 grok-register-web）</p>
-            <ul className="list-disc space-y-1.5 pl-4">
-              <li>
-                <span className="font-medium text-foreground">web_convert</span>
-                ：登录管理 API →{' '}
-                <code className="text-[11px]">/accounts/web/import</code> 上传 SSO →{' '}
-                <code className="text-[11px]">/accounts/web/convert-to-build</code>{' '}
-                转 Build。与参考项目一致，适合日常批量。
-              </li>
-              <li>
-                <span className="font-medium text-foreground">build_direct</span>
-                ：不经过 Web 账号中转，本机 Device Flow 直接拿 Build
-                凭证再 import。网络/依赖更苛刻，作备选。
-              </li>
-              <li>
-                与 CPA 远程推送互不冲突：可同时开「自动导出 Auth」与「自动推送
-                grok2api」。
-              </li>
-              <li>
-                注册日志中出现 <code className="text-[11px]">[*] grok2api 上传成功</code>{' '}
-                即成功；失败为 <code className="text-[11px]">[Warn] grok2api 上传失败</code>
-                ，不影响 SSO 文件与号池入库。
-              </li>
-            </ul>
-          </div>
+        <CardBody className="space-y-4">
+          {(() => {
+            const pushSsoG2 =
+              draft.pushSsoToGrok2api === true || draft.grok2apiAutoUpload === true;
+            const pushAuthCpa =
+              draft.pushAuthToCpa === true || draft.cpaRemotePushEnabled === true;
+            const pushAuthG2 = draft.pushAuthToGrok2api === true;
+            const needG2Config = pushSsoG2 || pushAuthG2;
+            const setPushSsoG2 = (on: boolean) => {
+              update('pushSsoToGrok2api', on);
+              // 兼容旧字段：任一 grok2api 目标开则为 true
+              update('grok2apiAutoUpload', on || draft.pushAuthToGrok2api === true);
+            };
+            const setPushAuthCpa = (on: boolean) => {
+              update('pushAuthToCpa', on);
+              update('cpaRemotePushEnabled', on);
+            };
+            const setPushAuthG2 = (on: boolean) => {
+              update('pushAuthToGrok2api', on);
+              update(
+                'grok2apiAutoUpload',
+                on ||
+                  draft.pushSsoToGrok2api === true ||
+                  // 关 Auth→g2 时若仅依赖旧 auto 且 SSO 未开，则关掉 auto
+                  false
+              );
+            };
+            const targetBtn = (
+              active: boolean,
+              label: string,
+              onClick: () => void,
+              title: string
+            ) => (
+              <button
+                type="button"
+                title={title}
+                onClick={onClick}
+                className={
+                  active
+                    ? 'inline-flex h-8 items-center rounded-lg border border-emerald-500/40 bg-emerald-500/15 px-3 text-[12px] font-semibold text-emerald-700 dark:text-emerald-400'
+                    : 'inline-flex h-8 items-center rounded-lg border border-border bg-background px-3 text-[12px] font-medium text-muted-foreground hover:bg-muted hover:text-foreground'
+                }
+              >
+                {label}
+              </button>
+            );
+            return (
+              <>
+                {/* SSO 推送 */}
+                <div className="rounded-xl border border-border/70 bg-muted/30 p-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[14px] font-medium text-foreground">SSO</div>
+                      <div className="text-[11px] text-muted-foreground">
+                        注册成功后的 Cookie / 号池 sso — 仅可推送到 grok2api
+                      </div>
+                    </div>
+                    {targetBtn(
+                      pushSsoG2,
+                      'grok2api',
+                      () => setPushSsoG2(!pushSsoG2),
+                      pushSsoG2 ? '关闭 SSO→grok2api' : '开启 SSO→grok2api'
+                    )}
+                  </div>
+                </div>
+
+                {/* Auth 推送 */}
+                <div className="rounded-xl border border-border/70 bg-muted/30 p-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[14px] font-medium text-foreground">Auth</div>
+                      <div className="text-[11px] text-muted-foreground">
+                        本地 xai-*.json — CPA 与 grok2api 可同时打开、同时推送
+                      </div>
+                    </div>
+                    {targetBtn(
+                      pushAuthCpa,
+                      'CPA',
+                      () => setPushAuthCpa(!pushAuthCpa),
+                      pushAuthCpa ? '关闭 Auth→CPA' : '开启 Auth→CPA'
+                    )}
+                    {targetBtn(
+                      pushAuthG2,
+                      'grok2api',
+                      () => setPushAuthG2(!pushAuthG2),
+                      pushAuthG2 ? '关闭 Auth→grok2api' : '开启 Auth→grok2api'
+                    )}
+                  </div>
+                </div>
+
+                {/* CPA 连接（Auth→CPA 启用时展开） */}
+                {pushAuthCpa && (
+                  <div className="space-y-3 rounded-xl border border-border/60 bg-background/50 p-3">
+                    <div className="text-[12px] font-medium text-foreground">
+                      CPA 连接设定
+                    </div>
+                    <Field
+                      label="远程 CPA 地址"
+                      hint="Management API 根地址（不要带 /v1）"
+                    >
+                      <Input
+                        value={draft.cpaRemoteUrl || ''}
+                        onChange={(e) => update('cpaRemoteUrl', e.target.value)}
+                        placeholder="http://127.0.0.1:8317"
+                      />
+                    </Field>
+                    <Field
+                      label="远程 CPA 管理密钥"
+                      hint="remote-management.secret-key 明文"
+                    >
+                      <Input
+                        type="password"
+                        value={draft.cpaManagementKey || ''}
+                        onChange={(e) => update('cpaManagementKey', e.target.value)}
+                        placeholder="管理密钥明文"
+                        autoComplete="off"
+                      />
+                    </Field>
+                    <div className="flex flex-wrap items-center gap-3">
+                      <ConnectionTestButton
+                        label="检测远程连通性"
+                        disabled={
+                          !String(draft.cpaRemoteUrl || '').trim() ||
+                          !String(draft.cpaManagementKey || '').trim()
+                        }
+                        onTest={() =>
+                          window.api.testCpaRemote({
+                            url: draft.cpaRemoteUrl,
+                            key: draft.cpaManagementKey
+                          })
+                        }
+                      />
+                      <span className="text-[12px] text-muted-foreground">
+                        不上传文件，仅测 Management API
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {/* grok2api 连接（任一 grok2api 目标启用时展开） */}
+                {needG2Config && (
+                  <div className="space-y-3 rounded-xl border border-border/60 bg-background/50 p-3">
+                    <div className="text-[12px] font-medium text-foreground">
+                      grok2api 连接设定
+                      <span className="ml-2 font-normal text-muted-foreground">
+                        （SSO / Auth 共用）
+                      </span>
+                    </div>
+                    <Field label="grok2api URL" hint="管理面板根地址">
+                      <Input
+                        value={draft.grok2apiUrl || ''}
+                        onChange={(e) => update('grok2apiUrl', e.target.value)}
+                        placeholder="http://127.0.0.1:8000"
+                      />
+                    </Field>
+                    <Field label="grok2api 用户名">
+                      <Input
+                        value={draft.grok2apiUsername || ''}
+                        onChange={(e) => update('grok2apiUsername', e.target.value)}
+                        placeholder="admin"
+                        autoComplete="off"
+                      />
+                    </Field>
+                    <Field label="grok2api 密码">
+                      <Input
+                        type="password"
+                        value={draft.grok2apiPassword || ''}
+                        onChange={(e) => update('grok2apiPassword', e.target.value)}
+                        placeholder="密码"
+                        autoComplete="off"
+                      />
+                    </Field>
+                    <p className="text-[11px] leading-5 text-muted-foreground">
+                      上传固定为{' '}
+                      <span className="font-medium text-foreground">web_convert</span>
+                      ：SSO → Web import → convert-to-build（与 grok-register-web 一致）
+                    </p>
+                  </div>
+                )}
+
+                <div className="space-y-1 rounded-lg border border-border/50 bg-muted/40 p-2.5 text-[11px] leading-5 text-muted-foreground">
+                  <p className="font-medium text-foreground">推送规则</p>
+                  <ul className="list-disc space-y-0.5 pl-4">
+                    <li>
+                      <span className="text-foreground">SSO → grok2api</span>
+                      ：注册拿到 sso 后上传（固定 web_convert：Web import + convert）
+                    </li>
+                    <li>
+                      <span className="text-foreground">Auth → CPA</span>
+                      ：mint/导出 auth 后调 Management API 入库
+                    </li>
+                    <li>
+                      <span className="text-foreground">Auth → grok2api</span>
+                      ：与 SSO 可同时开；同轮注册通常合并一次 SSO 上传即可
+                    </li>
+                    <li>失败仅打日志，不阻断本轮 SSO 落盘与本地 Auth 写出</li>
+                  </ul>
+                </div>
+              </>
+            );
+          })()}
         </CardBody>
       </Card>
 

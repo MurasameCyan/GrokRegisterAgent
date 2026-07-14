@@ -254,6 +254,12 @@ export interface RendererApi {
   listRegisterJobs(): Promise<RegisterJobsListResult>;
   getRegisterJobStatus(runId: string): Promise<RunStatus>;
   focusRegisterJob(runId: string | null): Promise<{ ok: boolean; runId: string | null }>;
+  /** 清理已停/完成/失败的任务，返回移除数量 */
+  clearFinishedRegisterJobs(): Promise<{
+    ok: true;
+    removed: number;
+    removedIds?: string[];
+  }>;
   onRegisterEvent(cb: (e: RunEvent) => void): () => void;
 
   // accounts

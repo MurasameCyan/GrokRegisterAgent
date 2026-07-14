@@ -209,9 +209,13 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
   delete config.auth_dir;
   delete config.cpa_auth_dir;
 
-  // CPA 远程推送（Management API）；与本地 auth 目录可同时开
-  const cpaRemoteUrl = String(settings.cpaRemoteUrl || '').trim();
-  const cpaManagementKey = String(settings.cpaManagementKey || '').trim();
+  // Auth → CPA 远程推送（pushAuthToCpa / 兼容 cpaRemotePushEnabled）
+  const cpaPushOn =
+    settings.pushAuthToCpa === true || settings.cpaRemotePushEnabled === true;
+  const cpaRemoteUrl = cpaPushOn ? String(settings.cpaRemoteUrl || '').trim() : '';
+  const cpaManagementKey = cpaPushOn
+    ? String(settings.cpaManagementKey || '').trim()
+    : '';
   if (cpaRemoteUrl) {
     config.cpa_remote_url = cpaRemoteUrl;
   } else {
@@ -222,12 +226,22 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
   } else {
     delete config.cpa_management_key;
   }
+  config.push_auth_to_cpa = cpaPushOn;
   // 与 grokRegister-cpa-main 的 cpa_auto_add 对齐：开自动导出即视为可入库
   config.cpa_auto_add =
     settings.autoAuthExport === undefined ? true : !!settings.autoAuthExport;
 
-  // grok2api 推送（移植自 grok-register-web-master）
-  config.grok2api_auto_upload = settings.grok2apiAutoUpload === true;
+  // Plan A 失败后 Plan B 兜底一次（默认开）
+  config.register_plan_b_enabled = settings.registerPlanBEnabled !== false;
+
+  // 推送目标：SSO → grok2api；Auth → CPA / grok2api（可同时开）
+  const pushSsoG2 =
+    settings.pushSsoToGrok2api === true || settings.grok2apiAutoUpload === true;
+  const pushAuthG2 = settings.pushAuthToGrok2api === true;
+  config.push_sso_to_grok2api = pushSsoG2;
+  config.push_auth_to_grok2api = pushAuthG2;
+  // 任一 grok2api 通道开启时，注册成功后走上传（Python 侧读 push_* 或 auto_upload）
+  config.grok2api_auto_upload = pushSsoG2 || pushAuthG2;
   const g2url = String(settings.grok2apiUrl || '').trim();
   const g2user = String(settings.grok2apiUsername || '').trim();
   const g2pass = String(settings.grok2apiPassword || '');
@@ -237,8 +251,8 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
   else delete config.grok2api_username;
   if (g2pass) config.grok2api_password = g2pass;
   else delete config.grok2api_password;
-  config.grok2api_upload_mode =
-    settings.grok2apiUploadMode === 'build_direct' ? 'build_direct' : 'web_convert';
+  // 固定 web_convert（UI 已移除上传模式选择；与 grok-register-web 一致）
+  config.grok2api_upload_mode = 'web_convert';
   // 清理历史引擎字段（若旧 config 残留）
   delete config.register_engine;
 

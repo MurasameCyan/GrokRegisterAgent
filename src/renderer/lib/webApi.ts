@@ -123,6 +123,11 @@ const webApi: RendererApi = {
     http('GET', `/api/run/jobs/${encodeURIComponent(runId)}`),
   focusRegisterJob: (runId) =>
     http('POST', '/api/run/focus', { runId }),
+  clearFinishedRegisterJobs: () =>
+    http<{ ok: true; removed: number; removedIds?: string[] }>(
+      'POST',
+      '/api/run/jobs/clear-finished'
+    ),
   onRegisterEvent: (cb) => {
     listeners.add(cb);
     connectWs();

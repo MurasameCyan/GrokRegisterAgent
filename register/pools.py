@@ -58,12 +58,29 @@ def _gra_api_base() -> str:
     ).rstrip("/")
 
 
+def _gra_internal_headers() -> dict:
+    """Node requireApiAuth 接受的内部密钥头（注册子进程由 Node 注入 GRA_INTERNAL_KEY）。"""
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    key = (
+        os.environ.get("GRA_INTERNAL_KEY")
+        or os.environ.get("GRA_INTERNAL_TOKEN")
+        or ""
+    ).strip()
+    if key:
+        headers["X-GRA-Internal"] = key
+    return headers
+
+
 def demote_proxy_to_pending(proxy: str, reason: str = "注册失败") -> bool:
     """注册使用失败：通知 Node 把该代理从可用池降到待定池。
 
     端点：POST {GRA_API_BASE}/api/proxy/demote
     环境变量：
       GRA_API_BASE  默认 http://127.0.0.1:6657（Docker 同网可用 host.docker.internal 或服务名）
+      GRA_INTERNAL_KEY  与 Node 共享，避免 401
     失败仅打日志，不抛异常（不影响注册主流程）。
     """
     p = str(proxy or "").strip()
@@ -77,7 +94,7 @@ def demote_proxy_to_pending(proxy: str, reason: str = "注册失败") -> bool:
         req = urllib.request.Request(
             url,
             data=body.encode("utf-8"),
-            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            headers=_gra_internal_headers(),
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=8) as resp:
@@ -118,7 +135,7 @@ def bump_proxy_register_success(proxy: str, delta: int = 1) -> bool:
         req = urllib.request.Request(
             url,
             data=body.encode("utf-8"),
-            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            headers=_gra_internal_headers(),
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=8) as resp:

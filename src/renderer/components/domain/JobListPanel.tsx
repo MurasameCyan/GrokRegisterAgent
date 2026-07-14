@@ -1,5 +1,5 @@
 import { useCallback, useEffect } from 'react';
-import { Layers, StopCircle } from 'lucide-react';
+import { Eraser, Layers, StopCircle } from 'lucide-react';
 import { Button } from '@renderer/components/ui/Button';
 import { useRunStore } from '@renderer/store/runStore';
 import { useToastStore } from '@renderer/store/toastStore';
@@ -122,6 +122,47 @@ export function JobListPanel({ maxParallel }: { maxParallel: number }) {
     }
   };
 
+  const finishedCount = jobs.filter(
+    (j) => j.phase !== 'running' && j.phase !== 'starting'
+  ).length;
+
+  const clearFinished = async () => {
+    try {
+      const r = await window.api.clearFinishedRegisterJobs();
+      // 同步前端 store：去掉已结束任务
+      const next = jobs.filter(
+        (j) => j.phase === 'running' || j.phase === 'starting'
+      );
+      setJobs(next, next.length);
+      if (focusRunId && !next.some((j) => j.runId === focusRunId)) {
+        setFocusRunId(next[0]?.runId ?? null);
+        if (next[0]) {
+          try {
+            const st = await window.api.getRegisterJobStatus(next[0].runId);
+            setStatus(st);
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+      push({
+        tone: 'ok',
+        title: '已清理队列',
+        description:
+          r.removed > 0
+            ? `移除 ${r.removed} 个已停/完成任务`
+            : '没有可清理的已结束任务'
+      });
+      await reloadJobs();
+    } catch (err) {
+      push({
+        tone: 'danger',
+        title: '清理失败',
+        description: err instanceof Error ? err.message : String(err)
+      });
+    }
+  };
+
   return (
     <section className="ios-group">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/70 px-4 py-3.5">
@@ -131,10 +172,21 @@ export function JobListPanel({ maxParallel }: { maxParallel: number }) {
           <p className="mt-0.5 text-[12px] text-muted-foreground">
             活跃 {jobsActive}/{maxParallel || 3}
             {focusRunId ? ` · 聚焦 #${shortId(focusRunId)}` : ''}
+            {finishedCount > 0 ? ` · 可清理 ${finishedCount}` : ''}
           </p>
         </div>
-        <div className="flex items-center gap-1.5">
+        <div className="flex flex-wrap items-center gap-1.5">
           <Layers className="h-4 w-4 text-muted-foreground" />
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => void clearFinished()}
+            disabled={finishedCount === 0}
+            title="移除已停/完成/失败任务，不影响运行中任务"
+          >
+            <Eraser className="h-3.5 w-3.5" />
+            清理已停/完成
+          </Button>
           <Button
             variant="secondary"
             size="sm"

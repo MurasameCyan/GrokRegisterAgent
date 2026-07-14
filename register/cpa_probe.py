@@ -199,6 +199,74 @@ def probe_cpa_auth(
 # 测活 dead 后触发密码重登二次检测的 HTTP 状态
 RECOVER_HTTP_STATUSES = frozenset({401, 403})
 
+# mint 刚完成时常出现瞬时 permission-denied / 403，CPA 面板稍后仍 200
+_SOFT_403_MARKERS = (
+    "permission-denied",
+    "permission_denied",
+    "permission denied",
+    "not authorized",
+    "not_authorized",
+    "token not ready",
+    "temporarily unavailable",
+)
+
+
+def _looks_like_soft_403(probe: dict[str, Any]) -> bool:
+    """刚 mint 的瞬时 403（permission-denied 等），不宜立刻判死号。"""
+    if int(probe.get("http_status") or 0) != 403:
+        return False
+    blob = " ".join(
+        str(probe.get(k) or "") for k in ("summary", "error", "message")
+    ).lower()
+    if any(m in blob for m in _SOFT_403_MARKERS):
+        return True
+    # 无 body 的裸 403 在 mint 后也常是传播延迟
+    if not blob.strip() or blob.strip() in ("http 403", "403"):
+        return True
+    return False
+
+
+def probe_cpa_auth_with_mint_soft_retry(
+    path: str | Path,
+    *,
+    proxy: str = "",
+    retries: int = 2,
+    delay_sec: float = 2.5,
+) -> dict[str, Any]:
+    """mint 后测活：遇疑似瞬时 403 则短暂等待重试，仍失败再标 soft_warn 而非 dead。
+
+    返回字段：
+      soft_403: bool  是否曾命中软 403 路径
+      mint_soft_warn: str | None  最终仍失败时的警告（action 改为 keep，不当 dead）
+    """
+    path = Path(path)
+    r = probe_cpa_auth(path, proxy=proxy)
+    r["soft_403"] = False
+    r["mint_soft_warn"] = None
+    attempts = max(0, int(retries))
+    for i in range(attempts):
+        if r.get("action") != "dead" or not _looks_like_soft_403(r):
+            break
+        r["soft_403"] = True
+        time.sleep(max(0.5, float(delay_sec) * (1.0 + 0.35 * i)))
+        r2 = probe_cpa_auth(path, proxy=proxy)
+        r2["soft_403"] = True
+        r2["mint_soft_warn"] = None
+        r2["soft_retries"] = i + 1
+        r = r2
+    # 重试后仍是软 403 → 不当 dead（文件保留，ok 由上层 mint 逻辑处理）
+    if r.get("action") == "dead" and _looks_like_soft_403(r):
+        r["soft_403"] = True
+        r["mint_soft_warn"] = (
+            f"mint 后瞬时 403（{r.get('summary') or r.get('error') or 'permission-denied'}），"
+            "已重试仍失败；文件已保留，请稍后手动测活"
+        )
+        r["action"] = "keep"
+        r["ok"] = False
+        r["alive"] = False
+        r["error"] = r["mint_soft_warn"]
+    return r
+
 
 def probe_and_cleanup(
     path: str | Path,
@@ -209,15 +277,20 @@ def probe_and_cleanup(
     password: str | None = None,
     recover_on_403: bool = True,
     recover_on_auth_error: bool | None = None,
+    mint_soft_retry: bool = False,
 ) -> dict[str, Any]:
     """测活；若 dead 且 delete_on_dead 则删除文件。
 
     遇 HTTP 401/403 且提供 email/password 时：密码重登 → mint → 发英文消息 → 二次测活。
     默认 delete_on_dead=False（仅标记死号）。
     recover_on_403 为兼容旧参数；recover_on_auth_error 优先（默认与 recover_on_403 相同）。
+    mint_soft_retry=True：mint 后路径，瞬时 403 重试并不当 dead。
     """
     path = Path(path)
-    r = probe_cpa_auth(path, proxy=proxy)
+    if mint_soft_retry:
+        r = probe_cpa_auth_with_mint_soft_retry(path, proxy=proxy)
+    else:
+        r = probe_cpa_auth(path, proxy=proxy)
     r["deleted"] = False
     r["recovered_403"] = False  # 兼容：401/403 恢复成功链路均置 True
     r["recovered_auth"] = False

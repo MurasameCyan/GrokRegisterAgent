@@ -90,8 +90,20 @@ export interface AppSettings {
    */
   authDir: string;
   /**
+   * Auth → 远程 CPA 推送（「推送授权」卡片 Auth 目标按钮）。
+   * 关闭时即使填了 URL/密钥也不写入 Python cpa_remote_*。
+   * @deprecated 语义等同 pushAuthToCpa，保留兼容
+   */
+  cpaRemotePushEnabled: boolean;
+  /** Auth 文件/导出 → 远程 CPA Management API */
+  pushAuthToCpa: boolean;
+  /** SSO Cookie → grok2api（仅 SSO 通道） */
+  pushSsoToGrok2api: boolean;
+  /** Auth 导出后额外推送到 grok2api（与 SSO 推送可同时开，成功注册时合并一次上传即可） */
+  pushAuthToGrok2api: boolean;
+  /**
    * 远程 CPA 根地址（Management API），如 http://host:8317。
-   * 写入 Python config：cpa_remote_url
+   * 写入 Python config：cpa_remote_url（需 pushAuthToCpa）
    */
   cpaRemoteUrl: string;
   /**
@@ -134,16 +146,24 @@ export interface AppSettings {
    * 网页拉取代理：默认源（hide.mn 列表页或其它 ip:port 文本页）
    */
   proxyFetchUrl: string;
-  /** 是否自动推送到 grok2api（Web 导入 + Convert to Build） */
+  /**
+   * Plan A 失败后是否启用 Plan B 兜底一次（FlowPilot 人机等待/模拟点击/CF 拦截识别）。
+   * 默认 true：A 失败 → B 一次 → 仍失败则跳过下一账号。
+   */
+  registerPlanBEnabled: boolean;
+  /**
+   * @deprecated 使用 pushSsoToGrok2api / pushAuthToGrok2api。
+   * 兼容旧配置：为 true 时视为 pushSsoToGrok2api。
+   */
   grok2apiAutoUpload: boolean;
   /** grok2api 管理面板根 URL，如 http://127.0.0.1:8000 */
   grok2apiUrl: string;
   grok2apiUsername: string;
   grok2apiPassword: string;
   /**
-   * grok2api 上传模式（已适配 grok-register-web 管理 API）：
-   * - web_convert：SSO → /accounts/web/import → convert-to-build（推荐）
-   * - build_direct：本机 Device Flow 换 Build token → /accounts/import
+   * grok2api 上传模式（固定 web_convert，UI 不再暴露）。
+   * SSO → /accounts/web/import → convert-to-build（与 grok-register-web 一致）。
+   * 保留字段仅兼容旧配置读盘；运行时强制 web_convert。
    */
   grok2apiUploadMode: 'web_convert' | 'build_direct';
   /** 主题模式 */
@@ -179,6 +199,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   randomFingerprint: true,
   autoAuthExport: true,
   authDir: '',
+  cpaRemotePushEnabled: false,
+  pushAuthToCpa: false,
+  pushSsoToGrok2api: false,
+  pushAuthToGrok2api: false,
   cpaRemoteUrl: '',
   cpaManagementKey: '',
   cpaProbeDeleteOnDead: false,
@@ -190,6 +214,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   /** Auth mint/重签/测活默认走代理 */
   cpaAuthUseProxy: true,
   proxyFetchUrl: 'https://hide.mn/en/proxy-list/',
+  registerPlanBEnabled: true,
   grok2apiAutoUpload: false,
   grok2apiUrl: '',
   grok2apiUsername: '',

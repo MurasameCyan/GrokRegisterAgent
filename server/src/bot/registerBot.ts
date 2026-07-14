@@ -159,6 +159,38 @@ export class RegisterBot extends EventEmitter {
     }
   }
 
+  /**
+   * 清理已停止/完成/失败的任务（从队列移除，不杀进程）。
+   * 保留 running/starting；若当前聚焦被删则切到最近活跃或 null。
+   */
+  clearFinishedJobs(): { ok: true; removed: number; removedIds: string[] } {
+    const removedIds: string[] = [];
+    for (const j of [...this.jobs.values()]) {
+      if (isActivePhase(j.status.phase)) continue;
+      removedIds.push(j.runId);
+      this.jobs.delete(j.runId);
+    }
+    if (this.focusRunId && !this.jobs.has(this.focusRunId)) {
+      this.focusRunId = null;
+      // 若有活跃任务，聚焦最近启动的
+      let best: Job | null = null;
+      for (const j of this.jobs.values()) {
+        if (!isActivePhase(j.status.phase)) continue;
+        if (!best || (j.status.startedAt || 0) > (best.status.startedAt || 0)) best = j;
+      }
+      if (best) this.focusRunId = best.runId;
+    }
+    // 顺带裁剪已无对应 job 的旧日志缓冲（整表重放仍有上限）
+    if (removedIds.length > 0) {
+      const keep = new Set(this.jobs.keys());
+      this.replayBuffer = this.replayBuffer.filter((ev) => {
+        const rid = (ev as { runId?: string }).runId;
+        return !rid || keep.has(rid);
+      });
+    }
+    return { ok: true, removed: removedIds.length, removedIds };
+  }
+
   async start(opts: StartOptions = {}): Promise<{ runId: string }> {
     const settings = await loadSettings();
     const runCount = opts.runCountOverride ?? settings.runCount;
@@ -397,7 +429,13 @@ export class RegisterBot extends EventEmitter {
           ...process.env,
           PYTHONIOENCODING: 'utf-8',
           PYTHONUNBUFFERED: '1',
-          GROK_RUN_ID: runId
+          GROK_RUN_ID: runId,
+          // 代理成功计数 / 降级回调鉴权（与 Node requireApiAuth 共享）
+          GRA_INTERNAL_KEY: process.env.GRA_INTERNAL_KEY || '',
+          GRA_API_BASE:
+            process.env.GRA_API_BASE ||
+            process.env.GRA_SERVER_URL ||
+            `http://127.0.0.1:${process.env.PORT || 6657}`
         },
         stdio: ['pipe', 'pipe', 'pipe'],
         detached: useDetach

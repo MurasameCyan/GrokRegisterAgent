@@ -122,6 +122,27 @@ function merge(partial: unknown): AppSettings {
     autoAuthExport:
       typeof p.autoAuthExport === 'boolean' ? p.autoAuthExport : DEFAULT_SETTINGS.autoAuthExport,
     authDir: typeof p.authDir === 'string' ? p.authDir : DEFAULT_SETTINGS.authDir,
+    // CPA 远程推送：新字段 pushAuthToCpa；兼容 cpaRemotePushEnabled / 旧 URL
+    cpaRemotePushEnabled:
+      (p as AppSettings).pushAuthToCpa === true ||
+      (p as AppSettings).cpaRemotePushEnabled === true ||
+      ((p as AppSettings).pushAuthToCpa !== false &&
+        (p as AppSettings).cpaRemotePushEnabled !== false &&
+        Boolean(String((p as AppSettings).cpaRemoteUrl || '').trim()) &&
+        (p as AppSettings).pushAuthToCpa === undefined &&
+        (p as AppSettings).cpaRemotePushEnabled === undefined),
+    pushAuthToCpa:
+      (p as AppSettings).pushAuthToCpa === true ||
+      (p as AppSettings).cpaRemotePushEnabled === true ||
+      ((p as AppSettings).pushAuthToCpa !== false &&
+        (p as AppSettings).cpaRemotePushEnabled !== false &&
+        Boolean(String((p as AppSettings).cpaRemoteUrl || '').trim()) &&
+        (p as AppSettings).pushAuthToCpa === undefined &&
+        (p as AppSettings).cpaRemotePushEnabled === undefined),
+    pushSsoToGrok2api:
+      (p as AppSettings).pushSsoToGrok2api === true ||
+      (p as AppSettings).grok2apiAutoUpload === true,
+    pushAuthToGrok2api: (p as AppSettings).pushAuthToGrok2api === true,
     cpaRemoteUrl:
       typeof (p as AppSettings).cpaRemoteUrl === 'string'
         ? (p as AppSettings).cpaRemoteUrl
@@ -164,10 +185,14 @@ function merge(partial: unknown): AppSettings {
       typeof (p as AppSettings).proxyFetchUrl === 'string'
         ? (p as AppSettings).proxyFetchUrl
         : DEFAULT_SETTINGS.proxyFetchUrl,
-    grok2apiAutoUpload: asBool(
-      (p as AppSettings).grok2apiAutoUpload,
-      DEFAULT_SETTINGS.grok2apiAutoUpload
+    registerPlanBEnabled: asBool(
+      (p as AppSettings).registerPlanBEnabled,
+      DEFAULT_SETTINGS.registerPlanBEnabled
     ),
+    // 兼容：SSO 推送开则旧字段也视为 true
+    grok2apiAutoUpload:
+      (p as AppSettings).pushSsoToGrok2api === true ||
+      (p as AppSettings).grok2apiAutoUpload === true,
     grok2apiUrl:
       typeof (p as AppSettings).grok2apiUrl === 'string'
         ? (p as AppSettings).grok2apiUrl
@@ -180,10 +205,8 @@ function merge(partial: unknown): AppSettings {
       typeof (p as AppSettings).grok2apiPassword === 'string'
         ? (p as AppSettings).grok2apiPassword
         : DEFAULT_SETTINGS.grok2apiPassword,
-    grok2apiUploadMode:
-      (p as AppSettings).grok2apiUploadMode === 'build_direct'
-        ? 'build_direct'
-        : 'web_convert'
+    // 固定 web_convert：忽略历史 build_direct，UI 不再暴露切换
+    grok2apiUploadMode: 'web_convert'
   };
   // 旧配置无此字段时回落到默认 60
   if (
