@@ -397,12 +397,19 @@ export async function probeProxyBatch(
   // 单次请求硬上限，防止一次塞 200+ 条
   const MAX_PER_REQUEST = 48;
   const sliced = list.slice(0, MAX_PER_REQUEST);
-  // 批量默认略降并发，避免 xAI/CF 被打爆导致「全灭」而单条却正常
-  const conc = Math.max(1, Math.min(10, Math.floor(concurrency) || 6));
-  const tMs = Math.max(3000, Math.min(15000, Math.floor(timeoutMs) || 8000));
+  // 批量默认更保守（≤3）：高并发易被 xAI/CF 限流，表现为「单条正常、全池全灭」
+  const conc = Math.max(1, Math.min(3, Math.floor(concurrency) || 3));
+  const tMs = Math.max(3000, Math.min(15000, Math.floor(timeoutMs) || 10000));
 
-  // 与单条相同逻辑：仅 probeProxy，无额外出口检测
-  const results = await mapPool(sliced, conc, (proxy) => probeProxy(proxy, tMs));
+  // 与单条相同逻辑：仅 probeProxy；结果保序且每条带 proxy 字段供前端对齐
+  const results = await mapPool(sliced, conc, async (proxy) => {
+    const r = await probeProxy(proxy, tMs);
+    // 保证返回里有原始请求串，方便前端按 key 对齐（不只靠 index）
+    if (!r.proxy) {
+      return { ...r, proxy: normalizeProxyUrl(proxy) || proxy };
+    }
+    return r;
+  });
   // 被截断的部分直接标 fail 提示
   for (let i = sliced.length; i < list.length; i++) {
     results.push({

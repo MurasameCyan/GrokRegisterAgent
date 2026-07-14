@@ -16,12 +16,15 @@ export function setWebApiAbortSignal(signal: AbortSignal | null): void {
 }
 
 async function http<T>(method: string, path: string, body?: unknown): Promise<T> {
+  // 已 abort 的 signal 勿再挂上，否则设置页测活等会整批“秒失败”
+  const signal =
+    activeAbortSignal && !activeAbortSignal.aborted ? activeAbortSignal : undefined;
   const res = await fetch(path, {
     method,
     credentials: 'include',
     headers: buildHeaders(body),
     body: body !== undefined ? JSON.stringify(body) : undefined,
-    signal: activeAbortSignal ?? undefined
+    signal
   });
   if (!res.ok) {
     let detail = '';

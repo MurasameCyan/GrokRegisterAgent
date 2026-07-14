@@ -372,7 +372,7 @@ def upload_registered_sso(
     cloudflare_cookies: str = "",
     log: LogFn | None = None,
 ) -> dict[str, Any] | None:
-    """按 settings 决定是否上传；返回 import/conversion 结果或 None（未启用）。"""
+    """按 settings 决定是否上传 SSO；返回 import/conversion 结果或 None（未启用）。"""
     log = log or _noop
     # 兼容：push_sso / push_auth / grok2api_auto_upload
     def _truthy(v: Any) -> bool:
@@ -391,8 +391,14 @@ def upload_registered_sso(
     auto = settings.get("grok2api_auto_upload")
     if auto is None:
         auto = settings.get("grok2apiAutoUpload")
-    # SSO 或 Auth 任一目标开，或旧 auto_upload
-    if not (_truthy(push_sso) or _truthy(push_auth) or _truthy(auto)):
+    # 本函数只推 SSO Cookie：仅 push_sso 开才上传。
+    # 勿因 push_auth / auto_upload 误推 SSO（Auth 与 SSO 的 g2 开关独立）。
+    # 旧配置：两路 push_* 都未写入时，才回退 auto_upload。
+    if _truthy(push_sso):
+        pass  # 明确开启 SSO→g2
+    elif push_sso is None and push_auth is None and _truthy(auto):
+        pass  # 纯旧配置兼容
+    else:
         return None
 
     base_url = str(

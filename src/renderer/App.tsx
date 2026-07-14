@@ -5,14 +5,12 @@ import {
   Database,
   Github,
   KeyRound,
-  LayoutDashboard,
   LogOut,
   PlayCircle,
   RefreshCcw,
   Settings2,
   ShieldCheck
 } from 'lucide-react';
-import { DashboardPage } from '@renderer/pages/DashboardPage';
 import { RegisterPage } from '@renderer/pages/RegisterPage';
 import { PoolPage } from '@renderer/pages/PoolPage';
 import { AuthPage } from '@renderer/pages/AuthPage';
@@ -29,10 +27,9 @@ import { useAccountsStore } from '@renderer/store/accountsStore';
 import { useToastStore } from '@renderer/store/toastStore';
 import type { AuthState, ChangeCredentialsInput, UpdateInfo } from '@shared/ipc';
 
-type Tab = 'dashboard' | 'register' | 'pool' | 'auth' | 'settings';
+type Tab = 'register' | 'pool' | 'auth' | 'settings';
 
-const tabs: { id: Tab; label: string; Icon: typeof LayoutDashboard }[] = [
-  { id: 'dashboard', label: '仪表盘', Icon: LayoutDashboard },
+const tabs: { id: Tab; label: string; Icon: typeof PlayCircle }[] = [
   { id: 'register', label: '注册机', Icon: PlayCircle },
   { id: 'pool', label: 'SSO', Icon: Database },
   { id: 'auth', label: 'Auth', Icon: KeyRound },
@@ -46,7 +43,7 @@ const emptyAuth: AuthState = {
 };
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>('dashboard');
+  const [tab, setTab] = useState<Tab>('register');
   const [auth, setAuth] = useState<AuthState>(emptyAuth);
   const [authLoading, setAuthLoading] = useState(true);
   const pushToast = useToastStore((s) => s.push);
@@ -138,7 +135,7 @@ export default function App() {
   const logout = async () => {
     await window.api.logout().catch(() => undefined);
     setAuth(emptyAuth);
-    setTab('dashboard');
+    setTab('register');
   };
 
   if (authLoading) {
@@ -261,7 +258,6 @@ export default function App() {
           </div>
         </header>
 
-        {tab === 'dashboard' && <DashboardPage username={auth.username ?? 'admin'} />}
         {tab === 'register' && <RegisterPage onOpenSettings={() => setTab('settings')} />}
         {tab === 'pool' && <PoolPage />}
         {tab === 'auth' && <AuthPage onOpenPool={() => setTab('pool')} />}

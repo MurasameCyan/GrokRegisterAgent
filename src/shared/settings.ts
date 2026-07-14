@@ -97,10 +97,16 @@ export interface AppSettings {
   cpaRemotePushEnabled: boolean;
   /** Auth 文件/导出 → 远程 CPA Management API */
   pushAuthToCpa: boolean;
-  /** SSO Cookie → grok2api（仅 SSO 通道） */
+  /** SSO Cookie → grok2api：允许推送（手动/导出可用） */
   pushSsoToGrok2api: boolean;
-  /** Auth 导出后额外推送到 grok2api（与 SSO 推送可同时开，成功注册时合并一次上传即可） */
+  /** SSO → grok2api：注册成功后自动推送（隐含允许） */
+  autoPushSsoToGrok2api: boolean;
+  /** Auth → grok2api：允许推送 */
   pushAuthToGrok2api: boolean;
+  /** Auth → grok2api：注册成功后自动推送 */
+  autoPushAuthToGrok2api: boolean;
+  /** Auth → CPA：注册成功后自动推送（允许见 pushAuthToCpa） */
+  autoPushAuthToCpa: boolean;
   /**
    * 远程 CPA 根地址（Management API），如 http://host:8317。
    * 写入 Python config：cpa_remote_url（需 pushAuthToCpa）
@@ -195,8 +201,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
   authDir: '',
   cpaRemotePushEnabled: false,
   pushAuthToCpa: false,
+  autoPushAuthToCpa: false,
   pushSsoToGrok2api: false,
+  autoPushSsoToGrok2api: false,
   pushAuthToGrok2api: false,
+  autoPushAuthToGrok2api: false,
   cpaRemoteUrl: '',
   cpaManagementKey: '',
   cpaProbeDeleteOnDead: false,
@@ -822,13 +831,16 @@ export function validateSettings(s: AppSettings): Record<string, string> {
     errors.proxyProbeConcurrency = '测活并发须在 1 到 20 之间';
   }
   // 代理池（待测/可用）允许为空：测活删失败、暂清空后再粘贴都常见；注册启动时再检查
-  // 仅「未开池、只开单代理」且单代理也空时提示
+  // 仅「未开池、只开单代理」且单代理也空时提示（开池后不拦保存）
   if (s.proxyEnabled && !s.proxyPoolEnabled) {
-    if (!s.proxy.trim() && !s.browserProxy.trim()) {
-      errors.proxy = '已开启代理，请填写 HTTP 代理或浏览器代理';
+    const http = String(s.proxy || '').trim();
+    if (!http) {
+      errors.proxy = '已开启代理且未使用代理池，请填写 HTTP 代理';
     }
   }
-  // 确保历史逻辑不会再写入 proxyPool 必填错误
+  // 确保历史逻辑不会再写入 proxyPool / browserProxy 必填错误
   delete errors.proxyPool;
+  delete errors.proxyPoolAlive;
+  delete errors.browserProxy;
   return errors;
 }

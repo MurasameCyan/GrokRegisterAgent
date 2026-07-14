@@ -85,7 +85,46 @@ function isNoiseStdoutLine(msg: string): boolean {
     /当前使用代理\s*:/i,
     /代理降级未生效:\s*未匹配到可用池/i,
     // mint 软重试细节
-    /\[auth\]\s*probe.*soft_/i
+    /\[auth\]\s*probe.*soft_/i,
+    // ── 启动/环境调试（用户要求隐藏）──
+    /注册脚本目录\s*:/,
+    /注册机入口\s*:/,
+    /支持带密码\s*HTTP\s*代理/i,
+    /扩展\/本地转发/,
+    /浏览器路径\s*:/,
+    /turnstilePatch/i,
+    /日志文件\s*:/,
+    /\(启动前\)/,
+    /SSO\s*输出\s*:/,
+    /指纹探测\s*machine\s*=/i,
+    /ARM\s*风险/i,
+    /Turnstile\s*更容易给\s*failure/i,
+    /DISPLAY\s*=/,
+    /XDG_SESSION_TYPE\s*=/,
+    /WAYLAND_DISPLAY\s*=/,
+    /\[\*?\]\s*UA\s*:/i,
+    /^\*?\]?\s*UA\s*:/i,
+    /Mozilla\/5\.0\s*\(/i,
+    /platform\s*=\s*['"]?Linux/i,
+    /webdriver\s*=/i,
+    /\bhw\s*=\s*\d+/i,
+    /\bmem\s*=\s*\d+/i,
+    /langs\s*=\s*\[/,
+    /screen\s*=\s*\d+x\d+/i,
+    /avail\s*=\s*\d+x\d+/i,
+    /\bdepth\s*=\s*\d+/i,
+    /\bdpr\s*=\s*[\d.]+/i,
+    /WebGL\s*OK/i,
+    /WebGL\s*unmasked/i,
+    /unmasked\s*vendor\s*=/i,
+    /renderer\s*=\s*['"]?(?:WebKit|ANGLE)/i,
+    /vendor\s*=\s*['"]WebKit['"]/i,
+    /version\s*=\s*['"]WebGL/i,
+    // 路径类噪声（仅启动信息；避免误伤业务错误）
+    /浏览器路径\s*:.*chromium/i,
+    /\/usr\/bin\/chromium/i,
+    /logs\/run_\d{8}_\d{6}/i,
+    /SSO\s*输出\s*:.*\/sso\//i
   ];
   return rules.some((re) => re.test(m));
 }

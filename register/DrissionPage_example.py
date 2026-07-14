@@ -932,65 +932,177 @@ def refresh_active_page():
     return page
 
 
-# 注册页「使用邮箱注册」：本轮最多找/点几次（刷新重试，不换代理）
+# 注册页「使用邮箱注册」：失败时优先降级代理并换下一条，连通后再继续
 _EMAIL_SIGNUP_FIND_TRIES = 5
 
 
 def open_signup_page(*, find_tries: int | None = None):
-    # 每轮开始时打开注册页，并切到“使用邮箱注册”流程。
-    # 找不到按钮时刷新/重开页面重试，最多 5 次。
-    global page
+    """打开注册页并点击「使用邮箱注册」。
+
+    代理/隧道不可达时：立刻 demote + next_proxy + restart_browser，
+    禁止在坏代理上连刷满 5 次再降级（否则后续流程无网络）。
+    """
+    global page, _browser_proxy
     tries = int(find_tries if find_tries is not None else _EMAIL_SIGNUP_FIND_TRIES)
     tries = max(1, min(tries, 10))
-    last_err: Exception | None = None
+    last_err: Exception | str | None = None
+    demoted_this_open: set[str] = set()
+
+    def _proxy_err_text(blob: str) -> bool:
+        b = (blob or "").lower()
+        keys = (
+            "err_proxy",
+            "err_tunnel",
+            "err_socks",
+            "err_connection",
+            "err_timed_out",
+            "err_name_not_resolved",
+            "err_address_unreachable",
+            "proxy",
+            "tunnel",
+            "timed out",
+            "timeout",
+            "connection refused",
+            "network",
+            "无法访问",
+            "this site can't be reached",
+            "took too long",
+            "empty response",
+            "bad gateway",
+            "chrome-error",
+        )
+        return any(k in b for k in keys)
+
+    def _demote_and_rotate(reason: str) -> bool:
+        """降级当前代理并切换下一条；成功换到新代理返回 True。"""
+        global _browser_proxy
+        cur = str(_browser_proxy or "").strip()
+        if not cur:
+            return False
+        try:
+            from pools import demote_proxy_to_pending, next_proxy
+
+            if cur not in demoted_this_open:
+                demote_proxy_to_pending(cur, reason=reason[:160])
+                demoted_this_open.add(cur)
+            nxt = next_proxy()
+            if nxt and nxt != cur:
+                _browser_proxy = nxt
+                print(f"[*] 代理已降级并切换: `{nxt}` · {reason[:80]}", flush=True)
+                try:
+                    restart_browser()
+                except Exception as re:
+                    print(f"[Warn] restart_browser 失败: {re}", flush=True)
+                return True
+            print(
+                f"[Warn] 代理已降级但无更多可用节点: {reason[:100]}",
+                flush=True,
+            )
+            try:
+                restart_browser()
+            except Exception:
+                pass
+            return False
+        except Exception as de:
+            print(f"[Warn] 代理降级/切换失败: {de}", flush=True)
+            return False
 
     for attempt in range(1, tries + 1):
-        refresh_active_page()
-        _apply_stealth_patches(page)
         try:
-            page.get(SIGNUP_URL)
-        except Exception:
             refresh_active_page()
-            page = browser.new_tab(SIGNUP_URL)
-        _apply_stealth_patches(page)
-        # 等待首屏渲染
-        time.sleep(0.8 + secrets.randbelow(50) / 100.0)
-
-        try:
-            click_email_signup_button(timeout=12 if attempt == 1 else 10)
-            if attempt > 1:
-                print(f"[*] 「使用邮箱注册」第 {attempt}/{tries} 次找到并点击")
-            return
-        except Exception as e:
-            last_err = e
-            print(
-                f"[Warn] 未找到「使用邮箱注册」({attempt}/{tries}): {e}"
-            )
-            if attempt < tries:
-                # 硬刷新再试；第 3 次起额外新开标签
+            _apply_stealth_patches(page)
+            try:
+                page.get(SIGNUP_URL)
+            except Exception as ge:
+                last_err = ge
+                # 打开 URL 即失败：优先当代理问题处理
+                if _browser_proxy and _proxy_err_text(str(ge)):
+                    _demote_and_rotate(f"开页失败: {str(ge)[:80]}")
+                    time.sleep(0.4 + secrets.randbelow(30) / 100.0)
+                    continue
                 try:
-                    if attempt >= 3:
-                        page = browser.new_tab(SIGNUP_URL)
-                    else:
-                        page.refresh()
-                except Exception:
-                    try:
-                        page = browser.new_tab(SIGNUP_URL)
-                    except Exception:
-                        pass
-                time.sleep(0.6 + secrets.randbelow(40) / 100.0)
+                    refresh_active_page()
+                    page = browser.new_tab(SIGNUP_URL)
+                except Exception as ge2:
+                    last_err = ge2
+                    if _browser_proxy:
+                        _demote_and_rotate(f"开页失败: {str(ge2)[:80]}")
+                        time.sleep(0.4 + secrets.randbelow(30) / 100.0)
+                        continue
+            _apply_stealth_patches(page)
+            time.sleep(0.8 + secrets.randbelow(50) / 100.0)
 
-    # 多次找不到按钮：常见原因是代理只能通 ipify 测活、实际访问 x.ai 失败
+            # 页内 chrome 错误 / 空页：立即降级换代理
+            title = ""
+            url = ""
+            try:
+                title = str(getattr(page, "title", None) or "")
+                url = str(getattr(page, "url", None) or "")
+            except Exception:
+                pass
+            if _browser_proxy and _proxy_err_text(f"{title} {url} {last_err}"):
+                _demote_and_rotate(
+                    f"注册页不可达(attempt {attempt}): {title or url or last_err}"
+                )
+                time.sleep(0.5 + secrets.randbelow(40) / 100.0)
+                continue
+
+            try:
+                click_email_signup_button(timeout=12 if attempt == 1 else 10)
+                if attempt > 1:
+                    print(f"[*] 「使用邮箱注册」第 {attempt}/{tries} 次找到并点击", flush=True)
+                return
+            except Exception as e:
+                last_err = e
+                err_s = str(e)
+                print(
+                    f"[Warn] 未找到「使用邮箱注册」({attempt}/{tries}): {err_s}",
+                    flush=True,
+                )
+                # 第 1 次起：疑似代理/隧道 → 立刻降级换代理再继续
+                if _browser_proxy and (
+                    _proxy_err_text(err_s)
+                    or _proxy_err_text(f"{title} {url}")
+                    or attempt >= 2
+                ):
+                    rotated = _demote_and_rotate(
+                        f"未找到邮箱注册按钮({attempt}/{tries}): {err_s[:80]}"
+                    )
+                    if rotated or attempt < tries:
+                        time.sleep(0.5 + secrets.randbelow(40) / 100.0)
+                        continue
+                if attempt < tries:
+                    try:
+                        if attempt >= 3:
+                            page = browser.new_tab(SIGNUP_URL)
+                        else:
+                            page.refresh()
+                    except Exception:
+                        try:
+                            page = browser.new_tab(SIGNUP_URL)
+                        except Exception:
+                            pass
+                    time.sleep(0.6 + secrets.randbelow(40) / 100.0)
+        except Exception as outer:
+            last_err = outer
+            print(f"[Warn] open_signup_page 异常({attempt}/{tries}): {outer}", flush=True)
+            if _browser_proxy:
+                _demote_and_rotate(f"open_signup 异常: {str(outer)[:80]}")
+            time.sleep(0.4 + secrets.randbelow(30) / 100.0)
+
+    # 用尽重试：兜底 demote（若尚未）
     try:
         from pools import demote_proxy_to_pending
 
-        if _browser_proxy:
-            demote_proxy_to_pending(_browser_proxy, reason="未找到邮箱注册按钮")
+        cur = str(_browser_proxy or "").strip()
+        if cur and cur not in demoted_this_open:
+            demote_proxy_to_pending(cur, reason="未找到邮箱注册按钮(用尽重试)")
     except Exception:
         pass
     raise Exception(
         f'未找到“使用邮箱注册”按钮（本轮已重试 {tries} 次）'
         + (f": {last_err}" if last_err else "")
+        + "；已优先降级坏代理，请确认可用池仍有连通节点"
     )
 
 

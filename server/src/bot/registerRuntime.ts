@@ -211,7 +211,9 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
 
   // Auth → CPA 远程推送（pushAuthToCpa / 兼容 cpaRemotePushEnabled）
   const cpaPushOn =
-    settings.pushAuthToCpa === true || settings.cpaRemotePushEnabled === true;
+    settings.pushAuthToCpa === true ||
+    settings.cpaRemotePushEnabled === true ||
+    settings.autoPushAuthToCpa === true;
   const cpaRemoteUrl = cpaPushOn ? String(settings.cpaRemoteUrl || '').trim() : '';
   const cpaManagementKey = cpaPushOn
     ? String(settings.cpaManagementKey || '').trim()
@@ -226,7 +228,7 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
   } else {
     delete config.cpa_management_key;
   }
-  config.push_auth_to_cpa = cpaPushOn;
+  // push_auth_to_cpa 由下方 autoPushAuthToCpa 统一写入
   // 与 grokRegister-cpa-main 的 cpa_auto_add 对齐：开自动导出即视为可入库
   config.cpa_auto_add =
     settings.autoAuthExport === undefined ? true : !!settings.autoAuthExport;
@@ -234,14 +236,28 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
   // Plan A 失败后 Plan B 兜底一次（默认开）
   config.register_plan_b_enabled = settings.registerPlanBEnabled !== false;
 
-  // 推送目标：SSO → grok2api；Auth → CPA / grok2api（可同时开）
-  const pushSsoG2 =
-    settings.pushSsoToGrok2api === true || settings.grok2apiAutoUpload === true;
-  const pushAuthG2 = settings.pushAuthToGrok2api === true;
-  config.push_sso_to_grok2api = pushSsoG2;
-  config.push_auth_to_grok2api = pushAuthG2;
-  // 任一 grok2api 通道开启时，注册成功后走上传（Python 侧读 push_* 或 auto_upload）
-  config.grok2api_auto_upload = pushSsoG2 || pushAuthG2;
+  // 推送：允许(push*) 与 自动(autoPush*) 分离；注册成功只跟自动走
+  const allowSsoG2 = settings.pushSsoToGrok2api === true;
+  const autoSsoG2 =
+    settings.autoPushSsoToGrok2api === true ||
+    (settings.autoPushSsoToGrok2api === undefined && allowSsoG2);
+  const allowAuthG2 = settings.pushAuthToGrok2api === true;
+  const autoAuthG2 =
+    settings.autoPushAuthToGrok2api === true ||
+    (settings.autoPushAuthToGrok2api === undefined && allowAuthG2);
+  const allowAuthCpa =
+    settings.pushAuthToCpa === true || settings.cpaRemotePushEnabled === true;
+  const autoAuthCpa =
+    settings.autoPushAuthToCpa === true ||
+    (settings.autoPushAuthToCpa === undefined && allowAuthCpa);
+  // Python 侧 push_* = 自动推送（注册成功触发）；允许仅影响 UI 手动推
+  config.push_sso_to_grok2api = autoSsoG2;
+  config.push_auth_to_grok2api = autoAuthG2;
+  config.push_auth_to_cpa = autoAuthCpa;
+  config.allow_push_sso_to_grok2api = allowSsoG2;
+  config.allow_push_auth_to_grok2api = allowAuthG2;
+  config.allow_push_auth_to_cpa = allowAuthCpa;
+  config.grok2api_auto_upload = autoSsoG2 || autoAuthG2;
   const g2url = String(settings.grok2apiUrl || '').trim();
   const g2user = String(settings.grok2apiUsername || '').trim();
   const g2pass = String(settings.grok2apiPassword || '');

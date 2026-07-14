@@ -165,11 +165,26 @@ export function RegisterPage({ onOpenSettings }: { onOpenSettings(): void }) {
               <InfoBox label="并行上限" value={String(maxParallel)} />
               <InfoBox
                 label="代理"
-                value={
-                  settings?.proxyPool?.trim()
-                    ? '代理池'
-                    : settings?.proxy || '直接连接'
-                }
+                value={(() => {
+                  const s = settings;
+                  if (!s || s.proxyEnabled === false) return '直接连接';
+                  const alive = String(s.proxyPoolAlive || '').trim();
+                  const pending = String(s.proxyPool || '').trim();
+                  const poolOn = s.proxyPoolEnabled !== false && (alive || pending);
+                  if (poolOn) {
+                    // 注册机实际用可用池；无可用时回退待定（与 runtime 一致）
+                    const n = (alive || pending)
+                      .split(/\r?\n/)
+                      .map((l) => l.trim())
+                      .filter((l) => l && !l.startsWith('#')).length;
+                    return alive
+                      ? `代理池 · 可用 ${n}`
+                      : `代理池 · 待定 ${n}`;
+                  }
+                  const http = String(s.proxy || '').trim();
+                  if (http) return http.length > 28 ? `${http.slice(0, 26)}…` : http;
+                  return '直接连接';
+                })()}
               />
               <InfoBox label="活跃任务" value={`${jobsActive} / ${maxParallel}`} />
             </div>

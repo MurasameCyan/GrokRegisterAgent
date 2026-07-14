@@ -25,8 +25,8 @@ export function SettingsPage({
 
   return (
     <div className="mx-auto max-w-5xl space-y-5 pb-20">
-      <SettingsForm />
       <CredentialsPanel username={username} onAuthChanged={onAuthChanged} />
+      <SettingsForm />
     </div>
   );
 }

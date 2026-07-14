@@ -139,10 +139,33 @@ function merge(partial: unknown): AppSettings {
         Boolean(String((p as AppSettings).cpaRemoteUrl || '').trim()) &&
         (p as AppSettings).pushAuthToCpa === undefined &&
         (p as AppSettings).cpaRemotePushEnabled === undefined),
-    pushSsoToGrok2api:
-      (p as AppSettings).pushSsoToGrok2api === true ||
-      (p as AppSettings).grok2apiAutoUpload === true,
+    // SSO / Auth g2 独立：勿用 grok2apiAutoUpload 强行点亮 SSO（会与 Auth g2 联动）
+    // 仅当新字段均未写入、仅有旧 autoUpload 时，才把 auto 迁移为 SSO 推送
+    pushSsoToGrok2api: (() => {
+      const s = p as AppSettings;
+      if (s.pushSsoToGrok2api === true) return true;
+      if (s.pushSsoToGrok2api === false) return false;
+      // undefined：兼容旧配置（只有 grok2apiAutoUpload、无分通道字段）
+      if (s.pushAuthToGrok2api === undefined && s.grok2apiAutoUpload === true) {
+        return true;
+      }
+      return false;
+    })(),
     pushAuthToGrok2api: (p as AppSettings).pushAuthToGrok2api === true,
+    autoPushSsoToGrok2api:
+      (p as AppSettings).autoPushSsoToGrok2api === true ||
+      // 旧配置：仅开了 pushSso 时视为同时允许+自动
+      ((p as AppSettings).autoPushSsoToGrok2api === undefined &&
+        (p as AppSettings).pushSsoToGrok2api === true),
+    autoPushAuthToGrok2api:
+      (p as AppSettings).autoPushAuthToGrok2api === true ||
+      ((p as AppSettings).autoPushAuthToGrok2api === undefined &&
+        (p as AppSettings).pushAuthToGrok2api === true),
+    autoPushAuthToCpa:
+      (p as AppSettings).autoPushAuthToCpa === true ||
+      ((p as AppSettings).autoPushAuthToCpa === undefined &&
+        ((p as AppSettings).pushAuthToCpa === true ||
+          (p as AppSettings).cpaRemotePushEnabled === true)),
     cpaRemoteUrl:
       typeof (p as AppSettings).cpaRemoteUrl === 'string'
         ? (p as AppSettings).cpaRemoteUrl
@@ -189,9 +212,10 @@ function merge(partial: unknown): AppSettings {
       (p as AppSettings).registerPlanBEnabled,
       DEFAULT_SETTINGS.registerPlanBEnabled
     ),
-    // 兼容：SSO 推送开则旧字段也视为 true
+    // 兼容旧字段：任一 g2 通道开启即为 true（不反向污染 SSO 开关）
     grok2apiAutoUpload:
       (p as AppSettings).pushSsoToGrok2api === true ||
+      (p as AppSettings).pushAuthToGrok2api === true ||
       (p as AppSettings).grok2apiAutoUpload === true,
     grok2apiUrl:
       typeof (p as AppSettings).grok2apiUrl === 'string'

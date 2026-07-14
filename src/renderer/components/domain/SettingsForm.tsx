@@ -577,11 +577,11 @@ export function SettingsForm() {
     for (const e of proxyPoolEntries) loadingMap[e.proxy] = { status: 'loading' };
     setProxyProbes((prev) => ({ ...prev, ...loadingMap }));
 
-    // 分块测活：避免一次 200+ 条卡死反代（Cloudflare 524 ~100s）
-    // 并发略保守：单条与批量同一套 probe（无出口检测）；过高并发易被 xAI/CF 限流导致全灭
-    const CHUNK = 16;
-    const conc = Math.max(1, Math.min(8, Number(draft.proxyProbeConcurrency) || 5));
-    const timeoutMs = 8000;
+    // 分块测活：单条正常、批量全灭多为高并发打爆 xAI/CF。
+    // 块更小、并发更低；结果按 proxy 字段对齐，避免 index 错位。
+    const CHUNK = 8;
+    const conc = Math.max(1, Math.min(3, Number(draft.proxyProbeConcurrency) || 3));
+    const timeoutMs = 10000;
     const proxies = proxyPoolEntries.map((e) => e.proxy);
     let totalOk = 0;
     let totalFail = 0;
@@ -589,70 +589,130 @@ export function SettingsForm() {
     const allOk: string[] = [];
     let workingDraft = draft;
 
+    /** 块内按 proxy 对齐结果；块 HTTP 失败则回退串行单条（与单测同一路径） */
+    const probeChunk = async (
+      chunk: string[]
+    ): Promise<Array<{ proxy: string; ok: boolean; message: string }>> => {
+      try {
+        const batch = await window.api.testProxyBatch({
+          proxies: chunk,
+          concurrency: conc,
+          timeoutMs
+        });
+        const byKey = new Map<string, { ok: boolean; message: string }>();
+        const indexResult = (key: string, ok: boolean, message: string) => {
+          const k = String(key || '').trim();
+          if (!k) return;
+          const row = { ok, message };
+          byKey.set(k, row);
+          byKey.set(k.replace(/^https?:\/\//i, ''), row);
+          try {
+            const u = new URL(k.includes('://') ? k : `http://${k}`);
+            const hp = `${u.hostname}:${u.port || '80'}`;
+            byKey.set(hp, row);
+            byKey.set(`http://${hp}`, row);
+          } catch {
+            /* ignore */
+          }
+        };
+        for (let i = 0; i < (batch.results || []).length; i++) {
+          const r = batch.results[i];
+          const ok = Boolean(r?.ok);
+          const message = String(r?.message || (ok ? 'ok' : '失败'));
+          indexResult(String(r?.proxy || ''), ok, message);
+          // 保序：也用请求侧原始串索引
+          if (chunk[i]) indexResult(chunk[i], ok, message);
+        }
+        return chunk.map((proxy, i) => {
+          const r =
+            byKey.get(proxy) ||
+            byKey.get(proxy.replace(/^https?:\/\//i, '')) ||
+            (batch.results?.[i]
+              ? {
+                  ok: Boolean(batch.results[i].ok),
+                  message: String(batch.results[i].message || '失败')
+                }
+              : null);
+          if (r) {
+            return {
+              proxy,
+              ok: Boolean(r.ok),
+              message: String(r.message || '失败')
+            };
+          }
+          return { proxy, ok: false, message: '无测活结果' };
+        });
+      } catch (err) {
+        const msg = String(err);
+        hardError = msg;
+        // 整块 HTTP 失败：回退逐条 testProxy（与「单条测活」一致）
+        const out: Array<{ proxy: string; ok: boolean; message: string }> = [];
+        for (const proxy of chunk) {
+          try {
+            const r = await window.api.testProxy(proxy);
+            out.push({
+              proxy,
+              ok: Boolean(r.ok),
+              message: String(r.message || (r.ok ? 'ok' : '失败'))
+                .replace(/<[^>]+>/g, ' ')
+                .replace(/\s+/g, ' ')
+                .trim()
+                .slice(0, 160)
+            });
+          } catch (e2) {
+            out.push({
+              proxy,
+              ok: false,
+              message: msg.includes('524')
+                ? '请求超时(524)，单条回退仍失败'
+                : String(e2).slice(0, 120)
+            });
+          }
+        }
+        return out;
+      }
+    };
+
     try {
       for (let offset = 0; offset < proxies.length; offset += CHUNK) {
         const chunk = proxies.slice(offset, offset + CHUNK);
         const chunkNo = Math.floor(offset / CHUNK) + 1;
         const chunkTotal = Math.ceil(proxies.length / CHUNK);
-        try {
-          const batch = await window.api.testProxyBatch({
-            proxies: chunk,
-            concurrency: conc,
-            timeoutMs
-          });
-          const chunkOk: string[] = [];
-          setProxyProbes((prev) => {
-            const next = { ...prev };
-            for (let i = 0; i < chunk.length; i++) {
-              const proxy = chunk[i];
-              const r = batch.results[i];
-              if (r?.ok) {
-                chunkOk.push(proxy);
-                // 成功项将移入可用池，不必长期占待测区状态
-                delete next[proxy];
-              } else {
-                next[proxy] = {
-                  status: 'fail',
-                  message: r?.message || '失败'
-                };
-              }
-            }
-            return next;
-          });
-          if (chunkOk.length > 0) {
-            allOk.push(...chunkOk);
-            const promoted = promoteOkProxies(chunkOk, workingDraft);
-            if (promoted) workingDraft = promoted;
-          }
-          // 以本块实际 ok/fail 计数，避免 batch.ok/fail 与 results 不一致时双计
-          const chunkFail = Math.max(0, chunk.length - chunkOk.length);
-          totalOk += chunkOk.length;
-          totalFail += chunkFail;
-          // 进度 toast 每 3 块或最后一块
-          if (chunkNo === chunkTotal || chunkNo % 3 === 0) {
-            push({
-              tone: 'ok',
-              title: `测活进度 ${chunkNo}/${chunkTotal}`,
-              description: `已完成 ${Math.min(offset + chunk.length, proxies.length)}/${proxies.length} · 成功 ${totalOk} · 失败 ${totalFail}`
-            });
-          }
-        } catch (err) {
-          // 单块失败：该块全部标 fail，继续下一块
-          const msg = String(err);
-          hardError = msg;
-          setProxyProbes((prev) => {
-            const next = { ...prev };
-            for (const proxy of chunk) {
-              next[proxy] = {
+        const rows = await probeChunk(chunk);
+        const chunkOk: string[] = [];
+        setProxyProbes((prev) => {
+          const next = { ...prev };
+          for (const row of rows) {
+            if (row.ok) {
+              chunkOk.push(row.proxy);
+              delete next[row.proxy];
+            } else {
+              next[row.proxy] = {
                 status: 'fail',
-                message: msg.includes('524')
-                  ? '请求超时(524)，已跳过本块'
-                  : msg.slice(0, 120)
+                message: row.message || '失败'
               };
             }
-            return next;
+          }
+          return next;
+        });
+        if (chunkOk.length > 0) {
+          allOk.push(...chunkOk);
+          const promoted = promoteOkProxies(chunkOk, workingDraft);
+          if (promoted) workingDraft = promoted;
+        }
+        const chunkFail = Math.max(0, chunk.length - chunkOk.length);
+        totalOk += chunkOk.length;
+        totalFail += chunkFail;
+        if (chunkNo === chunkTotal || chunkNo % 2 === 0) {
+          push({
+            tone: totalOk > 0 ? 'ok' : 'warn',
+            title: `测活进度 ${chunkNo}/${chunkTotal}`,
+            description: `已完成 ${Math.min(offset + chunk.length, proxies.length)}/${proxies.length} · 成功 ${totalOk} · 失败 ${totalFail}`
           });
-          totalFail += chunk.length;
+        }
+        // 块间稍歇，降低 xAI/CF 限流导致「全灭」
+        if (offset + CHUNK < proxies.length) {
+          await new Promise((r) => window.setTimeout(r, 400));
         }
       }
       if (allOk.length > 0 && draft.proxyAutoSaveOnRemoveFailed && workingDraft) {
@@ -1034,24 +1094,16 @@ export function SettingsForm() {
               <div className="lg:col-span-2">
                 <ToggleRow
                   label="使用代理池"
-                  hint="开：从池中轮换（仅注册机浏览器）；关：使用单条 HTTP/浏览器代理"
+                  hint="开：从池中轮换（仅注册机浏览器）；关：注册机也用上方 HTTP 代理"
                   checked={!!draft.proxyPoolEnabled}
                   onChange={(v) => update('proxyPoolEnabled', v)}
                 />
               </div>
 
-              {/* 单条 HTTP 代理：SSO 验活 / Auth mint·重签·测活 出站用（与注册机代理池无关） */}
+              {/* 单条 HTTP 代理：SSO 验活 / Auth mint·重签·测活 出站（非代理池；与注册机池无关） */}
               <Field
-                label={
-                  draft.proxyPoolEnabled
-                    ? 'HTTP 代理（验活 / Auth 出站）'
-                    : 'HTTP 代理'
-                }
-                hint={
-                  draft.proxyPoolEnabled
-                    ? '代理池仅给注册机浏览器轮换；此处单条给 SSO 验活、Auth 转换/重签/测活'
-                    : '例如 http://127.0.0.1:7890'
-                }
+                label="HTTP 代理（验活 / Auth 出站）"
+                hint="代理池仅给注册机浏览器轮换；此处单条给 SSO 验活、Auth 转换/重签/测活"
                 error={errors.proxy}
               >
                 <Input
@@ -1061,15 +1113,7 @@ export function SettingsForm() {
                   placeholder="http://127.0.0.1:7890"
                 />
               </Field>
-              {!draft.proxyPoolEnabled && (
-                <Field label="浏览器代理" hint="空则跟随 HTTP 代理">
-                  <Input
-                    value={draft.browserProxy}
-                    onChange={(e) => update('browserProxy', e.target.value)}
-                    placeholder="留空跟随 HTTP 代理"
-                  />
-                </Field>
-              )}
+              {/* 浏览器代理字段已隐藏：注册机走代理池轮换，单条仅用 HTTP 代理出站 */}
 
               {draft.proxyPoolEnabled && (
                 <>
@@ -1694,7 +1738,7 @@ export function SettingsForm() {
       <Card collapsible defaultCollapsed>
         <CardHeader
           title="推送授权"
-          description="按来源选择推送目标。SSO 只推 grok2api；Auth 可同时推 CPA 与 grok2api。目标按钮点亮=启用；需连接信息时展开填写。"
+          description="每个目标分「允许推送」与「自动推送」。允许=可手动推/展开连接；自动=注册成功后推送（开自动会同时开允许）。SSO/Auth 的 g2 互不联动。"
           right={
             <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-muted text-muted-foreground">
               <KeyRound className="h-4 w-4" aria-hidden />
@@ -1703,28 +1747,73 @@ export function SettingsForm() {
         />
         <CardBody className="space-y-4">
           {(() => {
-            const pushSsoG2 =
-              draft.pushSsoToGrok2api === true || draft.grok2apiAutoUpload === true;
-            const pushAuthCpa =
+            // 允许 / 自动 分离；SSO 与 Auth 的 g2 互不联动
+            const allowSsoG2 = draft.pushSsoToGrok2api === true;
+            const autoSsoG2 = draft.autoPushSsoToGrok2api === true;
+            const allowAuthCpa =
               draft.pushAuthToCpa === true || draft.cpaRemotePushEnabled === true;
-            const pushAuthG2 = draft.pushAuthToGrok2api === true;
-            const needG2Config = pushSsoG2 || pushAuthG2;
-            const setPushSsoG2 = (on: boolean) => {
+            const autoAuthCpa = draft.autoPushAuthToCpa === true;
+            const allowAuthG2 = draft.pushAuthToGrok2api === true;
+            const autoAuthG2 = draft.autoPushAuthToGrok2api === true;
+            const needG2Config = allowSsoG2 || allowAuthG2 || autoSsoG2 || autoAuthG2;
+            const needCpaConfig = allowAuthCpa || autoAuthCpa;
+            const syncLegacyG2 = (ssoAllow: boolean, authAllow: boolean) =>
+              ssoAllow || authAllow;
+
+            const setAllowSsoG2 = (on: boolean) => {
               patch({
                 pushSsoToGrok2api: on,
-                grok2apiAutoUpload: on || draft.pushAuthToGrok2api === true
+                autoPushSsoToGrok2api: on ? draft.autoPushSsoToGrok2api === true : false,
+                grok2apiAutoUpload: syncLegacyG2(
+                  on,
+                  draft.pushAuthToGrok2api === true || draft.autoPushAuthToGrok2api === true
+                )
               });
             };
-            const setPushAuthCpa = (on: boolean) => {
+            const setAutoSsoG2 = (on: boolean) => {
+              patch({
+                autoPushSsoToGrok2api: on,
+                pushSsoToGrok2api: on ? true : draft.pushSsoToGrok2api === true,
+                grok2apiAutoUpload: syncLegacyG2(
+                  on || draft.pushSsoToGrok2api === true,
+                  draft.pushAuthToGrok2api === true || draft.autoPushAuthToGrok2api === true
+                )
+              });
+            };
+            const setAllowAuthCpa = (on: boolean) => {
               patch({
                 pushAuthToCpa: on,
-                cpaRemotePushEnabled: on
+                cpaRemotePushEnabled: on,
+                autoPushAuthToCpa: on ? draft.autoPushAuthToCpa === true : false
               });
             };
-            const setPushAuthG2 = (on: boolean) => {
+            const setAutoAuthCpa = (on: boolean) => {
+              patch({
+                autoPushAuthToCpa: on,
+                pushAuthToCpa: on ? true : draft.pushAuthToCpa === true,
+                cpaRemotePushEnabled: on
+                  ? true
+                  : draft.pushAuthToCpa === true || draft.cpaRemotePushEnabled === true
+              });
+            };
+            const setAllowAuthG2 = (on: boolean) => {
               patch({
                 pushAuthToGrok2api: on,
-                grok2apiAutoUpload: on || draft.pushSsoToGrok2api === true
+                autoPushAuthToGrok2api: on ? draft.autoPushAuthToGrok2api === true : false,
+                grok2apiAutoUpload: syncLegacyG2(
+                  draft.pushSsoToGrok2api === true || draft.autoPushSsoToGrok2api === true,
+                  on
+                )
+              });
+            };
+            const setAutoAuthG2 = (on: boolean) => {
+              patch({
+                autoPushAuthToGrok2api: on,
+                pushAuthToGrok2api: on ? true : draft.pushAuthToGrok2api === true,
+                grok2apiAutoUpload: syncLegacyG2(
+                  draft.pushSsoToGrok2api === true || draft.autoPushSsoToGrok2api === true,
+                  on || draft.pushAuthToGrok2api === true
+                )
               });
             };
             const targetBtn = (
@@ -1750,59 +1839,72 @@ export function SettingsForm() {
                 {label}
               </button>
             );
+            const pair = (
+              allow: boolean,
+              auto: boolean,
+              onAllow: (v: boolean) => void,
+              onAuto: (v: boolean) => void,
+              name: string
+            ) => (
+              <div className="flex flex-wrap items-center gap-1.5">
+                {targetBtn(
+                  allow,
+                  '允许推送',
+                  () => onAllow(!allow),
+                  allow ? `关闭「允许」${name}` : `开启「允许」${name}（可手动推/填连接）`
+                )}
+                {targetBtn(
+                  auto,
+                  '自动推送',
+                  () => onAuto(!auto),
+                  auto
+                    ? `关闭「自动」${name}`
+                    : `开启「自动」${name}（注册成功后推送，会同时开允许）`
+                )}
+              </div>
+            );
             return (
               <>
                 {/* SSO 推送 */}
                 <div className="rounded-xl border border-border/70 bg-muted/30 p-3">
                   <div className="flex flex-wrap items-center gap-2">
                     <div className="min-w-0 flex-1">
-                      <div className="text-[14px] font-medium text-foreground">SSO</div>
+                      <div className="text-[14px] font-medium text-foreground">
+                        SSO · grok2api
+                      </div>
                       <div className="text-[11px] text-muted-foreground">
-                        注册成功后的 Cookie / 号池 sso — 仅可推送到 grok2api
+                        Cookie / 号池 sso — 仅 grok2api
                       </div>
                     </div>
-                    {targetBtn(
-                      pushSsoG2,
-                      'grok2api',
-                      () => setPushSsoG2(!pushSsoG2),
-                      pushSsoG2 ? '关闭 SSO→grok2api' : '开启 SSO→grok2api'
-                    )}
+                    {pair(allowSsoG2, autoSsoG2, setAllowSsoG2, setAutoSsoG2, 'SSO→g2')}
                   </div>
                 </div>
 
                 {/* Auth 推送 */}
-                <div className="rounded-xl border border-border/70 bg-muted/30 p-3">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <div className="min-w-0 flex-1">
-                      <div className="text-[14px] font-medium text-foreground">Auth</div>
-                      <div className="text-[11px] text-muted-foreground">
-                        本地 xai-*.json — CPA 与 grok2api 可同时打开、同时推送
-                      </div>
-                    </div>
-                    {targetBtn(
-                      pushAuthCpa,
-                      'CPA',
-                      () => setPushAuthCpa(!pushAuthCpa),
-                      pushAuthCpa ? '关闭 Auth→CPA' : '开启 Auth→CPA'
-                    )}
-                    {targetBtn(
-                      pushAuthG2,
-                      'grok2api',
-                      () => setPushAuthG2(!pushAuthG2),
-                      pushAuthG2 ? '关闭 Auth→grok2api' : '开启 Auth→grok2api'
-                    )}
+                <div className="space-y-2 rounded-xl border border-border/70 bg-muted/30 p-3">
+                  <div className="text-[14px] font-medium text-foreground">Auth</div>
+                  <div className="text-[11px] text-muted-foreground">
+                    本地 xai-*.json — CPA 与 grok2api 可同时配置
+                  </div>
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/50 pt-2">
+                    <span className="text-[12px] font-medium text-foreground">CPA</span>
+                    {pair(allowAuthCpa, autoAuthCpa, setAllowAuthCpa, setAutoAuthCpa, 'Auth→CPA')}
+                  </div>
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/50 pt-2">
+                    <span className="text-[12px] font-medium text-foreground">grok2api</span>
+                    {pair(allowAuthG2, autoAuthG2, setAllowAuthG2, setAutoAuthG2, 'Auth→g2')}
                   </div>
                 </div>
 
                 {/* CPA 连接（Auth→CPA 启用时展开） */}
-                {pushAuthCpa && (
+                {needCpaConfig && (
                   <div className="space-y-3 rounded-xl border border-border/60 bg-background/50 p-3">
                     <div className="text-[12px] font-medium text-foreground">
                       CPA 连接设定
                     </div>
                     <Field
                       label="远程 CPA 地址"
-                      hint="Management API 根地址（不要带 /v1）"
+                      hint="Management API 根地址"
                     >
                       <Input
                         value={draft.cpaRemoteUrl || ''}
@@ -1836,9 +1938,6 @@ export function SettingsForm() {
                           })
                         }
                       />
-                      <span className="text-[12px] text-muted-foreground">
-                        不上传文件，仅测 Management API
-                      </span>
                     </div>
                   </div>
                 )}
@@ -1892,9 +1991,6 @@ export function SettingsForm() {
                           })
                         }
                       />
-                      <span className="text-[12px] text-muted-foreground">
-                        不上传账号，仅测管理登录
-                      </span>
                     </div>
                   </div>
                 )}
@@ -1910,10 +2006,40 @@ export function SettingsForm() {
             'flex items-center gap-3 rounded-[14px] border border-border bg-card px-3 py-2 shadow-[var(--ios-shadow)]'
           )}
         >
-          <span className="px-1 text-[12px] font-medium text-muted-foreground">
-            {dirty ? (valid ? '未保存' : '校验失败') : '已同步'}
+          <span
+            className="max-w-[14rem] truncate px-1 text-[12px] font-medium text-muted-foreground"
+            title={
+              !valid
+                ? Object.entries(errors)
+                    .map(([k, v]) => `${k}: ${v}`)
+                    .join('\n')
+                : dirty
+                  ? '有未保存更改'
+                  : '已与服务器同步'
+            }
+          >
+            {dirty
+              ? valid
+                ? '未保存'
+                : `校验失败: ${Object.values(errors)[0] || ''}`
+              : '已同步'}
           </span>
-          <Button onClick={() => save()} disabled={!dirty || !valid || saving} size="sm">
+          <Button
+            onClick={() => {
+              if (!valid) {
+                const first = Object.entries(errors)[0];
+                push({
+                  tone: 'warn',
+                  title: '无法保存',
+                  description: first ? `${first[0]}: ${first[1]}` : '校验未通过'
+                });
+                return;
+              }
+              void save();
+            }}
+            disabled={!dirty || saving}
+            size="sm"
+          >
             <Save className="h-4 w-4" />
             保存
           </Button>
