@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Copy, Trash2 } from 'lucide-react';
 import { useRunStore } from '@renderer/store/runStore';
 import { Button } from '@renderer/components/ui/Button';
@@ -15,15 +15,24 @@ const colorByLevel = {
 
 export function LogPanel() {
   const logs = useRunStore((s) => s.logs);
+  const focusRunId = useRunStore((s) => s.focusRunId);
   const clearLogs = useRunStore((s) => s.clearLogs);
+  const clearLogsFor = useRunStore((s) => s.clearLogsFor);
   const ref = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
+  /** all = 全部任务混显；focus = 仅当前聚焦 */
+  const [scope, setScope] = useState<'focus' | 'all'>('focus');
+
+  const visible = useMemo(() => {
+    if (scope === 'all' || !focusRunId) return logs;
+    return logs.filter((l) => l.runId === focusRunId);
+  }, [logs, focusRunId, scope]);
 
   useEffect(() => {
     const el = ref.current;
     if (!el || !autoScroll) return;
     el.scrollTop = el.scrollHeight;
-  }, [logs, autoScroll]);
+  }, [visible, autoScroll]);
 
   const onScroll = () => {
     const el = ref.current;
@@ -33,7 +42,7 @@ export function LogPanel() {
   };
 
   const copyAll = async () => {
-    const text = logs.map((l) => l.text).join('\n');
+    const text = visible.map((l) => l.text).join('\n');
     try {
       await navigator.clipboard.writeText(text);
     } catch {
@@ -41,11 +50,45 @@ export function LogPanel() {
     }
   };
 
+  const doClear = () => {
+    if (scope === 'focus' && focusRunId) clearLogsFor(focusRunId);
+    else clearLogs();
+  };
+
   return (
     <div className="ios-group flex h-[min(520px,60vh)] flex-col overflow-hidden">
       <div className="flex items-center justify-between border-b border-border/70 px-4 py-3.5">
-        <h2 className="text-[20px] font-bold tracking-[-0.02em]">实时日志</h2>
+        <div>
+          <h2 className="text-[20px] font-bold tracking-[-0.02em]">实时日志</h2>
+          <p className="mt-0.5 text-[11px] text-muted-foreground">
+            {scope === 'focus' && focusRunId
+              ? `仅 #${focusRunId.slice(0, 8)} · ${visible.length} 行`
+              : `全部任务 · ${visible.length} 行`}
+          </p>
+        </div>
         <div className="flex flex-wrap items-center gap-2">
+          <div className="flex rounded-full border border-border bg-muted/50 p-0.5 text-[11px]">
+            <button
+              type="button"
+              className={cn(
+                'rounded-full px-2.5 py-1 font-medium transition-colors',
+                scope === 'focus' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground'
+              )}
+              onClick={() => setScope('focus')}
+            >
+              聚焦
+            </button>
+            <button
+              type="button"
+              className={cn(
+                'rounded-full px-2.5 py-1 font-medium transition-colors',
+                scope === 'all' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground'
+              )}
+              onClick={() => setScope('all')}
+            >
+              全部
+            </button>
+          </div>
           <span className={cn('pill', autoScroll ? 'pill-ok' : 'pill-warn')}>
             {autoScroll ? '自动滚动' : '已暂停'}
           </span>
@@ -53,7 +96,7 @@ export function LogPanel() {
             <Copy className="h-3.5 w-3.5" />
             复制
           </Button>
-          <Button variant="ghost" size="sm" onClick={clearLogs}>
+          <Button variant="ghost" size="sm" onClick={doClear}>
             <Trash2 className="h-3.5 w-3.5" />
             清空
           </Button>
@@ -64,12 +107,12 @@ export function LogPanel() {
         onScroll={onScroll}
         className="log-surface m-3 flex-1 overflow-y-auto px-3 py-2.5 leading-6"
       >
-        {logs.length === 0 ? (
+        {visible.length === 0 ? (
           <div className="mt-16 text-center font-sans text-[13px] text-muted-foreground">
             尚无日志。开始注册后将实时显示输出。
           </div>
         ) : (
-          logs.map((l) => (
+          visible.map((l) => (
             <div
               key={l.id}
               className="grid grid-cols-[72px_minmax(0,1fr)] gap-3 border-b border-border/40 py-1.5 last:border-b-0"
@@ -78,35 +121,24 @@ export function LogPanel() {
                 {new Date(l.ts).toLocaleTimeString('zh-CN', {
                   hour: '2-digit',
                   minute: '2-digit',
-                  second: '2-digit'
+                  second: '2-digit',
+                  hour12: false
                 })}
               </span>
-              <span className={cn('whitespace-pre-wrap break-words', colorByLevel[l.level])}>
-                <LogText text={l.text} />
-              </span>
+              <div className="min-w-0">
+                {scope === 'all' && (
+                  <span className="mr-2 font-mono text-[10px] text-muted-foreground">
+                    #{l.runId.slice(0, 6)}
+                  </span>
+                )}
+                <span className={cn('break-all text-[12px]', colorByLevel[l.level] || 'text-foreground')}>
+                  {l.text}
+                </span>
+              </div>
             </div>
           ))
         )}
       </div>
     </div>
-  );
-}
-
-/** 汇总行：成功绿 / 失败红 / 共计蓝 */
-function LogText({ text }: { text: string }) {
-  const m = text.match(/成功:\s*(\d+)\s+失败:\s*(\d+)\s+共计:\s*(\d+)/);
-  if (!m) return <>{text}</>;
-  const before = text.slice(0, m.index);
-  const after = text.slice((m.index ?? 0) + m[0].length);
-  return (
-    <>
-      {before}
-      <span className="font-semibold text-ok">成功: {m[1]}</span>
-      <span className="text-muted-foreground">{'  '}</span>
-      <span className="font-semibold text-danger">失败: {m[2]}</span>
-      <span className="text-muted-foreground">{'  '}</span>
-      <span className="font-semibold text-info">共计: {m[3]}</span>
-      {after}
-    </>
   );
 }

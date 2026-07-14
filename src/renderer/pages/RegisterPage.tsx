@@ -1,10 +1,18 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { Play, Save, SlidersHorizontal, StopCircle, TriangleAlert } from 'lucide-react';
+import {
+  Layers,
+  Play,
+  Save,
+  SlidersHorizontal,
+  StopCircle,
+  TriangleAlert
+} from 'lucide-react';
 import { Button } from '@renderer/components/ui/Button';
 import { Input } from '@renderer/components/ui/Input';
 import { Slider } from '@renderer/components/ui/Slider';
 import { StatusCard } from '@renderer/components/domain/StatusCard';
 import { LogPanel } from '@renderer/components/domain/LogPanel';
+import { JobListPanel } from '@renderer/components/domain/JobListPanel';
 import { useRunStore } from '@renderer/store/runStore';
 import { useSettingsStore } from '@renderer/store/settingsStore';
 import { useToastStore } from '@renderer/store/toastStore';
@@ -12,9 +20,12 @@ import type { AppSettings } from '@shared/settings';
 
 export function RegisterPage({ onOpenSettings }: { onOpenSettings(): void }) {
   const status = useRunStore((s) => s.status);
+  const jobsActive = useRunStore((s) => s.jobsActive);
   const settings = useSettingsStore((s) => s.data);
   const push = useToastStore((s) => s.push);
   const running = status.phase === 'starting' || status.phase === 'running';
+  const maxParallel = settings?.maxParallelWorkers ?? 3;
+  const canStartMore = jobsActive < maxParallel;
   const progress =
     status.total > 0 ? Math.min(100, Math.round((status.success / status.total) * 100)) : 0;
 
@@ -28,7 +39,12 @@ export function RegisterPage({ onOpenSettings }: { onOpenSettings(): void }) {
 
   const start = async () => {
     try {
-      await window.api.startRegister({});
+      const r = await window.api.startRegister({});
+      push({
+        tone: 'ok',
+        title: jobsActive > 0 ? '已再开一路' : '已启动',
+        description: `任务 #${r.runId.slice(0, 8)} · 活跃将至 ${Math.min(jobsActive + 1, maxParallel)}/${maxParallel}`
+      });
     } catch (err) {
       push({
         tone: 'danger',
@@ -39,27 +55,75 @@ export function RegisterPage({ onOpenSettings }: { onOpenSettings(): void }) {
   };
 
   const stop = async () => {
-    if (!status.runId) return;
+    if (!status.runId) {
+      await window.api.stopRegister(undefined);
+      return;
+    }
     await window.api.stopRegister(status.runId);
+  };
+
+  const stopAll = async () => {
+    try {
+      const r = await window.api.stopRegister(undefined, { stopAll: true });
+      push({
+        tone: 'ok',
+        title: '已停止全部',
+        description: `${r.stopped?.length ?? 0} 个任务`
+      });
+    } catch (err) {
+      push({
+        tone: 'danger',
+        title: '停止失败',
+        description: err instanceof Error ? err.message : String(err)
+      });
+    }
   };
 
   return (
     <div className="space-y-5">
       <div className="grid gap-4 lg:grid-cols-[1.3fr_0.9fr]">
         <section className="ios-group">
-          <div className="flex items-center justify-between border-b border-border/70 px-4 py-3.5">
-            <h2 className="text-[20px] font-bold tracking-[-0.02em]">实时状态</h2>
-            {running ? (
-              <Button variant="danger" size="md" onClick={stop}>
-                <StopCircle className="h-4 w-4" />
-                停止
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/70 px-4 py-3.5">
+            <div>
+              <h2 className="text-[20px] font-bold tracking-[-0.02em]">实时状态</h2>
+              <p className="mt-0.5 text-[12px] text-muted-foreground">
+                并行活跃 {jobsActive}/{maxParallel}
+                {status.runId ? ` · 聚焦 #${status.runId.slice(0, 8)}` : ''}
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {jobsActive > 0 && (
+                <Button variant="secondary" size="md" onClick={() => void stopAll()}>
+                  <StopCircle className="h-4 w-4" />
+                  全部停止
+                </Button>
+              )}
+              {running && status.runId ? (
+                <Button variant="danger" size="md" onClick={() => void stop()}>
+                  <StopCircle className="h-4 w-4" />
+                  停止当前
+                </Button>
+              ) : null}
+              <Button
+                size="md"
+                onClick={() => void start()}
+                disabled={!ready || !canStartMore}
+                title={
+                  !canStartMore
+                    ? `已达并行上限 ${maxParallel}`
+                    : jobsActive > 0
+                      ? '再开一路并行注册'
+                      : '开始注册'
+                }
+              >
+                {jobsActive > 0 ? <Layers className="h-4 w-4" /> : <Play className="h-4 w-4" />}
+                {!canStartMore
+                  ? `已满 ${maxParallel}`
+                  : jobsActive > 0
+                    ? '再开一路'
+                    : '开始'}
               </Button>
-            ) : (
-              <Button size="md" onClick={start} disabled={!ready}>
-                <Play className="h-4 w-4" />
-                开始
-              </Button>
-            )}
+            </div>
           </div>
           <div className="space-y-4 p-4">
             <StatusCard status={status} />
@@ -67,7 +131,7 @@ export function RegisterPage({ onOpenSettings }: { onOpenSettings(): void }) {
             <div className="rounded-xl bg-muted/70 p-4">
               <div className="flex items-center justify-between gap-3">
                 <div>
-                  <div className="field-label">进度</div>
+                  <div className="field-label">进度（聚焦任务）</div>
                   <div className="mt-1 text-[13px] text-muted-foreground">
                     成功 {status.success} / 计划 {status.total || settings?.runCount || 0}
                   </div>
@@ -96,6 +160,7 @@ export function RegisterPage({ onOpenSettings }: { onOpenSettings(): void }) {
 
             <div className="grid gap-3 sm:grid-cols-2">
               <InfoBox label="轮数" value={String(settings?.runCount ?? '--')} />
+              <InfoBox label="并行上限" value={String(maxParallel)} />
               <InfoBox
                 label="代理"
                 value={
@@ -104,11 +169,15 @@ export function RegisterPage({ onOpenSettings }: { onOpenSettings(): void }) {
                     : settings?.proxy || '直接连接'
                 }
               />
+              <InfoBox label="活跃任务" value={`${jobsActive} / ${maxParallel}`} />
             </div>
           </div>
         </section>
 
-        <RuntimeSettingsPanel onOpenSettings={onOpenSettings} />
+        <div className="space-y-4">
+          <JobListPanel maxParallel={maxParallel} />
+          <RuntimeSettingsPanel onOpenSettings={onOpenSettings} />
+        </div>
       </div>
 
       <LogPanel />
@@ -141,15 +210,21 @@ function RuntimeSettingsPanel({ onOpenSettings }: { onOpenSettings(): void }) {
 
   const dirty =
     !!data &&
-    (data.runCount !== draft.runCount || data.proxy !== draft.proxy);
+    (data.runCount !== draft.runCount ||
+      data.proxy !== draft.proxy ||
+      data.maxParallelWorkers !== draft.maxParallelWorkers);
   const update = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) =>
     setDraft({ ...draft, [key]: value });
 
   const save = async () => {
     setSaving(true);
     try {
-      // 只更新运行相关字段，其余保持服务端当前值
-      const next = { ...data!, runCount: draft.runCount, proxy: draft.proxy };
+      const next = {
+        ...data!,
+        runCount: draft.runCount,
+        proxy: draft.proxy,
+        maxParallelWorkers: draft.maxParallelWorkers
+      };
       await window.api.saveSettings(next);
       await reload();
       push({ tone: 'ok', title: '运行参数已保存' });
@@ -174,13 +249,40 @@ function RuntimeSettingsPanel({ onOpenSettings }: { onOpenSettings(): void }) {
           <div className="rounded-xl bg-muted/70 p-4">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <div className="field-label">轮数</div>
-                <div className="mt-1 text-[12px] text-muted-foreground">单次 1–50，保存后下次启动生效</div>
+                <div className="field-label">轮数（每路任务）</div>
+                <div className="mt-1 text-[12px] text-muted-foreground">
+                  单次 1–50，保存后下次启动生效
+                </div>
               </div>
               <span className="chip tabular-nums">{draft.runCount}</span>
             </div>
             <div className="mt-3">
-              <Slider min={1} max={50} value={draft.runCount} onValueChange={(v) => update('runCount', v)} />
+              <Slider
+                min={1}
+                max={50}
+                value={draft.runCount}
+                onValueChange={(v) => update('runCount', v)}
+              />
+            </div>
+          </div>
+
+          <div className="rounded-xl bg-muted/70 p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="field-label">并行任务上限</div>
+                <div className="mt-1 text-[12px] text-muted-foreground">
+                  同时运行的注册机路数，1–8
+                </div>
+              </div>
+              <span className="chip tabular-nums">{draft.maxParallelWorkers ?? 3}</span>
+            </div>
+            <div className="mt-3">
+              <Slider
+                min={1}
+                max={8}
+                value={draft.maxParallelWorkers ?? 3}
+                onValueChange={(v) => update('maxParallelWorkers', v)}
+              />
             </div>
           </div>
 

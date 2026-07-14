@@ -111,11 +111,18 @@ const webApi: RendererApi = {
   },
 
   startRegister: (args) => http('POST', '/api/run/start', args ?? {}),
-  stopRegister: async (runId) => {
-    await http('POST', '/api/run/stop', { runId });
-    return { ok: true };
+  stopRegister: async (runId, opts) => {
+    return http<{ ok: boolean; stopped?: string[] }>('POST', '/api/run/stop', {
+      runId: runId || undefined,
+      stopAll: opts?.stopAll === true
+    });
   },
   getStatus: () => http('GET', '/api/run/status'),
+  listRegisterJobs: () => http('GET', '/api/run/jobs'),
+  getRegisterJobStatus: (runId) =>
+    http('GET', `/api/run/jobs/${encodeURIComponent(runId)}`),
+  focusRegisterJob: (runId) =>
+    http('POST', '/api/run/focus', { runId }),
   onRegisterEvent: (cb) => {
     listeners.add(cb);
     connectWs();
@@ -128,6 +135,21 @@ const webApi: RendererApi = {
   listAccounts: () => http('GET', '/api/accounts'),
   resyncAccounts: () =>
     http<{ total: number; imported: number }>('POST', '/api/accounts/resync'),
+  deleteAccounts: (ids) =>
+    http<{ deleted: number; requested: number; remaining: number }>(
+      'POST',
+      '/api/accounts/delete',
+      { ids }
+    ),
+  importAccounts: (input) =>
+    http<{
+      totalLines: number;
+      parsed: number;
+      imported: number;
+      skipped: number;
+      invalid: number;
+      remaining: number;
+    }>('POST', '/api/accounts/import', input),
 
   getMailCode: (address) =>
     http('GET', `/api/mail/code?address=${encodeURIComponent(address)}`),
@@ -141,6 +163,8 @@ const webApi: RendererApi = {
   resignCpaAuthBatch: (input) => http('POST', '/api/cpa-auth/resign-batch', input),
   mintCpaAuthFromSso: (input) => http('POST', '/api/cpa-auth/mint', input),
   probeCpaAuthBatch: (input) => http('POST', '/api/cpa-auth/probe-batch', input),
+  deleteCpaAuth: (input) => http('POST', '/api/cpa-auth/delete', input),
+  exportCpaAuth: (input) => http('POST', '/api/cpa-auth/export', input),
 
   getTheme: async () => {
     const stored = (localStorage.getItem('theme') as ThemeMode | null) ?? 'system';

@@ -10,7 +10,12 @@ import type { AppSettings } from '@shared/settings';
 import type { RunEvent } from '@shared/runEvents';
 import { loadSettings, saveSettings, dataDir } from './settingsStore.js';
 import { registerBot } from './bot/registerBot.js';
-import { listAccounts, resyncAccountsFromDisk } from './accountStore.js';
+import {
+  deleteAccounts,
+  importAccountsFromText,
+  listAccounts,
+  resyncAccountsFromDisk
+} from './accountStore.js';
 import { checkForUpdate, currentVersion } from './updateCheck.js';
 import { fetchEmails, extractVerificationCode, fetchLatestCodeByAddress } from './api/emailApi.js';
 import { probeProxy, probeProxyBatch } from './api/proxyApi.js';
@@ -24,9 +29,11 @@ import {
   logout
 } from './authStore.js';
 import {
+  deleteCpaAuthBatch,
   listCpaAuth,
   mintCpaAuthFromSso,
   probeCpaAuthBatch,
+  readCpaAuthFiles,
   resignCpaAuth,
   resignCpaAuthBatch
 } from './cpaAuthStore.js';
@@ -113,18 +120,51 @@ app.get('/api/run/status', async (_req, res) => {
   res.json(registerBot.getStatus());
 });
 
+/** 并行任务列表 */
+app.get('/api/run/jobs', async (_req, res) => {
+  res.json({
+    jobs: registerBot.listJobs(),
+    active: registerBot.activeCount(),
+    focus: registerBot.getStatus().runId
+  });
+});
+
+app.get('/api/run/jobs/:runId', async (req: Request, res: Response) => {
+  const st = registerBot.getJobStatus(String(req.params.runId || ''));
+  if (!st) {
+    res.status(404).json({ error: '任务不存在' });
+    return;
+  }
+  res.json(st);
+});
+
+app.post('/api/run/focus', async (req: Request, res: Response) => {
+  const runId = req.body?.runId != null ? String(req.body.runId) : null;
+  res.json(registerBot.setFocus(runId || null));
+});
+
 app.post('/api/run/start', async (req: Request, res: Response) => {
   try {
-    const args = (req.body ?? {}) as RegisterStartArgs;
-    res.json(await registerBot.start({ runCountOverride: args.runCount }));
+    const args = (req.body ?? {}) as RegisterStartArgs & { maxParallel?: number };
+    res.json(
+      await registerBot.start({
+        runCountOverride: args.runCount,
+        maxParallelOverride: args.maxParallel
+      })
+    );
   } catch (err) {
     res.status(400).json({ error: (err as Error).message });
   }
 });
 
-app.post('/api/run/stop', async (_req, res) => {
-  await registerBot.stop();
-  res.json({ ok: true });
+app.post('/api/run/stop', async (req: Request, res: Response) => {
+  try {
+    const runId = req.body?.runId != null ? String(req.body.runId) : undefined;
+    const stopAll = req.body?.stopAll === true;
+    res.json(await registerBot.stop(runId, { stopAll }));
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+  }
 });
 
 app.get('/api/accounts', async (_req, res) => {
@@ -138,6 +178,37 @@ app.post('/api/accounts/resync', async (_req, res) => {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ error: message });
+  }
+});
+
+/** 批量删除号池账号（按 id） */
+app.post('/api/accounts/delete', async (req: Request, res: Response) => {
+  try {
+    const ids = Array.isArray(req.body?.ids) ? (req.body.ids as string[]) : [];
+    res.json(await deleteAccounts(ids));
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(400).json({ error: message });
+  }
+});
+
+/** 文本/文件导入 SSO 到号池 */
+app.post('/api/accounts/import', async (req: Request, res: Response) => {
+  try {
+    const text = String(req.body?.text || '');
+    const source = String(req.body?.source || 'paste');
+    if (!text.trim()) {
+      res.status(400).json({ error: 'text 为空' });
+      return;
+    }
+    if (text.length > 8_000_000) {
+      res.status(400).json({ error: '文本过大（上限约 8MB）' });
+      return;
+    }
+    res.json(await importAccountsFromText({ text, source }));
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(400).json({ error: message });
   }
 });
 
@@ -183,15 +254,24 @@ app.post('/api/cpa-auth/mint', async (req: Request, res: Response) => {
     const body = (req.body ?? {}) as {
       items?: { sso: string; email?: string }[];
       concurrency?: number;
+      skipBotFlag1?: boolean;
+      precheck?: boolean;
     };
-    res.json(await mintCpaAuthFromSso({ items: body.items || [], concurrency: body.concurrency }));
+    res.json(
+      await mintCpaAuthFromSso({
+        items: body.items || [],
+        concurrency: body.concurrency,
+        skipBotFlag1: body.skipBotFlag1,
+        precheck: body.precheck
+      })
+    );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(400).json({ error: message });
   }
 });
 
-/** 批量 CPA 测活（cehuo /responses；401/402/403 默认删文件） */
+/** 批量 CPA 测活（cehuo /responses；401/402/403 默认删文件，可关） */
 app.post('/api/cpa-auth/probe-batch', async (req: Request, res: Response) => {
   try {
     const body = (req.body ?? {}) as {
@@ -201,6 +281,28 @@ app.post('/api/cpa-auth/probe-batch', async (req: Request, res: Response) => {
       deleteOnDead?: boolean;
     };
     res.json(await probeCpaAuthBatch(body));
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(400).json({ error: message });
+  }
+});
+
+/** 批量删除 CPA auth 文件 */
+app.post('/api/cpa-auth/delete', async (req: Request, res: Response) => {
+  try {
+    const body = (req.body ?? {}) as { filenames?: string[]; paths?: string[] };
+    res.json(await deleteCpaAuthBatch(body));
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(400).json({ error: message });
+  }
+});
+
+/** 读取 auth 文件内容（前端导出） */
+app.post('/api/cpa-auth/export', async (req: Request, res: Response) => {
+  try {
+    const body = (req.body ?? {}) as { filenames?: string[] };
+    res.json(await readCpaAuthFiles(body));
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(400).json({ error: message });

@@ -24,6 +24,11 @@ export interface AppSettings {
   /** 一次"开始注册"要跑的轮数，1..50 */
   runCount: number;
   /**
+   * 并行注册任务上限（同时 running/starting 的 worker 数）。
+   * 默认 3，硬上限 8。
+   */
+  maxParallelWorkers: number;
+  /**
    * 人机验证「自动通过」等待上限（秒）。
    * 实际每次在 [30, turnstileAutoWaitMax] 内随机；必须 ≥ 30。
    */
@@ -89,6 +94,22 @@ export interface AppSettings {
    * 写入 Python config：cpa_management_key
    */
   cpaManagementKey: string;
+  /**
+   * CPA 测活遇 401/402/403 时是否自动删除 auth 文件。
+   * 默认 true；关则死号仅标记、保留文件。
+   */
+  cpaProbeDeleteOnDead: boolean;
+  /**
+   * 同一代理 IP 两次用于注册的最小间隔（秒）。
+   * 0=不限制；未到时间时队列暂停等待（优先换其它已冷却 IP）。
+   * 写入 Python config：proxy_ip_interval_sec
+   */
+  proxyIpIntervalSec: number;
+  /**
+   * 补 Auth / mint 时跳过 SSO JWT 中 bot_flag_source=1 的账号。
+   * 默认 true。无法抹掉已签发 claim，仅过滤。
+   */
+  skipBotFlag1OnMint: boolean;
   /** 主题模式 */
   theme: ThemeMode;
 }
@@ -97,6 +118,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   pythonPath: '',
   registerDir: '',
   runCount: 10,
+  maxParallelWorkers: 3,
   turnstileAutoWaitMax: 60,
   mail: {
     apiBase: '',
@@ -122,6 +144,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   authDir: '',
   cpaRemoteUrl: '',
   cpaManagementKey: '',
+  cpaProbeDeleteOnDead: true,
+  proxyIpIntervalSec: 0,
+  skipBotFlag1OnMint: true,
   theme: 'system'
 };
 
@@ -267,6 +292,12 @@ export function validateSettings(s: AppSettings): Record<string, string> {
   const errors: Record<string, string> = {};
   if (!Number.isInteger(s.runCount) || s.runCount < 1 || s.runCount > 50)
     errors.runCount = '数量必须在 1 到 50 之间';
+  if (
+    !Number.isInteger(s.maxParallelWorkers) ||
+    s.maxParallelWorkers < 1 ||
+    s.maxParallelWorkers > 8
+  )
+    errors.maxParallelWorkers = '并行任务上限须在 1 到 8 之间';
   if (
     !Number.isInteger(s.turnstileAutoWaitMax) ||
     s.turnstileAutoWaitMax < 30 ||

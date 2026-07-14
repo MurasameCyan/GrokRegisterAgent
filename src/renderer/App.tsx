@@ -209,13 +209,9 @@ export default function App() {
       </aside>
 
       <main className="app-main">
-        <header className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <header className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <p className="page-kicker mb-0.5">Grok Register Agent</p>
-            {/* 注册机页不显示重复大标题「注册机」 */}
-            {tab !== 'register' && (
-              <h1 className="page-heading">{tabs.find((item) => item.id === tab)?.label}</h1>
-            )}
+            <p className="page-kicker mb-0">Grok Register Agent</p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <span className={cn('pill', phasePill)}>

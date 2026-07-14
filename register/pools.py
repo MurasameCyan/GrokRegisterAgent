@@ -5,19 +5,26 @@
   proxy_pool:   ["http://1:1", "http://2:2"]  或 proxies
   proxy_mode:   "round_robin" | "random"（默认 round_robin）
   email_domain_mode: 同上
+  proxy_ip_interval_sec: 同一 IP/代理两次用于注册的最小间隔秒数（0=不限制）
 
 重要：每轮 start_browser / create_temp_email 会 reload_pools(force=True)。
 若用 itertools.cycle 在 force 时重建，轮换指针永远回到第 0 项。
 因此使用持久化下标 _domain_idx / _proxy_idx，列表内容未变时保留进度。
+
+IP 间隔：acquire_proxy_for_register 在间隔未到时 sleep 等待（队列暂停），
+而非跳过代理。
 """
 from __future__ import annotations
 
 import json
 import os
 import random
+import re
 import threading
+import time
 from pathlib import Path
-from typing import List
+from typing import Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 _lock = threading.Lock()
 _proxy_list: List[str] = []
@@ -27,6 +34,10 @@ _domain_mode = "round_robin"
 _domain_idx = 0
 _proxy_idx = 0
 _loaded = False
+# 同一 IP 最小使用间隔（秒）；0 关闭
+_proxy_ip_interval_sec = 0.0
+# proxy_key -> 上次成功占用时间戳
+_proxy_last_used: Dict[str, float] = {}
 
 
 def _config_path() -> Path:
@@ -78,11 +89,36 @@ def _parse_lines(raw, *, strip_proxy_hash: bool = False) -> List[str]:
     return uniq
 
 
+def proxy_identity_key(proxy_url: str) -> str:
+    """同一出口身份的稳定键：优先 host:port，解析失败则用完整 URL。"""
+    s = _strip_proxy_comment(proxy_url or "")
+    if not s:
+        return ""
+    try:
+        u = urlparse(s if "://" in s else f"http://{s}")
+        host = (u.hostname or "").strip().lower()
+        port = u.port
+        if host and port:
+            return f"{host}:{port}"
+        if host:
+            return host
+    except Exception:
+        pass
+    # 去掉凭证后的 host:port 粗解析
+    m = re.search(r"@([^:/?#]+):(\d+)", s)
+    if m:
+        return f"{m.group(1).lower()}:{m.group(2)}"
+    m2 = re.search(r"://([^:/?#]+):(\d+)", s)
+    if m2:
+        return f"{m2.group(1).lower()}:{m2.group(2)}"
+    return s
+
+
 def reload_pools(force: bool = False) -> None:
     """重读 config。force=True 时也保留轮换下标（列表未变时）。"""
     global _proxy_list, _domain_list
     global _proxy_mode, _domain_mode, _loaded
-    global _domain_idx, _proxy_idx
+    global _domain_idx, _proxy_idx, _proxy_ip_interval_sec
     if _loaded and not force:
         return
     conf: dict = {}
@@ -118,6 +154,19 @@ def reload_pools(force: bool = False) -> None:
     ).lower()
     proxy_mode = str(conf.get("proxy_mode") or "round_robin").lower()
 
+    try:
+        interval = float(
+            conf.get("proxy_ip_interval_sec")
+            if conf.get("proxy_ip_interval_sec") is not None
+            else conf.get("ip_register_interval_sec")
+            if conf.get("ip_register_interval_sec") is not None
+            else 0
+        )
+    except Exception:
+        interval = 0.0
+    if interval < 0:
+        interval = 0.0
+
     with _lock:
         # 列表内容未变：保留下标；变了：重置为 0（或对旧下标取模，尽量不跳）
         if domains != _domain_list:
@@ -150,6 +199,7 @@ def reload_pools(force: bool = False) -> None:
         _proxy_list = proxies
         _domain_mode = domain_mode
         _proxy_mode = proxy_mode
+        _proxy_ip_interval_sec = interval
         _loaded = True
 
 
@@ -182,7 +232,11 @@ def next_mail_domain(fallback: str = "") -> str:
 
 
 def next_proxy(fallback: str = "") -> str:
-    """轮换/随机取一个代理 URL；池空时返回 fallback。"""
+    """轮换/随机取一个代理 URL；池空时返回 fallback。
+
+    注意：此函数不记录使用时间、不强制 IP 间隔。
+    注册开浏览器请用 acquire_proxy_for_register。
+    """
     reload_pools()
     with _lock:
         if not _proxy_list:
@@ -196,6 +250,125 @@ def next_proxy(fallback: str = "") -> str:
         return item
 
 
+def _pick_proxy_unlocked(fallback: str = "") -> str:
+    """在已持锁前提下取代理（round_robin / random）。"""
+    global _proxy_idx
+    if not _proxy_list:
+        return (fallback or "").strip()
+    if _proxy_mode == "random":
+        return random.choice(_proxy_list)
+    i = _proxy_idx % len(_proxy_list)
+    item = _proxy_list[i]
+    _proxy_idx = (i + 1) % len(_proxy_list)
+    return item
+
+
+def acquire_proxy_for_register(
+    fallback: str = "",
+    *,
+    log=print,
+) -> Tuple[str, float]:
+    """为一次注册占用代理，并强制同一 IP 的最小使用间隔。
+
+    间隔未到时：优先换到其它已冷却的 IP；若池内全部未冷却则 sleep 等待最早可用的，
+    即「时间没到自动暂停队列等待」。
+
+    返回 (proxy_url, waited_seconds)。
+    """
+    reload_pools()
+    waited = 0.0
+    while True:
+        with _lock:
+            interval = float(_proxy_ip_interval_sec or 0)
+            candidates: List[str] = list(_proxy_list) if _proxy_list else []
+            if not candidates:
+                fb = (fallback or "").strip()
+                if not fb:
+                    return "", waited
+                candidates = [fb]
+                pick_from_pool = False
+            else:
+                pick_from_pool = True
+
+            now = time.time()
+            # 先按模式挑一个「当前」项，再判断是否可用；不可用则扫全池找最早可就绪
+            if pick_from_pool:
+                preferred = _pick_proxy_unlocked(fallback)
+            else:
+                preferred = candidates[0]
+
+            def remaining(url: str) -> float:
+                if interval <= 0:
+                    return 0.0
+                key = proxy_identity_key(url)
+                if not key:
+                    return 0.0
+                last = _proxy_last_used.get(key, 0.0)
+                if last <= 0:
+                    return 0.0
+                return max(0.0, interval - (now - last))
+
+            # 1) preferred 已冷却 → 直接用
+            rem_pref = remaining(preferred)
+            if rem_pref <= 0:
+                key = proxy_identity_key(preferred)
+                if key and interval > 0:
+                    _proxy_last_used[key] = now
+                return preferred, waited
+
+            # 2) 找其它已冷却的 IP
+            ready: List[str] = []
+            soonest_wait = rem_pref
+            soonest_url = preferred
+            for url in candidates:
+                r = remaining(url)
+                if r <= 0:
+                    ready.append(url)
+                elif r < soonest_wait:
+                    soonest_wait = r
+                    soonest_url = url
+
+            if ready:
+                if _proxy_mode == "random":
+                    chosen = random.choice(ready)
+                else:
+                    # 尽量贴近轮换顺序：ready 中按池顺序第一个
+                    chosen = ready[0]
+                    for url in candidates:
+                        if url in ready:
+                            chosen = url
+                            break
+                key = proxy_identity_key(chosen)
+                if key and interval > 0:
+                    _proxy_last_used[key] = now
+                return chosen, waited
+
+            # 3) 全部冷却中 → 暂停等待最早可用
+            sleep_sec = min(max(soonest_wait, 0.05), 30.0)
+
+        # 锁外 sleep，避免阻塞其它线程读配置
+        try:
+            log(
+                f"[*] IP 使用间隔未到：等待 {sleep_sec:.1f}s "
+                f"(间隔={interval:.0f}s, key={proxy_identity_key(soonest_url) or '-'})"
+            )
+        except Exception:
+            pass
+        time.sleep(sleep_sec)
+        waited += sleep_sec
+        # 循环再取，时间到后会命中 ready / preferred
+
+
+def mark_proxy_used(proxy_url: str) -> None:
+    """手动标记代理已用于注册（一般 acquire 内已标记）。"""
+    key = proxy_identity_key(proxy_url)
+    if not key:
+        return
+    with _lock:
+        if _proxy_ip_interval_sec > 0:
+            _proxy_last_used[key] = time.time()
+
+
 def peek_status() -> dict:
     reload_pools()
     with _lock:
@@ -206,5 +379,7 @@ def peek_status() -> dict:
             "proxy_mode": _proxy_mode,
             "domain_idx": _domain_idx,
             "proxy_idx": _proxy_idx,
+            "proxy_ip_interval_sec": _proxy_ip_interval_sec,
+            "proxy_last_used_n": len(_proxy_last_used),
             "config": str(_config_path()),
         }

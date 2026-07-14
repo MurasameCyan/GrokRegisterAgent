@@ -1,9 +1,26 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Activity, CheckSquare, KeyRound, RefreshCcw, RotateCcw, Square } from 'lucide-react';
+import {
+  Activity,
+  CheckSquare,
+  Eye,
+  EyeOff,
+  FileDown,
+  KeyRound,
+  RefreshCcw,
+  RotateCcw,
+  Square,
+  Trash2
+} from 'lucide-react';
 import { Button } from '@renderer/components/ui/Button';
 import { useToastStore } from '@renderer/store/toastStore';
+import { useSettingsStore } from '@renderer/store/settingsStore';
 import type { CpaAuthItem } from '@shared/ipc';
 import { cn } from '@renderer/lib/cn';
+import {
+  loadEmailPrivacyMask,
+  maskEmail,
+  saveEmailPrivacyMask
+} from '@renderer/lib/maskEmail';
 
 function fmtTime(ms: number): string {
   if (!ms) return '—';
@@ -14,17 +31,60 @@ function fmtTime(ms: number): string {
   }
 }
 
+function stamp(): string {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
+function downloadBlob(filename: string, blob: Blob) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+type TaskProgress = {
+  kind: 'probe' | 'resign' | 'delete' | 'export';
+  total: number;
+  done: number;
+  ok: number;
+  failed: number;
+  dead?: number;
+  deleted?: number;
+  current?: string;
+  running: boolean;
+};
+
 export function AuthPage() {
   const push = useToastStore((s) => s.push);
+  const settings = useSettingsStore((s) => s.data);
   const [dir, setDir] = useState('');
   const [items, setItems] = useState<CpaAuthItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const [resigning, setResigning] = useState<string | null>(null);
-  /** resign | probe | null */
-  const [batchBusy, setBatchBusy] = useState<'resign' | 'probe' | null>(null);
+  const [rowBusy, setRowBusy] = useState<string | null>(null);
+  const [batchBusy, setBatchBusy] = useState<'resign' | 'probe' | 'delete' | 'export' | null>(
+    null
+  );
   const [selected, setSelected] = useState<Set<string>>(new Set());
   /** 最近一次测活结果：filename → probeAction */
   const [probeMap, setProbeMap] = useState<Record<string, string>>({});
+  const [prog, setProg] = useState<TaskProgress | null>(null);
+  const [emailMasked, setEmailMasked] = useState(() => loadEmailPrivacyMask());
+
+  const deleteOnDead = settings?.cpaProbeDeleteOnDead !== false;
+
+  const toggleEmailPrivacy = () => {
+    setEmailMasked((prev) => {
+      const next = !prev;
+      saveEmailPrivacyMask(next);
+      return next;
+    });
+  };
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -53,6 +113,11 @@ export function AuthPage() {
 
   const allSelected = items.length > 0 && selected.size === items.length;
   const xaiCount = useMemo(() => items.filter((i) => i.xai).length, [items]);
+  const botFlag1Count = useMemo(
+    () => items.filter((i) => i.isBotFlag1 || i.botFlagSource === 1 || i.botFlagSource === '1').length,
+    [items]
+  );
+  const busy = batchBusy !== null || rowBusy !== null;
 
   const toggle = (filename: string) =>
     setSelected((prev) => {
@@ -67,8 +132,11 @@ export function AuthPage() {
     setSelected(allSelected ? new Set() : new Set(items.map((i) => i.filename)));
   };
 
+  const targetNames = () =>
+    selected.size > 0 ? [...selected] : items.map((i) => i.filename);
+
   const resign = async (item: CpaAuthItem) => {
-    setResigning(item.filename);
+    setRowBusy(`resign:${item.filename}`);
     try {
       const r = await window.api.resignCpaAuth({ filename: item.filename });
       if (r.ok === false || r.error) {
@@ -100,27 +168,124 @@ export function AuthPage() {
         description: err instanceof Error ? err.message : String(err)
       });
     } finally {
-      setResigning(null);
+      setRowBusy(null);
+    }
+  };
+
+  const probeOne = async (item: CpaAuthItem) => {
+    setRowBusy(`probe:${item.filename}`);
+    setProg({
+      kind: 'probe',
+      total: 1,
+      done: 0,
+      ok: 0,
+      failed: 0,
+      running: true,
+      current: item.email || item.filename
+    });
+    try {
+      const r = await window.api.probeCpaAuthBatch({
+        filenames: [item.filename],
+        concurrency: 1,
+        deleteOnDead
+      });
+      const one = r.results[0];
+      if (one?.filename) {
+        setProbeMap((m) => ({
+          ...m,
+          [one.filename]: one.probeAction || (one.ok ? 'ok' : 'error')
+        }));
+      }
+      setProg({
+        kind: 'probe',
+        total: 1,
+        done: 1,
+        ok: r.ok || 0,
+        failed: r.failed || 0,
+        dead: r.dead,
+        deleted: r.deleted,
+        running: false,
+        current: item.email || item.filename
+      });
+      if (one?.probeDeleted || one?.probeAction === 'dead') {
+        push({
+          tone: 'warn',
+          title: '测活：死号',
+          description: `${item.email || item.filename}${one.probeDeleted ? ' · 已删' : ' · 已保留'}`
+        });
+        await reload();
+      } else if (one?.ok || one?.probeAction === 'ok') {
+        push({
+          tone: 'ok',
+          title: '测活 OK',
+          description: item.email || item.filename
+        });
+      } else {
+        push({
+          tone: 'warn',
+          title: '测活异常',
+          description: String(one?.error || one?.probeAction || 'unknown')
+        });
+      }
+    } catch (err) {
+      push({
+        tone: 'danger',
+        title: '测活失败',
+        description: err instanceof Error ? err.message : String(err)
+      });
+    } finally {
+      setRowBusy(null);
+      window.setTimeout(() => setProg(null), 2500);
     }
   };
 
   const resignBatch = async () => {
-    const filenames =
-      selected.size > 0 ? [...selected] : items.map((i) => i.filename);
+    const filenames = targetNames();
     if (filenames.length === 0) {
       push({ tone: 'warn', title: '没有可重签的文件' });
       return;
     }
     setBatchBusy('resign');
+    setProg({
+      kind: 'resign',
+      total: filenames.length,
+      done: 0,
+      ok: 0,
+      failed: 0,
+      running: true
+    });
     try {
-      const r = await window.api.resignCpaAuthBatch({ filenames });
-      const noXai = r.results.filter((x) => x.ok && x.xai === false).length;
+      // 分块更新进度
+      const CHUNK = 8;
+      let ok = 0;
+      let failed = 0;
+      let noXai = 0;
+      for (let i = 0; i < filenames.length; i += CHUNK) {
+        const chunk = filenames.slice(i, i + CHUNK);
+        setProg((p) =>
+          p
+            ? { ...p, current: chunk[0], running: true }
+            : p
+        );
+        const r = await window.api.resignCpaAuthBatch({ filenames: chunk });
+        ok += r.ok || 0;
+        failed += r.failed || 0;
+        noXai += r.results.filter((x) => x.ok && x.xai === false).length;
+        setProg({
+          kind: 'resign',
+          total: filenames.length,
+          done: Math.min(i + chunk.length, filenames.length),
+          ok,
+          failed,
+          running: i + chunk.length < filenames.length,
+          current: chunk[chunk.length - 1]
+        });
+      }
       push({
-        tone: r.failed > 0 ? 'warn' : 'ok',
+        tone: failed > 0 ? 'warn' : 'ok',
         title: '批量重签完成',
-        description: `成功 ${r.ok} / 失败 ${r.failed}${noXai ? ` · 无 xai 标识 ${noXai}` : ''}`
+        description: `成功 ${ok} · 失败 ${failed}${noXai ? ` · 无 xai ${noXai}` : ''}`
       });
-      setSelected(new Set());
       await reload();
     } catch (err) {
       push({
@@ -130,240 +295,576 @@ export function AuthPage() {
       });
     } finally {
       setBatchBusy(null);
+      window.setTimeout(() => setProg(null), 3000);
     }
   };
 
-  /** 批量 CPA 测活（cehuo /responses）；dead 默认删文件 */
   const probeBatch = async () => {
-    const filenames =
-      selected.size > 0 ? [...selected] : items.map((i) => i.filename);
+    const filenames = targetNames();
     if (filenames.length === 0) {
       push({ tone: 'warn', title: '没有可测活的文件' });
       return;
     }
     setBatchBusy('probe');
+    setProg({
+      kind: 'probe',
+      total: filenames.length,
+      done: 0,
+      ok: 0,
+      failed: 0,
+      dead: 0,
+      deleted: 0,
+      running: true
+    });
     try {
-      const r = await window.api.probeCpaAuthBatch({ filenames, deleteOnDead: true });
-      const nextMap: Record<string, string> = {};
-      for (const row of r.results) {
-        if (row.filename && row.probeAction) nextMap[row.filename] = row.probeAction;
+      const CHUNK = 12;
+      let ok = 0;
+      let failed = 0;
+      let dead = 0;
+      let deleted = 0;
+      const nextProbe: Record<string, string> = {};
+      for (let i = 0; i < filenames.length; i += CHUNK) {
+        const chunk = filenames.slice(i, i + CHUNK);
+        setProg((p) => (p ? { ...p, current: chunk[0], running: true } : p));
+        const r = await window.api.probeCpaAuthBatch({
+          filenames: chunk,
+          concurrency: Math.min(6, chunk.length),
+          deleteOnDead
+        });
+        ok += r.ok || 0;
+        failed += r.failed || 0;
+        dead += r.dead || 0;
+        deleted += r.deleted || 0;
+        for (const x of r.results) {
+          if (x.filename) {
+            nextProbe[x.filename] = x.probeAction || (x.ok ? 'ok' : 'error');
+          }
+        }
+        setProbeMap((m) => ({ ...m, ...nextProbe }));
+        setProg({
+          kind: 'probe',
+          total: filenames.length,
+          done: Math.min(i + chunk.length, filenames.length),
+          ok,
+          failed,
+          dead,
+          deleted,
+          running: i + chunk.length < filenames.length,
+          current: chunk[chunk.length - 1]
+        });
       }
-      setProbeMap((prev) => ({ ...prev, ...nextMap }));
-      const dead = r.dead ?? r.results.filter((x) => x.probeAction === 'dead').length;
-      const deleted = r.deleted ?? r.results.filter((x) => x.probeDeleted).length;
-      const keep = r.keep ?? r.results.filter((x) => x.probeAction === 'keep').length;
       push({
-        tone: dead > 0 || r.failed > 0 ? 'warn' : 'ok',
+        tone: dead > 0 || failed > 0 ? 'warn' : 'ok',
         title: '批量 CPA 测活完成',
-        description: [
-          `OK ${r.ok}`,
-          dead ? `死号 ${dead}` : '',
-          deleted ? `已删 ${deleted}` : '',
-          keep ? `保留 ${keep}` : '',
-          r.failed - dead > 0 ? `其它失败 ${r.failed - dead}` : ''
-        ]
-          .filter(Boolean)
-          .join(' · ')
+        description: `OK ${ok} · 死号 ${dead} · 已删 ${deleted}${deleteOnDead ? '' : ' · 死号不自动删'}`
       });
-      setSelected(new Set());
-      await reload();
+      if (deleted > 0) await reload();
     } catch (err) {
       push({
         tone: 'danger',
-        title: '批量 CPA 测活失败',
+        title: '批量测活失败',
         description: err instanceof Error ? err.message : String(err)
       });
     } finally {
       setBatchBusy(null);
+      window.setTimeout(() => setProg(null), 3500);
     }
   };
 
+  const deleteBatch = async () => {
+    const filenames = selected.size > 0 ? [...selected] : [];
+    if (filenames.length === 0) {
+      push({ tone: 'warn', title: '请先勾选要删除的 Auth 文件' });
+      return;
+    }
+    if (
+      !window.confirm(
+        `确认删除 ${filenames.length} 个 Auth 文件？\n目录：${dir || 'auth'}\n此操作不可恢复。`
+      )
+    ) {
+      return;
+    }
+    setBatchBusy('delete');
+    setProg({
+      kind: 'delete',
+      total: filenames.length,
+      done: 0,
+      ok: 0,
+      failed: 0,
+      running: true
+    });
+    try {
+      const r = await window.api.deleteCpaAuth({ filenames });
+      setProg({
+        kind: 'delete',
+        total: r.total,
+        done: r.total,
+        ok: r.deleted,
+        failed: r.failed,
+        deleted: r.deleted,
+        running: false
+      });
+      setSelected(new Set());
+      push({
+        tone: r.failed > 0 ? 'warn' : 'ok',
+        title: '已删除 Auth',
+        description: `删除 ${r.deleted} · 失败 ${r.failed}`
+      });
+      await reload();
+    } catch (err) {
+      push({
+        tone: 'danger',
+        title: '删除失败',
+        description: err instanceof Error ? err.message : String(err)
+      });
+    } finally {
+      setBatchBusy(null);
+      window.setTimeout(() => setProg(null), 2500);
+    }
+  };
+
+  const exportBatch = async () => {
+    const filenames = targetNames();
+    if (filenames.length === 0) {
+      push({ tone: 'warn', title: '没有可导出的文件' });
+      return;
+    }
+    if (filenames.length > 200) {
+      push({ tone: 'warn', title: '单次最多导出 200 个' });
+      return;
+    }
+    setBatchBusy('export');
+    setProg({
+      kind: 'export',
+      total: filenames.length,
+      done: 0,
+      ok: 0,
+      failed: 0,
+      running: true
+    });
+    try {
+      const r = await window.api.exportCpaAuth({ filenames });
+      if (!r.files.length) {
+        push({ tone: 'warn', title: '没有读到文件' });
+        return;
+      }
+      // 单文件直接下 json；多文件合并为 zip 文本包（多 json 顺序拼接 + 文件名注释）
+      if (r.files.length === 1) {
+        const f = r.files[0];
+        downloadBlob(
+          f.filename,
+          new Blob([f.content], { type: 'application/json;charset=utf-8' })
+        );
+      } else {
+        // 简易多文件：每个文件前加分隔标记，或打包成一个 .txt 清单 + 内嵌 json
+        // 更友好：逐个下载会弹多次；这里打成一个 archive 文本包
+        const parts = r.files.map(
+          (f) =>
+            `===== FILE: ${f.filename} =====\n${f.content.trimEnd()}\n`
+        );
+        downloadBlob(
+          `cpa-auth-export-${stamp()}.txt`,
+          new Blob([parts.join('\n')], { type: 'text/plain;charset=utf-8' })
+        );
+        // 同时提供逐文件下载（仅少量时）
+        if (r.files.length <= 10) {
+          for (const f of r.files) {
+            downloadBlob(
+              f.filename,
+              new Blob([f.content], { type: 'application/json;charset=utf-8' })
+            );
+          }
+        }
+      }
+      setProg({
+        kind: 'export',
+        total: filenames.length,
+        done: r.files.length,
+        ok: r.files.length,
+        failed: filenames.length - r.files.length,
+        running: false
+      });
+      push({
+        tone: 'ok',
+        title: '已导出 Auth',
+        description: `${r.files.length} 个文件${r.files.length > 1 ? '（汇总 txt' + (r.files.length <= 10 ? ' + 分文件' : '') + '）' : ''}`
+      });
+    } catch (err) {
+      push({
+        tone: 'danger',
+        title: '导出失败',
+        description: err instanceof Error ? err.message : String(err)
+      });
+    } finally {
+      setBatchBusy(null);
+      window.setTimeout(() => setProg(null), 2500);
+    }
+  };
+
+  const progPct =
+    prog && prog.total > 0 ? Math.min(100, Math.round((prog.done / prog.total) * 100)) : 0;
+  const progTitle =
+    prog?.kind === 'probe'
+      ? prog.running
+        ? 'CPA 测活进行中'
+        : 'CPA 测活完成'
+      : prog?.kind === 'resign'
+        ? prog.running
+          ? '批量重签进行中'
+          : '批量重签完成'
+        : prog?.kind === 'delete'
+          ? prog.running
+            ? '删除进行中'
+            : '删除完成'
+          : prog?.running
+            ? '导出进行中'
+            : '导出完成';
+
   return (
     <div className="space-y-5">
-      <section className="ios-group">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/70 px-4 py-3.5">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <KeyRound className="h-4 w-4 text-muted-foreground" />
-              <h2 className="text-[17px] font-semibold tracking-[-0.02em]">CPA Auth</h2>
+      <section className="terminal-grid">
+        <AuthMetric label="Auth 文件" value={String(items.length)} Icon={KeyRound} />
+        <AuthMetric label="含 xai" value={String(xaiCount)} Icon={CheckSquare} />
+        <AuthMetric label="bot_flag=1" value={String(botFlag1Count)} Icon={Activity} />
+        <AuthMetric
+          label="死号自动删"
+          value={deleteOnDead ? '开' : '关'}
+          Icon={Trash2}
+        />
+      </section>
+
+      {prog && (
+        <div className="rounded-[16px] border border-primary/30 bg-primary/5 px-4 py-3 shadow-[var(--ios-shadow)]">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="min-w-0">
+              <p className="text-[13px] font-semibold tracking-tight">{progTitle}</p>
+              <p className="mt-0.5 truncate text-[12px] text-muted-foreground">
+                {prog.done}/{prog.total}
+                {prog.current ? ` · ${prog.current}` : ''}
+                {` · 成功 ${prog.ok} · 失败 ${prog.failed}`}
+                {prog.dead != null ? ` · 死号 ${prog.dead}` : ''}
+                {prog.deleted != null ? ` · 已删 ${prog.deleted}` : ''}
+              </p>
             </div>
-            <p className="mt-1 truncate text-[12px] text-muted-foreground" title={dir}>
-              目录：{dir || '—'} · 共 {items.length} 个 · xai {xaiCount}
+            <span className="chip tabular-nums">{progPct}%</span>
+          </div>
+          <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted">
+            <div
+              className={cn(
+                'h-full rounded-full transition-all duration-300',
+                prog.running ? 'bg-primary' : 'bg-emerald-500'
+              )}
+              style={{ width: `${progPct}%` }}
+            />
+          </div>
+        </div>
+      )}
+
+      <div className="ios-group">
+        <div className="flex flex-col gap-3 border-b border-border/70 px-4 py-3.5 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <p className="page-kicker">Auth</p>
+            <h3 className="mt-0.5 text-[17px] font-semibold tracking-[-0.02em]">CPA 凭证</h3>
+            <p className="mt-0.5 truncate text-[12px] text-muted-foreground" title={dir}>
+              {dir || '加载中…'}
               {selected.size > 0 ? ` · 已选 ${selected.size}` : ''}
+              {!deleteOnDead ? ' · 测活死号不删' : ''}
             </p>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-1.5">
             <Button
               variant="secondary"
               size="sm"
-              onClick={selectAll}
-              disabled={items.length === 0 || !!batchBusy}
+              onClick={toggleEmailPrivacy}
+              title={emailMasked ? '显示完整邮箱' : '遮蔽邮箱（仅前5位）'}
             >
-              {allSelected ? (
-                <CheckSquare className="h-4 w-4" />
-              ) : (
-                <Square className="h-4 w-4" />
-              )}
-              {allSelected ? '取消全选' : '全选'}
+              {emailMasked ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+              {emailMasked ? '显示邮箱' : '遮蔽邮箱'}
             </Button>
             <Button
               variant="secondary"
               size="sm"
-              onClick={() => void probeBatch()}
-              disabled={items.length === 0 || !!batchBusy || !!resigning}
-              title="调用 cli-chat-proxy /responses 测活；401/402/403 删除文件"
+              onClick={selectAll}
+              disabled={items.length === 0 || busy}
             >
-              <Activity className={cn('h-4 w-4', batchBusy === 'probe' && 'animate-pulse')} />
+              {allSelected ? (
+                <CheckSquare className="h-3.5 w-3.5" />
+              ) : (
+                <Square className="h-3.5 w-3.5" />
+              )}
+              {allSelected ? '取消全选' : '全选'}
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => void probeBatch()}
+              disabled={busy || items.length === 0}
+              title={deleteOnDead ? '401/402/403 将删除文件' : '死号仅标记不删'}
+            >
+              <Activity
+                className={cn('h-3.5 w-3.5', batchBusy === 'probe' && 'animate-pulse')}
+              />
               {batchBusy === 'probe'
-                ? '测活中…'
+                ? `测活 ${prog?.done ?? 0}/${prog?.total ?? 0}`
                 : selected.size > 0
-                  ? `测活所选 (${selected.size})`
+                  ? `测活所选(${selected.size})`
                   : '批量 CPA 测活'}
             </Button>
             <Button
               variant="secondary"
               size="sm"
               onClick={() => void resignBatch()}
-              disabled={items.length === 0 || !!batchBusy || !!resigning}
+              disabled={busy || items.length === 0}
             >
-              <RotateCcw className={cn('h-4 w-4', batchBusy === 'resign' && 'animate-spin')} />
+              <RotateCcw
+                className={cn('h-3.5 w-3.5', batchBusy === 'resign' && 'animate-spin')}
+              />
               {batchBusy === 'resign'
-                ? '批量重签中…'
+                ? `重签 ${prog?.done ?? 0}/${prog?.total ?? 0}`
                 : selected.size > 0
-                  ? `重签所选 (${selected.size})`
-                  : '全部重签'}
+                  ? `重签所选(${selected.size})`
+                  : '批量重签'}
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => void exportBatch()}
+              disabled={busy || items.length === 0}
+              title="导出 JSON（多文件打 txt 汇总）"
+            >
+              <FileDown className="h-3.5 w-3.5" />
+              {batchBusy === 'export'
+                ? '导出中…'
+                : selected.size > 0
+                  ? `导出(${selected.size})`
+                  : '导出全部'}
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => void deleteBatch()}
+              disabled={busy || selected.size === 0}
+              title="删除已选 Auth 文件"
+            >
+              <Trash2
+                className={cn('h-3.5 w-3.5', batchBusy === 'delete' && 'animate-pulse')}
+              />
+              {batchBusy === 'delete' ? '删除中…' : `删除(${selected.size})`}
             </Button>
             <Button
               variant="secondary"
               size="sm"
               onClick={() => void reload()}
-              disabled={loading || !!batchBusy}
+              disabled={loading || busy}
             >
-              <RefreshCcw className={cn('h-4 w-4', loading && 'animate-spin')} />
+              <RefreshCcw className={cn('h-3.5 w-3.5', loading && 'animate-spin')} />
               刷新
             </Button>
           </div>
         </div>
+      </div>
 
-        {loading && items.length === 0 ? (
-          <div className="p-8 text-sm text-muted-foreground">加载中…</div>
-        ) : items.length === 0 ? (
-          <div className="p-8 text-sm leading-6 text-muted-foreground">
-            暂无 auth 文件。可在「号池」对带 SSO 的账号一键补 mint，或开启「配置 → 自动导出 CPA Auth」。
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[720px] text-left text-[13px]">
-              <thead>
-                <tr className="border-b border-border/70 text-[12px] text-muted-foreground">
-                  <th className="w-10 px-3 py-2.5 font-medium" />
-                  <th className="px-4 py-2.5 font-medium">邮箱 / 文件</th>
-                  <th className="px-4 py-2.5 font-medium">xAI</th>
-                  <th className="px-4 py-2.5 font-medium">测活</th>
-                  <th className="px-4 py-2.5 font-medium">过期</th>
-                  <th className="px-4 py-2.5 font-medium">Refresh</th>
-                  <th className="px-4 py-2.5 font-medium">修改时间</th>
-                  <th className="px-4 py-2.5 font-medium">操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                {items.map((item) => (
-                  <tr key={item.filename} className="border-b border-border/40 last:border-0">
-                    <td className="px-3 py-3">
-                      <button
-                        type="button"
-                        className="inline-flex text-muted-foreground hover:text-foreground"
-                        onClick={() => toggle(item.filename)}
-                        aria-label="选择"
-                      >
-                        {selected.has(item.filename) ? (
-                          <CheckSquare className="h-4 w-4 text-primary" />
-                        ) : (
-                          <Square className="h-4 w-4" />
-                        )}
-                      </button>
+      {loading && items.length === 0 ? (
+        <div className="rounded-[16px] border border-dashed border-border bg-card p-12 text-center text-[13px] text-muted-foreground">
+          加载中…
+        </div>
+      ) : items.length === 0 ? (
+        <div className="rounded-[16px] border border-dashed border-border bg-card p-12 text-center text-[13px] text-muted-foreground">
+          Auth 目录为空。注册成功自动导出，或在号池点「补 Auth」。
+        </div>
+      ) : (
+        <div className="overflow-x-auto rounded-[16px] border border-border bg-card shadow-[var(--ios-shadow)]">
+          <table className="w-full min-w-[720px] text-left text-[13px]">
+            <thead className="border-b border-border/70 text-[11px] uppercase tracking-wide text-muted-foreground">
+              <tr>
+                <th className="w-10 px-3 py-2.5" />
+                <th className="px-3 py-2.5 font-medium">邮箱</th>
+                <th className="px-3 py-2.5 font-medium">文件</th>
+                <th className="px-3 py-2.5 font-medium">xai</th>
+                <th className="px-3 py-2.5 font-medium">bot_flag</th>
+                <th className="px-3 py-2.5 font-medium">过期</th>
+                <th className="px-3 py-2.5 font-medium">测活</th>
+                <th className="px-3 py-2.5 font-medium">修改</th>
+                <th className="px-3 py-2.5 font-medium">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((item) => {
+                const probe = probeMap[item.filename];
+                const rowResign = rowBusy === `resign:${item.filename}`;
+                const rowProbe = rowBusy === `probe:${item.filename}`;
+                return (
+                  <tr
+                    key={item.filename}
+                    className={cn(
+                      'border-b border-border/40 last:border-0',
+                      selected.has(item.filename) && 'bg-primary/5'
+                    )}
+                  >
+                    <td className="px-3 py-2.5">
+                      <input
+                        type="checkbox"
+                        checked={selected.has(item.filename)}
+                        onChange={() => toggle(item.filename)}
+                        disabled={busy}
+                        className="h-4 w-4 accent-[hsl(var(--primary))]"
+                      />
                     </td>
-                    <td className="px-4 py-3">
-                      <div className="font-medium">{item.email || '—'}</div>
-                      <div className="mt-0.5 text-[11px] text-muted-foreground">{item.filename}</div>
+                    <td
+                      className="max-w-[14rem] truncate px-3 py-2.5 font-medium"
+                      title={
+                        emailMasked && item.email
+                          ? '已遮蔽 · 点工具栏「显示邮箱」查看完整'
+                          : item.email || undefined
+                      }
+                    >
+                      {maskEmail(item.email, emailMasked)}
                     </td>
-                    <td className="px-4 py-3">
+                    <td
+                      className="max-w-[12rem] truncate px-3 py-2.5 font-mono text-[12px] text-muted-foreground"
+                      title={item.filename}
+                    >
+                      {item.filename}
+                    </td>
+                    <td className="px-3 py-2.5">
                       {item.xai ? (
-                        <span className="chip text-ok" title={`type=${item.authType || '—'} · file=${item.xaiFilename}`}>
-                          {item.xaiFilename && item.xaiType
-                            ? 'xai✓'
-                            : item.xaiFilename
-                              ? 'xai-文件'
-                              : 'type=xai'}
+                        <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
+                          xai
                         </span>
                       ) : (
-                        <span className="chip text-warn" title="文件名非 xai-* 且 type 非 xai">
-                          无
-                        </span>
+                        <span className="text-[11px] text-muted-foreground">—</span>
                       )}
                     </td>
-                    <td className="px-4 py-3">
-                      {(() => {
-                        const a = probeMap[item.filename];
-                        if (!a) {
-                          return <span className="chip text-muted-foreground">—</span>;
-                        }
-                        if (a === 'ok') {
-                          return <span className="chip text-ok">OK</span>;
-                        }
-                        if (a === 'dead') {
-                          return (
-                            <span className="chip text-danger" title="401/402/403，已删或待删">
-                              死号
-                            </span>
-                          );
-                        }
-                        if (a === 'keep') {
-                          return (
-                            <span className="chip text-warn" title="非 2xx 且非删除状态，保留文件">
-                              保留
-                            </span>
-                          );
-                        }
-                        return (
-                          <span className="chip text-muted-foreground" title={a}>
-                            {a === 'error' ? '错误' : a}
-                          </span>
-                        );
-                      })()}
+                    <td className="px-3 py-2.5">
+                      <BotFlagCell
+                        flag={item.botFlagSource}
+                        is1={item.isBotFlag1}
+                      />
                     </td>
-                    <td className="px-4 py-3 text-muted-foreground">{item.expired || '—'}</td>
-                    <td className="px-4 py-3">
-                      <span
-                        className={cn(
-                          'chip',
-                          item.hasRefresh ? 'text-ok' : 'text-muted-foreground'
-                        )}
-                      >
-                        {item.hasRefresh ? '有' : '无'}
-                      </span>
+                    <td className="px-3 py-2.5 text-[12px] text-muted-foreground">
+                      {item.expired || '—'}
                     </td>
-                    <td className="px-4 py-3 tabular-nums text-muted-foreground">
+                    <td className="px-3 py-2.5">
+                      <ProbeBadge action={probe} />
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-2.5 text-[12px] text-muted-foreground">
                       {fmtTime(item.mtime)}
                     </td>
-                    <td className="px-4 py-3">
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        disabled={resigning === item.filename || !!batchBusy}
-                        onClick={() => void resign(item)}
-                      >
-                        <RotateCcw className="h-3.5 w-3.5" />
-                        {resigning === item.filename ? '重签中…' : '重签'}
-                      </Button>
+                    <td className="px-3 py-2.5">
+                      <div className="flex flex-wrap gap-1">
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          disabled={busy}
+                          onClick={() => void probeOne(item)}
+                          title="单条 CPA 测活"
+                        >
+                          <Activity
+                            className={cn('h-3.5 w-3.5', rowProbe && 'animate-pulse')}
+                          />
+                          {rowProbe ? '…' : '测活'}
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          disabled={busy}
+                          onClick={() => void resign(item)}
+                        >
+                          <RotateCcw
+                            className={cn('h-3.5 w-3.5', rowResign && 'animate-spin')}
+                          />
+                          {rowResign ? '…' : '重签'}
+                        </Button>
+                      </div>
                     </td>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BotFlagCell({
+  flag,
+  is1
+}: {
+  flag?: number | string | null;
+  is1?: boolean;
+}) {
+  if (flag === undefined || flag === null) {
+    return <span className="text-[11px] text-muted-foreground">—</span>;
+  }
+  if (is1 || flag === 1 || flag === '1') {
+    return (
+      <span
+        className="rounded-full bg-destructive/15 px-2 py-0.5 text-[10px] font-medium text-destructive"
+        title="bot_flag_source=1（JWT 内，无法抹掉）"
+      >
+        1
+      </span>
+    );
+  }
+  return (
+    <span
+      className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400"
+      title={`bot_flag_source=${String(flag)}`}
+    >
+      {String(flag)}
+    </span>
+  );
+}
+
+function ProbeBadge({ action }: { action?: string }) {
+  if (!action) {
+    return <span className="text-[11px] text-muted-foreground">—</span>;
+  }
+  if (action === 'ok') {
+    return (
+      <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
+        OK
+      </span>
+    );
+  }
+  if (action === 'dead') {
+    return (
+      <span className="rounded-full bg-destructive/15 px-2 py-0.5 text-[10px] font-medium text-destructive">
+        死号
+      </span>
+    );
+  }
+  if (action === 'keep') {
+    return (
+      <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400">
+        保留
+      </span>
+    );
+  }
+  return (
+    <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
+      {action}
+    </span>
+  );
+}
+
+function AuthMetric({
+  label,
+  value,
+  Icon
+}: {
+  label: string;
+  value: string;
+  Icon: typeof KeyRound;
+}) {
+  return (
+    <div className="rounded-[16px] border border-border bg-card p-4 shadow-[var(--ios-shadow)]">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-[12px] text-muted-foreground">{label}</p>
+        <Icon className="h-4 w-4 text-muted-foreground/80" />
+      </div>
+      <p className="mt-2 text-[22px] font-semibold tracking-tight tabular-nums">{value}</p>
     </div>
   );
 }

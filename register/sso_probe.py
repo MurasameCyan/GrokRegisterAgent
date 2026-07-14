@@ -66,6 +66,29 @@ def _norm_sso(sso: str) -> str:
     return (sso or "").replace("sso=", "").strip()
 
 
+def _read_bot_flag(sso: str) -> dict[str, Any]:
+    """只读解码 JWT payload 中的 bot_flag_source（不验签；无法改写）。"""
+    t = _norm_sso(sso)
+    if not t or t.count(".") < 2:
+        return {"bot_flag_source": None, "is_bot_flag_1": False}
+    try:
+        import base64
+
+        seg = t.split(".")[1]
+        pad = "=" * ((4 - len(seg) % 4) % 4)
+        raw = base64.urlsafe_b64decode(seg + pad)
+        pl = json.loads(raw.decode("utf-8", errors="replace"))
+        if not isinstance(pl, dict):
+            return {"bot_flag_source": None, "is_bot_flag_1": False}
+        v = pl.get("bot_flag_source")
+        if v is None:
+            return {"bot_flag_source": None, "is_bot_flag_1": False}
+        is1 = v == 1 or v == "1" or (isinstance(v, (int, float, str)) and str(v) == "1")
+        return {"bot_flag_source": v, "is_bot_flag_1": bool(is1)}
+    except Exception:
+        return {"bot_flag_source": None, "is_bot_flag_1": False}
+
+
 def _cookie_header(sso: str) -> str:
     t = _norm_sso(sso)
     return f"sso={t}; sso-rw={t}"
@@ -413,8 +436,11 @@ def probe_sso(sso: str, proxy: str = "") -> dict[str, Any]:
       1) SSO 测活（get-user）
       2) 封禁检测（CreateCookieSetterLink）
       3) accounts 会话补充
+
+    额外只读解码 JWT bot_flag_source（展示/过滤用，无法改写）。
     """
     t = _norm_sso(sso)
+    flag = _read_bot_flag(t)
     if not t:
         return {
             "alive": False,
@@ -423,6 +449,7 @@ def probe_sso(sso: str, proxy: str = "") -> dict[str, Any]:
             "get_user": None,
             "accounts": None,
             "ban": None,
+            **flag,
         }
 
     # —— 1) SSO 测活 ——
@@ -435,6 +462,7 @@ def probe_sso(sso: str, proxy: str = "") -> dict[str, Any]:
             "get_user": gu,
             "accounts": None,
             "ban": None,
+            **flag,
         }
 
     session_ok = bool(gu.get("ok"))
@@ -450,6 +478,7 @@ def probe_sso(sso: str, proxy: str = "") -> dict[str, Any]:
                 "get_user": gu,
                 "accounts": acc,
                 "ban": None,
+                **flag,
             }
         if not acc.get("ok"):
             return {
@@ -459,6 +488,7 @@ def probe_sso(sso: str, proxy: str = "") -> dict[str, Any]:
                 "get_user": gu,
                 "accounts": acc,
                 "ban": None,
+                **flag,
             }
 
     # —— 2) 仅会话可用时再检 blocked ——
@@ -471,6 +501,7 @@ def probe_sso(sso: str, proxy: str = "") -> dict[str, Any]:
             "get_user": gu,
             "accounts": acc,
             "ban": ban,
+            **flag,
         }
 
     # ban unknown 不阻断 mint（网络抖动）；get-user/accounts 已证明会话在
@@ -487,6 +518,7 @@ def probe_sso(sso: str, proxy: str = "") -> dict[str, Any]:
         "note": None
         if ban.get("verdict") == "alive"
         else f"ban_check={ban.get('verdict') or 'unknown'}",
+        **flag,
     }
 
 

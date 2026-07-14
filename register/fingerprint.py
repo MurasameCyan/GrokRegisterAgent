@@ -10,7 +10,9 @@ from dataclasses import dataclass, asdict
 from typing import Any
 
 
-_CHROME_VERS = [120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131]
+# 贴近当前主流桌面 Chrome（仍随机，避免全员同一大版本）
+# 有限规避：版本池越新越贴近真实用户分布；仍无保证不被 bot 模型命中
+_CHROME_VERS = [128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138]
 
 
 @dataclass
@@ -26,6 +28,9 @@ class BrowserFingerprint:
     max_touch_points: int
     window_w: int
     window_h: int
+    # WebGL 伪装（stealth 用；无保证）
+    webgl_vendor: str = "Google Inc. (NVIDIA)"
+    webgl_renderer: str = "ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 Direct3D11 vs_5_0 ps_5_0, D3D11)"
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -37,18 +42,52 @@ _TZ_POOL = [
     "America/Denver",
     "America/Los_Angeles",
     "America/Toronto",
+    "America/Phoenix",
     "Europe/London",
     "Europe/Berlin",
     "Europe/Paris",
+    "Europe/Amsterdam",
     "Asia/Singapore",
     "Asia/Tokyo",
+    "Asia/Hong_Kong",
     "Australia/Sydney",
+    "Pacific/Auckland",
 ]
 
 _LANG_POOL = [
     (["en-US", "en"], "en-US,en;q=0.9"),
     (["en-GB", "en"], "en-GB,en;q=0.9"),
     (["en-US", "en", "es"], "en-US,en;q=0.9,es;q=0.8"),
+    (["en-CA", "en"], "en-CA,en;q=0.9"),
+    (["en-AU", "en"], "en-AU,en;q=0.9"),
+]
+
+# 常见桌面 GPU 字符串（仅降低「全员同一 WebGL」；无法对抗服务端 bot_flag 签发）
+_WEBGL_POOL = [
+    (
+        "Google Inc. (NVIDIA)",
+        "ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 Direct3D11 vs_5_0 ps_5_0, D3D11)",
+    ),
+    (
+        "Google Inc. (NVIDIA)",
+        "ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)",
+    ),
+    (
+        "Google Inc. (Intel)",
+        "ANGLE (Intel, Intel(R) UHD Graphics 620 Direct3D11 vs_5_0 ps_5_0, D3D11)",
+    ),
+    (
+        "Google Inc. (Intel)",
+        "ANGLE (Intel, Intel(R) Iris(R) Xe Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)",
+    ),
+    (
+        "Google Inc. (AMD)",
+        "ANGLE (AMD, AMD Radeon RX 580 Series Direct3D11 vs_5_0 ps_5_0, D3D11)",
+    ),
+    (
+        "Google Inc. (Apple)",
+        "ANGLE (Apple, Apple M1, OpenGL 4.1)",
+    ),
 ]
 
 
@@ -87,8 +126,17 @@ def build_fingerprint(seed: str | None = None) -> BrowserFingerprint:
         (1536, 864),
         (1440, 900),
         (1366, 768),
+        (1280, 720),
+        (2560, 1440),
     ]
     w, h = rnd.choice(sizes)
+    # 平台与 WebGL 串尽量一致，避免 Linux+Apple / Win+Apple 等明显错配
+    if platform == "MacIntel":
+        mac_pool = [x for x in _WEBGL_POOL if "Apple" in x[0] or "Intel" in x[0]]
+        wv, wr = rnd.choice(mac_pool or _WEBGL_POOL)
+    else:
+        non_apple = [x for x in _WEBGL_POOL if "Apple" not in x[0]]
+        wv, wr = rnd.choice(non_apple or _WEBGL_POOL)
     return BrowserFingerprint(
         user_agent=_chrome_ua(token, chrome),
         platform=platform,
@@ -101,6 +149,8 @@ def build_fingerprint(seed: str | None = None) -> BrowserFingerprint:
         max_touch_points=max_touch,
         window_w=w,
         window_h=h,
+        webgl_vendor=wv,
+        webgl_renderer=wr,
     )
 
 
@@ -122,12 +172,18 @@ def apply_to_chromium_options(co: Any, fp: BrowserFingerprint) -> None:
 
 
 def stealth_js(fp: BrowserFingerprint) -> str:
-    """返回注入页面的 stealth JS。"""
+    """返回注入页面的 stealth JS（有限规避，无法改服务端 bot_flag_source）。"""
     langs_js = json_dumps(fp.languages)
     return f"""
 (() => {{
   try {{
     Object.defineProperty(navigator, 'webdriver', {{ get: () => undefined }});
+  }} catch (e) {{}}
+  try {{
+    if (!window.chrome) window.chrome = {{ runtime: {{}}, loadTimes: function() {{}}, csi: function() {{}}, app: {{}} }};
+    else {{
+      try {{ if (!window.chrome.runtime) window.chrome.runtime = {{}}; }} catch (e) {{}}
+    }}
   }} catch (e) {{}}
   try {{
     Object.defineProperty(navigator, 'languages', {{ get: () => {langs_js} }});
@@ -148,6 +204,29 @@ def stealth_js(fp: BrowserFingerprint) -> str:
     Object.defineProperty(navigator, 'maxTouchPoints', {{ get: () => {fp.max_touch_points} }});
   }} catch (e) {{}}
   try {{
+    // 伪造 plugins 长度，避免 headless 常见 empty plugins
+    const fakePlugins = {{
+      length: 5,
+      item: function(i) {{ return this[i] || null; }},
+      namedItem: function() {{ return null; }},
+      refresh: function() {{}},
+      0: {{ name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' }},
+      1: {{ name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' }},
+      2: {{ name: 'Native Client', filename: 'internal-nacl-plugin', description: '' }},
+    }};
+    Object.defineProperty(navigator, 'plugins', {{ get: () => fakePlugins }});
+  }} catch (e) {{}}
+  try {{
+    const originalQuery = window.navigator.permissions && window.navigator.permissions.query;
+    if (originalQuery) {{
+      window.navigator.permissions.query = (parameters) => (
+        parameters && parameters.name === 'notifications'
+          ? Promise.resolve({{ state: Notification.permission }})
+          : originalQuery.call(window.navigator.permissions, parameters)
+      );
+    }}
+  }} catch (e) {{}}
+  try {{
     const tz = {json_dumps(fp.timezone)};
     const orig = Intl.DateTimeFormat.prototype.resolvedOptions;
     Intl.DateTimeFormat.prototype.resolvedOptions = function () {{
@@ -156,8 +235,50 @@ def stealth_js(fp: BrowserFingerprint) -> str:
       return r;
     }};
   }} catch (e) {{}}
+  try {{
+    // WebGL vendor/renderer 伪装（降低全员同 GPU 串；不保证）
+    const vendor = {json_dumps(fp.webgl_vendor)};
+    const renderer = {json_dumps(fp.webgl_renderer)};
+    const patchGetParam = (proto) => {{
+      if (!proto || !proto.getParameter) return;
+      const orig = proto.getParameter;
+      proto.getParameter = function (param) {{
+        const UNMASKED_VENDOR = 0x9245;
+        const UNMASKED_RENDERER = 0x9246;
+        if (param === UNMASKED_VENDOR) return vendor;
+        if (param === UNMASKED_RENDERER) return renderer;
+        return orig.apply(this, arguments);
+      }};
+    }};
+    try {{ patchGetParam(WebGLRenderingContext && WebGLRenderingContext.prototype); }} catch (e) {{}}
+    try {{ patchGetParam(WebGL2RenderingContext && WebGL2RenderingContext.prototype); }} catch (e) {{}}
+  }} catch (e) {{}}
+  try {{
+    // 弱化 AutomationControlled / cdc_ 痕迹（尽力）
+    const clean = (obj) => {{
+      if (!obj) return;
+      for (const k of Object.getOwnPropertyNames(obj)) {{
+        if (/^cdc_|^\\$cdc_|^__driver|^__webdriver|^__selenium|^__fxdriver/i.test(k)) {{
+          try {{ delete obj[k]; }} catch (e) {{}}
+        }}
+      }}
+    }};
+    clean(window);
+    clean(document);
+  }} catch (e) {{}}
 }})();
 """
+
+
+def human_pause(min_ms: int = 120, max_ms: int = 480) -> float:
+    """步骤间随机停顿（秒）。有限行为随机，无法事后抹掉已签发 bot_flag。"""
+    import time
+
+    lo = max(0, int(min_ms))
+    hi = max(lo, int(max_ms))
+    secs = (lo + secrets.randbelow(hi - lo + 1)) / 1000.0
+    time.sleep(secs)
+    return secs
 
 
 def json_dumps(v: Any) -> str:

@@ -3,503 +3,622 @@ import { randomUUID } from 'crypto';
 import { spawn, execFile, ChildProcess } from 'child_process';
 import { loadSettings } from '../settingsStore.js';
 import { appendAccount } from '../accountStore.js';
-import type { AccountRecord, LogLevel, RunEvent, RunStatus } from '@shared/runEvents';
+import type { AccountRecord, LogLevel, RunEvent, RunPhase, RunStatus } from '@shared/runEvents';
 import { EMPTY_STATUS } from '@shared/runEvents';
 import fs from 'fs';
 import path from 'path';
 import { resolveRegisterRuntime, writeConfigForPython } from './registerRuntime.js';
 
 interface StartOptions {
-    runCountOverride?: number;
+  runCountOverride?: number;
+  /** 并行 worker 上限覆盖；默认读 settings.maxParallelWorkers */
+  maxParallelOverride?: number;
+}
+
+/** 任务摘要（列表浏览用） */
+export interface RegisterJobSummary {
+  runId: string;
+  phase: RunPhase;
+  pid: number | null;
+  startedAt: number | null;
+  finishedAt: number | null;
+  current: number;
+  total: number;
+  success: number;
+  failed: number;
+  errorMessage: string | null;
+  focused: boolean;
+}
+
+interface Job {
+  runId: string;
+  status: RunStatus;
+  shouldStop: boolean;
+  childProcess: ChildProcess | null;
+  childDetached: boolean;
+  killEscalationTimer: ReturnType<typeof setTimeout> | null;
+  killHardTimer: ReturnType<typeof setTimeout> | null;
+  currentSsoFile: string | null;
+  pendingAccount: { email?: string; password?: string };
+}
+
+const DEFAULT_MAX_PARALLEL = 3;
+const HARD_MAX_PARALLEL = 8;
+
+function isActivePhase(phase: RunPhase): boolean {
+  return phase === 'starting' || phase === 'running';
 }
 
 export class RegisterBot extends EventEmitter {
-    private status: RunStatus = { ...EMPTY_STATUS };
-    private currentRunId: string | null = null;
-    private shouldStop: boolean = false;
-    private childProcess: ChildProcess | null = null;
-    /** 子进程是否以独立进程组启动（便于 stop 时整树杀掉 Chrome） */
-    private childDetached = false;
-    private killEscalationTimer: ReturnType<typeof setTimeout> | null = null;
-    private killHardTimer: ReturnType<typeof setTimeout> | null = null;
-    private replayBuffer: RunEvent[] = [];
-    private static readonly REPLAY_LIMIT = 1000;
-    private collectedTokens: string[] = [];
-    private currentSsoFile: string | null = null;
-    private pendingAccount: { email?: string; password?: string } = {};
+  private jobs = new Map<string, Job>();
+  /** 前端「聚焦」任务：日志/状态默认展示这个；空则取最近活跃 */
+  private focusRunId: string | null = null;
+  private replayBuffer: RunEvent[] = [];
+  private static readonly REPLAY_LIMIT = 2000;
 
-    getStatus(): RunStatus {
-        return { ...this.status };
+  getStatus(): RunStatus {
+    const job = this.resolveFocusJob();
+    return job ? { ...job.status } : { ...EMPTY_STATUS };
+  }
+
+  /** 并行任务列表（新→旧） */
+  listJobs(): RegisterJobSummary[] {
+    const focus = this.focusRunId;
+    const list = [...this.jobs.values()]
+      .map((j) => ({
+        runId: j.runId,
+        phase: j.status.phase,
+        pid: j.status.pid,
+        startedAt: j.status.startedAt,
+        finishedAt: j.status.finishedAt,
+        current: j.status.current,
+        total: j.status.total,
+        success: j.status.success,
+        failed: j.status.failed,
+        errorMessage: j.status.errorMessage,
+        focused: j.runId === focus || (!focus && j === this.resolveFocusJob())
+      }))
+      .sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0));
+    return list;
+  }
+
+  getJobStatus(runId: string): RunStatus | null {
+    const job = this.jobs.get(runId);
+    return job ? { ...job.status } : null;
+  }
+
+  setFocus(runId: string | null): { ok: boolean; runId: string | null } {
+    if (runId && !this.jobs.has(runId)) {
+      return { ok: false, runId: this.focusRunId };
+    }
+    this.focusRunId = runId;
+    return { ok: true, runId: this.focusRunId };
+  }
+
+  activeCount(): number {
+    let n = 0;
+    for (const j of this.jobs.values()) {
+      if (isActivePhase(j.status.phase)) n++;
+    }
+    return n;
+  }
+
+  /** 解析最终使用的注册脚本目录 */
+  resolveRegisterDir(configured?: string): string | null {
+    return resolveRegisterRuntime({ registerDir: configured })?.registerDir ?? null;
+  }
+
+  getReplay(): RunEvent[] {
+    return this.replayBuffer.slice();
+  }
+
+  private resolveFocusJob(): Job | null {
+    if (this.focusRunId) {
+      const j = this.jobs.get(this.focusRunId);
+      if (j) return j;
+    }
+    // 优先活跃任务，否则最近启动的
+    let best: Job | null = null;
+    for (const j of this.jobs.values()) {
+      if (isActivePhase(j.status.phase)) {
+        if (!best || (j.status.startedAt || 0) > (best.status.startedAt || 0)) best = j;
+      }
+    }
+    if (best) return best;
+    for (const j of this.jobs.values()) {
+      if (!best || (j.status.startedAt || 0) > (best.status.startedAt || 0)) best = j;
+    }
+    return best;
+  }
+
+  private push(ev: RunEvent) {
+    this.replayBuffer.push(ev);
+    if (this.replayBuffer.length > RegisterBot.REPLAY_LIMIT) {
+      this.replayBuffer.splice(0, this.replayBuffer.length - RegisterBot.REPLAY_LIMIT);
+    }
+    this.emit('event', ev);
+  }
+
+  private log(runId: string, text: string, level: LogLevel = 'info') {
+    this.push({ type: 'stdout', runId, level, text, ts: Date.now() });
+  }
+
+  private error(runId: string, text: string) {
+    this.push({ type: 'stderr', runId, text, ts: Date.now() });
+  }
+
+  private pruneFinishedJobs(keep = 30) {
+    const finished = [...this.jobs.values()]
+      .filter((j) => !isActivePhase(j.status.phase))
+      .sort((a, b) => (b.status.finishedAt || 0) - (a.status.finishedAt || 0));
+    if (finished.length <= keep) return;
+    for (const j of finished.slice(keep)) {
+      if (this.focusRunId === j.runId) this.focusRunId = null;
+      this.jobs.delete(j.runId);
+    }
+  }
+
+  async start(opts: StartOptions = {}): Promise<{ runId: string }> {
+    const settings = await loadSettings();
+    const runCount = opts.runCountOverride ?? settings.runCount;
+    const maxParallel = Math.min(
+      HARD_MAX_PARALLEL,
+      Math.max(
+        1,
+        opts.maxParallelOverride ??
+          (Number.isFinite(Number((settings as { maxParallelWorkers?: number }).maxParallelWorkers))
+            ? Math.floor(Number((settings as { maxParallelWorkers?: number }).maxParallelWorkers))
+            : DEFAULT_MAX_PARALLEL)
+      )
+    );
+
+    const active = this.activeCount();
+    if (active >= maxParallel) {
+      throw new Error(
+        `并行任务已达上限 ${maxParallel}（当前活跃 ${active}）。请先停止部分任务，或在配置中提高并行上限。`
+      );
     }
 
-    /** 解析最终使用的注册脚本目录:配置里真实存在的优先,否则用内置 register/。供体检等复用。 */
-    resolveRegisterDir(configured?: string): string | null {
-        return resolveRegisterRuntime({ registerDir: configured })?.registerDir ?? null;
-    }
+    const runId = randomUUID();
+    const job: Job = {
+      runId,
+      status: {
+        ...EMPTY_STATUS,
+        phase: 'starting',
+        runId,
+        startedAt: Date.now(),
+        total: runCount
+      },
+      shouldStop: false,
+      childProcess: null,
+      childDetached: false,
+      killEscalationTimer: null,
+      killHardTimer: null,
+      currentSsoFile: null,
+      pendingAccount: {}
+    };
+    this.jobs.set(runId, job);
+    this.focusRunId = runId;
+    this.pruneFinishedJobs();
 
-    getReplay(): RunEvent[] {
-        return this.replayBuffer.slice();
-    }
+    this.push({
+      type: 'started',
+      runId,
+      pid: process.pid,
+      total: runCount
+    });
+    this.log(
+      runId,
+      `并行任务启动 #${runId.slice(0, 8)} · 轮数 ${runCount} · 活跃 ${active + 1}/${maxParallel}`
+    );
 
-    private push(ev: RunEvent) {
-        this.replayBuffer.push(ev);
-        if (this.replayBuffer.length > RegisterBot.REPLAY_LIMIT) {
-            this.replayBuffer.splice(0, this.replayBuffer.length - RegisterBot.REPLAY_LIMIT);
+    // Fire and forget
+    this.runPython(job, runCount, settings).catch((e) => {
+      this.error(runId, `Runner error: ${e instanceof Error ? e.message : String(e)}`);
+      this.finalizeRun(runId, false);
+    });
+
+    return { runId };
+  }
+
+  /** 停止指定任务；不传 runId 则停聚焦任务；stopAll=true 停全部活跃 */
+  async stop(runId?: string, opts?: { stopAll?: boolean }): Promise<{ ok: boolean; stopped: string[] }> {
+    const stopped: string[] = [];
+    if (opts?.stopAll) {
+      for (const j of this.jobs.values()) {
+        if (isActivePhase(j.status.phase)) {
+          await this.stopJob(j);
+          stopped.push(j.runId);
         }
-        this.emit('event', ev);
+      }
+      return { ok: true, stopped };
     }
 
-    private log(runId: string, text: string, level: LogLevel = 'info') {
-        this.push({ type: 'stdout', runId, level, text, ts: Date.now() });
+    const id = (runId || this.focusRunId || this.resolveFocusJob()?.runId || '').trim();
+    if (!id) return { ok: true, stopped };
+    const job = this.jobs.get(id);
+    if (!job) return { ok: false, stopped };
+    if (!isActivePhase(job.status.phase) && !job.childProcess) {
+      return { ok: true, stopped };
     }
+    await this.stopJob(job);
+    stopped.push(id);
+    return { ok: true, stopped };
+  }
 
-    private error(runId: string, text: string) {
-        this.push({ type: 'stderr', runId, text, ts: Date.now() });
+  private async stopJob(job: Job): Promise<void> {
+    job.shouldStop = true;
+    const runId = job.runId;
+    if (!job.childProcess && !isActivePhase(job.status.phase)) return;
+
+    this.log(runId, '收到停止指令，正在强制终止注册进程（含浏览器子进程）…');
+    job.status.phase = 'killed';
+
+    this.clearKillTimers(job);
+    this.killChildTree(job, 'SIGTERM');
+    job.killEscalationTimer = setTimeout(() => {
+      if (job.childProcess) {
+        this.log(runId, '进程未退出，升级为 SIGKILL…');
+        this.killChildTree(job, 'SIGKILL');
+      }
+    }, 800);
+    job.killHardTimer = setTimeout(() => {
+      if (!job.childProcess) return;
+      this.error(runId, '强制停止超时，直接结束任务状态');
+      try {
+        job.childProcess.kill('SIGKILL');
+      } catch {
+        /* ignore */
+      }
+      job.childProcess = null;
+      if (this.jobs.get(runId) === job) {
+        this.finalizeRun(runId, true);
+      }
+    }, 2500);
+  }
+
+  private clearKillTimers(job: Job) {
+    if (job.killEscalationTimer) {
+      clearTimeout(job.killEscalationTimer);
+      job.killEscalationTimer = null;
     }
-
-    async start(opts: StartOptions = {}): Promise<{ runId: string }> {
-        if (this.status.phase === 'starting' || this.status.phase === 'running') {
-            throw new Error('已有一个注册任务在进行，请先停止');
-        }
-
-        const settings = await loadSettings();
-        const runCount = opts.runCountOverride ?? settings.runCount;
-
-        const runId = randomUUID();
-        this.currentRunId = runId;
-        this.shouldStop = false;
-        this.replayBuffer = [];
-        this.collectedTokens = [];
-        this.pendingAccount = {};
-        this.currentSsoFile = null;
-
-        this.status = {
-            ...EMPTY_STATUS,
-            phase: 'starting',
-            runId,
-            startedAt: Date.now(),
-            total: runCount
-        };
-
-        this.push({
-            type: 'started',
-            runId,
-            pid: process.pid,
-            total: runCount
-        });
-
-        // Fire and forget
-        this.runPython(runId, runCount, settings).catch(e => {
-            this.error(runId, `Runner error: ${e.message}`);
-            this.finalizeRun(runId, false);
-        });
-
-        return { runId };
+    if (job.killHardTimer) {
+      clearTimeout(job.killHardTimer);
+      job.killHardTimer = null;
     }
+  }
 
-    async stop(): Promise<void> {
-        this.shouldStop = true;
-        const runId = this.currentRunId;
-        if (!this.childProcess && !runId) return;
+  private killChildTree(job: Job, signal: NodeJS.Signals = 'SIGKILL') {
+    const child = job.childProcess;
+    if (!child?.pid) return;
+    const pid = child.pid;
 
-        if (runId) {
-            this.log(runId, '收到停止指令，正在强制终止注册进程（含浏览器子进程）…');
-            // 立刻反映到 UI，不必等当前轮跑完
-            this.status.phase = 'killed';
-        }
-
-        this.clearKillTimers();
-        // 先整树 SIGTERM，再短延时 SIGKILL，避免只杀 Python 留下 Chrome
-        this.killChildTree('SIGTERM');
-        this.killEscalationTimer = setTimeout(() => {
-            if (this.childProcess) {
-                if (runId) this.log(runId, '进程未退出，升级为 SIGKILL…');
-                this.killChildTree('SIGKILL');
-            }
-        }, 800);
-        // 兜底：若 close 事件仍未到，强制收尾，避免 UI 一直转圈
-        this.killHardTimer = setTimeout(() => {
-            if (!this.childProcess) return;
-            if (runId) this.error(runId, '强制停止超时，直接结束任务状态');
-            try {
-                this.childProcess.kill('SIGKILL');
-            } catch {
-                // ignore
-            }
-            this.childProcess = null;
-            if (runId && this.currentRunId === runId) {
-                this.finalizeRun(runId, true);
-            }
-        }, 2500);
-    }
-
-    private clearKillTimers() {
-        if (this.killEscalationTimer) {
-            clearTimeout(this.killEscalationTimer);
-            this.killEscalationTimer = null;
-        }
-        if (this.killHardTimer) {
-            clearTimeout(this.killHardTimer);
-            this.killHardTimer = null;
-        }
-    }
-
-    /**
-     * 杀掉 Python 及其拉起的 Chromium 整棵进程树。
-     * Unix：优先杀进程组（spawn detached 时 pid 为组 leader）；
-     * Windows：taskkill /T /F。
-     */
-    private killChildTree(signal: NodeJS.Signals = 'SIGKILL') {
-        const child = this.childProcess;
-        if (!child?.pid) return;
-        const pid = child.pid;
-
-        if (process.platform === 'win32') {
-            try {
-                execFile(
-                    'taskkill',
-                    ['/pid', String(pid), '/T', '/F'],
-                    { windowsHide: true },
-                    () => undefined
-                );
-            } catch {
-                try {
-                    child.kill(signal);
-                } catch {
-                    // ignore
-                }
-            }
-            return;
-        }
-
-        // 进程组负 pid（仅 detached 子进程可靠）
-        if (this.childDetached) {
-            try {
-                process.kill(-pid, signal);
-                return;
-            } catch {
-                // fall through
-            }
-        }
-
-        // 尽力清理 chrom(ium) 子进程，再杀 python
+    if (process.platform === 'win32') {
+      try {
+        execFile(
+          'taskkill',
+          ['/pid', String(pid), '/T', '/F'],
+          { windowsHide: true },
+          () => undefined
+        );
+      } catch {
         try {
-            execFile(
-                'pkill',
-                ['-P', String(pid)],
-                { timeout: 1500 },
-                () => undefined
-            );
+          child.kill(signal);
         } catch {
-            // pkill 可能不存在，忽略
+          /* ignore */
         }
-        try {
-            child.kill(signal);
-        } catch {
-            try {
-                process.kill(pid, signal);
-            } catch {
-                // ignore
-            }
-        }
+      }
+      return;
     }
 
-    private finalizeRun(runId: string, success: boolean) {
-        if (this.currentRunId !== runId) return;
-        this.clearKillTimers();
-        this.status.phase = this.shouldStop ? 'killed' : (success ? 'done' : 'error');
-        this.status.finishedAt = Date.now();
-        this.push({
-            type: 'exit',
-            runId,
-            code: success ? 0 : 1,
-            signal: this.shouldStop ? 'SIGTERM' : null,
-            killed: this.shouldStop
-        });
-        this.currentRunId = null;
-        this.childDetached = false;
+    if (job.childDetached) {
+      try {
+        process.kill(-pid, signal);
+        return;
+      } catch {
+        /* fall through */
+      }
     }
 
-    private async runPython(runId: string, count: number, settings: any) {
-        this.status.phase = 'running';
+    try {
+      execFile('pkill', ['-P', String(pid)], { timeout: 1500 }, () => undefined);
+    } catch {
+      /* ignore */
+    }
+    try {
+      child.kill(signal);
+    } catch {
+      try {
+        process.kill(pid, signal);
+      } catch {
+        /* ignore */
+      }
+    }
+  }
 
-        // 1. 确定 Python 脚本路径:优先用配置里真实存在的目录,否则回退到项目内置 register/。
-        const runtime = resolveRegisterRuntime(settings);
-        if (!runtime) {
-            throw new Error(
-                '未找到内置注册脚本目录 register/（需含 runner.py 或 DrissionPage_example.py）。' +
-                    '若使用 Docker：请勿用空的 ./register 挂载覆盖 /app/register；' +
-                    '默认只用 ./data:/data。热更新请挂载完整 register 源码目录。'
-            );
-        }
+  private finalizeRun(runId: string, success: boolean) {
+    const job = this.jobs.get(runId);
+    if (!job) return;
+    this.clearKillTimers(job);
+    job.status.phase = job.shouldStop ? 'killed' : success ? 'done' : 'error';
+    job.status.finishedAt = Date.now();
+    this.push({
+      type: 'exit',
+      runId,
+      code: success ? 0 : 1,
+      signal: job.shouldStop ? 'SIGTERM' : null,
+      killed: job.shouldStop
+    });
+    job.childDetached = false;
+    job.childProcess = null;
+  }
 
-        const { registerDir, scriptPath, pythonPath, entrypoint } = runtime;
+  private async runPython(job: Job, count: number, settings: Record<string, unknown>) {
+    const runId = job.runId;
+    job.status.phase = 'running';
 
-        // 2. 写入 config.json 到 Python 目录，传递 WebUI 的配置
-        writeConfigForPython(registerDir, settings, count);
-
-        // 3. 构建 SSO 输出目录
-        const ssoOutDir = this.resolveSsoOutDir();
-        if (!fs.existsSync(ssoOutDir)) {
-            fs.mkdirSync(ssoOutDir, { recursive: true });
-        }
-        const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-        const timeStr = new Date().toISOString().slice(11, 19).replace(/:/g, '');
-        const ssoFile = path.join(ssoOutDir, `sso_${dateStr}_${timeStr}_${process.pid}.txt`);
-        this.currentSsoFile = ssoFile;
-
-        // 4. 启动 Python 子进程
-        this.log(runId, `注册脚本目录: ${registerDir}`);
-        this.log(runId, `注册机入口: ${entrypoint}`);
-
-        const args = ['-u', scriptPath, '--count', String(count), '--output', ssoFile];
-
-        await new Promise<void>((resolve) => {
-            // Unix 下 detached 使 Python 成为新进程组 leader，stop 时可 process.kill(-pid) 整树杀掉 Chrome
-            const useDetach = process.platform !== 'win32';
-            const child = spawn(pythonPath, args, {
-                cwd: registerDir,
-                env: {
-                    ...process.env,
-                    PYTHONIOENCODING: 'utf-8',
-                    PYTHONUNBUFFERED: '1',
-                },
-                stdio: ['pipe', 'pipe', 'pipe'],
-                detached: useDetach
-            });
-
-            this.childProcess = child;
-            this.childDetached = useDetach;
-            // 把子进程 pid 暴露给前端状态
-            if (child.pid) {
-                this.status.pid = child.pid;
-            }
-
-            child.stdout?.on('data', (data: Buffer) => {
-                const text = data.toString('utf-8').trim();
-                if (!text) return;
-                for (const line of text.split('\n')) {
-                    const trimmed = line.trim();
-                    if (!trimmed) continue;
-                    this.parsePythonOutput(runId, trimmed, count);
-                }
-            });
-
-            child.stderr?.on('data', (data: Buffer) => {
-                const text = data.toString('utf-8').trim();
-                if (!text) return;
-                for (const line of text.split('\n')) {
-                    const trimmed = line.trim();
-                    if (!trimmed) continue;
-                    this.error(runId, trimmed);
-                }
-            });
-
-            child.on('close', (code) => {
-                this.childProcess = null;
-                this.clearKillTimers();
-
-                // 读取 SSO 文件，提取 token
-                this.extractSsoFromFile(runId, ssoFile);
-
-                if (code === 0 || this.shouldStop) {
-                    this.finalizeRun(runId, true);
-                    resolve();
-                } else {
-                    this.finalizeRun(runId, false);
-                    resolve(); // Don't reject, we handled it
-                }
-            });
-
-            child.on('error', (err) => {
-                this.childProcess = null;
-                this.clearKillTimers();
-                this.error(runId, `Python 进程启动失败: ${err.message}`);
-                this.finalizeRun(runId, false);
-                resolve();
-            });
-        });
+    const runtime = resolveRegisterRuntime(settings);
+    if (!runtime) {
+      throw new Error(
+        '未找到内置注册脚本目录 register/（需含 runner.py 或 DrissionPage_example.py）。' +
+          '若使用 Docker：请勿用空的 ./register 挂载覆盖 /app/register；' +
+          '默认只用 ./data:/data。热更新请挂载完整 register 源码目录。'
+      );
     }
 
-    private parsePythonOutput(runId: string, line: string, total: number) {
-        let msg = line;
-        // 去掉 Python logger 时间戳前缀
-        const tsMatch = msg.match(/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s*\|\s*(.*)/);
-        if (tsMatch) msg = tsMatch[1];
+    const { registerDir, scriptPath, pythonPath, entrypoint } = runtime;
 
-        // 跳过纯装饰线
-        if (/^[═─]+$/.test(msg.trim())) return;
+    // 并行时 config 共用；count 走 CLI，避免互相覆盖轮数
+    writeConfigForPython(registerDir, settings, count);
 
-        // 提取轮次 "─── 第 1/10 轮 ───"：每进入新一轮，清空上一轮残留的 pending
-        const roundMatch = msg.match(/第\s*(\d+)/);
-        if (roundMatch && msg.includes('轮') && !msg.includes('成功') && !msg.includes('失败')) {
-            const current = parseInt(roundMatch[1], 10);
-            this.status.current = current;
-            this.pendingAccount = {};
-            this.push({ type: 'progress', runId, current, total });
+    const ssoOutDir = this.resolveSsoOutDir();
+    if (!fs.existsSync(ssoOutDir)) {
+      fs.mkdirSync(ssoOutDir, { recursive: true });
+    }
+    const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const timeStr = new Date().toISOString().slice(11, 19).replace(/:/g, '');
+    const ssoFile = path.join(
+      ssoOutDir,
+      `sso_${dateStr}_${timeStr}_${runId.slice(0, 8)}.txt`
+    );
+    job.currentSsoFile = ssoFile;
+
+    this.log(runId, `注册脚本目录: ${registerDir}`);
+    this.log(runId, `注册机入口: ${entrypoint}`);
+
+    const args = ['-u', scriptPath, '--count', String(count), '--output', ssoFile];
+
+    await new Promise<void>((resolve) => {
+      const useDetach = process.platform !== 'win32';
+      const child = spawn(pythonPath, args, {
+        cwd: registerDir,
+        env: {
+          ...process.env,
+          PYTHONIOENCODING: 'utf-8',
+          PYTHONUNBUFFERED: '1',
+          GROK_RUN_ID: runId
+        },
+        stdio: ['pipe', 'pipe', 'pipe'],
+        detached: useDetach
+      });
+
+      job.childProcess = child;
+      job.childDetached = useDetach;
+      if (child.pid) {
+        job.status.pid = child.pid;
+      }
+
+      child.stdout?.on('data', (data: Buffer) => {
+        const text = data.toString('utf-8').trim();
+        if (!text) return;
+        for (const line of text.split('\n')) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          this.parsePythonOutput(job, trimmed, count);
         }
+      });
 
-        // 提取邮箱（注册时 / 本轮完成时都会打印，后者覆盖前者）
-        const emailMatch =
-            msg.match(/已填写邮箱并点击注册:\s*(\S+)/) ||
-            msg.match(/本轮注册完成，邮箱:\s*(\S+)/);
-        if (emailMatch) {
-            this.pendingAccount.email = emailMatch[1];
+      child.stderr?.on('data', (data: Buffer) => {
+        const text = data.toString('utf-8').trim();
+        if (!text) return;
+        for (const line of text.split('\n')) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          this.error(runId, trimmed);
         }
+      });
 
-        // 提取密码 "已填写注册资料并点击完成注册: 名 姓 / 密码"
-        const passwordMatch = msg.match(/已填写注册资料并点击完成注册:\s*\S+\s+\S+\s*\/\s*(.+)$/);
-        if (passwordMatch) {
-            this.pendingAccount.password = passwordMatch[1].trim();
-        }
-
-        // 成功 "✔ 第 N 轮成功"：累加成功数并关联出一条账号记录
-        // 兼容可能的 emoji 变体 / 乱码（✔ �️ 等）
-        const isRoundSuccess =
-            (/[✔✅✓]/.test(msg) || msg.includes('轮成功')) &&
-            msg.includes('成功') &&
-            /第\s*\d+/.test(msg) &&
-            !msg.includes('失败');
-        if (isRoundSuccess) {
-            this.status.success++;
-            this.push({
-                type: 'success',
-                runId,
-                success: this.status.success,
-                failed: this.status.failed,
-                total
-            });
-            this.recordAccount(runId);
-        }
-
-        // 失败 "✘ 第 N 轮失败" —— 必须推送 failed 事件，否则前端只显示 0
-        const isRoundFail =
-            (/[✘❌✕xX]/.test(msg) || msg.includes('轮失败')) &&
-            msg.includes('失败') &&
-            /第\s*\d+/.test(msg);
-        if (isRoundFail) {
-            this.status.failed++;
-            this.pendingAccount = {};
-            this.push({
-                type: 'failed',
-                runId,
-                success: this.status.success,
-                failed: this.status.failed,
-                total
-            });
-        }
-
-        // 转发到 WebUI
-        if (isRoundFail || msg.startsWith('✘') || msg.includes('[Error]') || msg.includes('失败')) {
-            this.error(runId, msg);
+      child.on('close', (code) => {
+        job.childProcess = null;
+        this.clearKillTimers(job);
+        this.extractSsoFromFile(runId, ssoFile);
+        if (code === 0 || job.shouldStop) {
+          this.finalizeRun(runId, true);
+          resolve();
         } else {
-            this.log(runId, msg);
+          this.finalizeRun(runId, false);
+          resolve();
         }
+      });
+
+      child.on('error', (err) => {
+        job.childProcess = null;
+        this.clearKillTimers(job);
+        this.error(runId, `Python 进程启动失败: ${err.message}`);
+        this.finalizeRun(runId, false);
+        resolve();
+      });
+    });
+  }
+
+  private parsePythonOutput(job: Job, line: string, total: number) {
+    const runId = job.runId;
+    let msg = line;
+    const tsMatch = msg.match(/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s*\|\s*(.*)/);
+    if (tsMatch) msg = tsMatch[1];
+
+    if (/^[═─]+$/.test(msg.trim())) return;
+
+    const roundMatch = msg.match(/第\s*(\d+)/);
+    if (roundMatch && msg.includes('轮') && !msg.includes('成功') && !msg.includes('失败')) {
+      const current = parseInt(roundMatch[1], 10);
+      job.status.current = current;
+      job.pendingAccount = {};
+      this.push({ type: 'progress', runId, current, total });
     }
 
-    private recordAccount(runId: string) {
-        const { email, password } = this.pendingAccount;
-        this.pendingAccount = {};
-        if (!email && !password) return;
+    const emailMatch =
+      msg.match(/已填写邮箱并点击注册:\s*(\S+)/) || msg.match(/本轮注册完成，邮箱:\s*(\S+)/);
+    if (emailMatch) {
+      job.pendingAccount.email = emailMatch[1];
+    }
 
-        // 该轮已由 Python 追加：email | password | sso
-        let sso = '';
-        let fileEmail = '';
-        let filePassword = '';
-        try {
-            if (this.currentSsoFile && fs.existsSync(this.currentSsoFile)) {
-                const lines = fs
-                    .readFileSync(this.currentSsoFile, 'utf-8')
-                    .split(/\r?\n/)
-                    .map((l) => l.trim())
-                    .filter((l) => l.length > 0);
-                if (lines.length > 0) {
-                    const last = lines[lines.length - 1];
-                    if (last.includes(' | ')) {
-                        const parts = last.split(' | ').map((p) => p.trim());
-                        fileEmail = parts[0] || '';
-                        filePassword = parts[1] || '';
-                        sso = parts.slice(2).join(' | ').replace(/^sso=/i, '');
-                    } else if (last.includes('----')) {
-                        const parts = last.split('----');
-                        fileEmail = (parts[0] || '').trim();
-                        filePassword = (parts[1] || '').trim();
-                        sso = parts.slice(2).join('----').trim().replace(/^sso=/i, '');
-                    } else {
-                        sso = last.replace(/^sso=/i, '');
-                    }
-                }
-            }
-        } catch {
-            // ignore
+    const passwordMatch = msg.match(/已填写注册资料并点击完成注册:\s*\S+\s+\S+\s*\/\s*(.+)$/);
+    if (passwordMatch) {
+      job.pendingAccount.password = passwordMatch[1].trim();
+    }
+
+    const isRoundSuccess =
+      (/[✔✅✓]/.test(msg) || msg.includes('轮成功')) &&
+      msg.includes('成功') &&
+      /第\s*\d+/.test(msg) &&
+      !msg.includes('失败');
+    if (isRoundSuccess) {
+      job.status.success++;
+      this.push({
+        type: 'success',
+        runId,
+        success: job.status.success,
+        failed: job.status.failed,
+        total
+      });
+      this.recordAccount(job);
+    }
+
+    const isRoundFail =
+      (/[✘❌✕xX]/.test(msg) || msg.includes('轮失败')) &&
+      msg.includes('失败') &&
+      /第\s*\d+/.test(msg);
+    if (isRoundFail) {
+      job.status.failed++;
+      job.pendingAccount = {};
+      this.push({
+        type: 'failed',
+        runId,
+        success: job.status.success,
+        failed: job.status.failed,
+        total
+      });
+    }
+
+    if (isRoundFail || msg.startsWith('✘') || msg.includes('[Error]') || msg.includes('失败')) {
+      this.error(runId, msg);
+    } else {
+      this.log(runId, msg);
+    }
+  }
+
+  private recordAccount(job: Job) {
+    const runId = job.runId;
+    const { email, password } = job.pendingAccount;
+    job.pendingAccount = {};
+    if (!email && !password) return;
+
+    let sso = '';
+    let fileEmail = '';
+    let filePassword = '';
+    try {
+      if (job.currentSsoFile && fs.existsSync(job.currentSsoFile)) {
+        const lines = fs
+          .readFileSync(job.currentSsoFile, 'utf-8')
+          .split(/\r?\n/)
+          .map((l) => l.trim())
+          .filter((l) => l.length > 0);
+        if (lines.length > 0) {
+          const last = lines[lines.length - 1];
+          if (last.includes(' | ')) {
+            const parts = last.split(' | ').map((p) => p.trim());
+            fileEmail = parts[0] || '';
+            filePassword = parts[1] || '';
+            sso = parts.slice(2).join(' | ').replace(/^sso=/i, '');
+          } else if (last.includes('----')) {
+            const parts = last.split('----');
+            fileEmail = (parts[0] || '').trim();
+            filePassword = (parts[1] || '').trim();
+            sso = parts.slice(2).join('----').trim().replace(/^sso=/i, '');
+          } else {
+            sso = last.replace(/^sso=/i, '');
+          }
         }
-
-        const record: AccountRecord = {
-            id: randomUUID(),
-            runId,
-            email: email || fileEmail || '',
-            password: password || filePassword || '',
-            sso,
-            createdAt: new Date().toISOString()
-        };
-
-        this.push({ type: 'account', runId, record });
-        void appendAccount(record).catch((e) => {
-            this.error(runId, `账号记录写入失败: ${e instanceof Error ? e.message : String(e)}`);
-        });
+      }
+    } catch {
+      /* ignore */
     }
 
-    private extractSsoFromFile(runId: string, ssoFile: string) {
-        try {
-            if (!fs.existsSync(ssoFile)) return;
-            const content = fs.readFileSync(ssoFile, 'utf-8');
-            const lines = content.split('\n').filter(l => l.trim());
-            for (const line of lines) {
-                let token = line.trim();
-                if (token.includes(' | ')) {
-                    const parts = token.split(' | ').map((p) => p.trim());
-                    token = parts.slice(2).join(' | ') || parts[parts.length - 1] || '';
-                } else if (token.includes('----')) {
-                    const parts = token.split('----');
-                    token = parts.slice(2).join('----').trim() || parts[parts.length - 1] || '';
-                }
-                token = token.replace(/^sso=/i, '');
-                if (token) {
-                    this.collectedTokens.push(`sso=${token}`);
-                    this.push({ type: 'sso', runId, token: `sso=${token}` });
-                }
-            }
-            if (lines.length > 0) {
-                this.log(runId, `共提取到 ${lines.length} 个 SSO token`);
-                // 也复制一份到 WebUI 的标准 sso 目录
-                this.copySsoToStandardDir(ssoFile);
-            }
-        } catch (e) {
-            // ignore
+    const record: AccountRecord = {
+      id: randomUUID(),
+      runId,
+      email: email || fileEmail || '',
+      password: password || filePassword || '',
+      sso,
+      createdAt: new Date().toISOString()
+    };
+
+    this.push({ type: 'account', runId, record });
+    void appendAccount(record).catch((e) => {
+      this.error(runId, `账号记录写入失败: ${e instanceof Error ? e.message : String(e)}`);
+    });
+  }
+
+  private extractSsoFromFile(runId: string, ssoFile: string) {
+    try {
+      if (!fs.existsSync(ssoFile)) return;
+      const content = fs.readFileSync(ssoFile, 'utf-8');
+      const lines = content.split('\n').filter((l) => l.trim());
+      for (const line of lines) {
+        let token = line.trim();
+        if (token.includes(' | ')) {
+          const parts = token.split(' | ').map((p) => p.trim());
+          token = parts.slice(2).join(' | ') || parts[parts.length - 1] || '';
+        } else if (token.includes('----')) {
+          const parts = token.split('----');
+          token = parts.slice(2).join('----').trim() || parts[parts.length - 1] || '';
         }
-    }
-
-    private copySsoToStandardDir(ssoFile: string) {
-        try {
-            const outDir = this.resolveSsoOutDir();
-            if (!fs.existsSync(outDir)) {
-                fs.mkdirSync(outDir, { recursive: true });
-            }
-            const basename = path.basename(ssoFile);
-            const dest = path.join(outDir, basename);
-            if (path.resolve(ssoFile) !== path.resolve(dest)) {
-                fs.copyFileSync(ssoFile, dest);
-            }
-        } catch (e) {
-            // ignore
+        token = token.replace(/^sso=/i, '');
+        if (token) {
+          this.push({ type: 'sso', runId, token: `sso=${token}` });
         }
+      }
+      if (lines.length > 0) {
+        this.log(runId, `共提取到 ${lines.length} 个 SSO token`);
+        this.copySsoToStandardDir(ssoFile);
+      }
+    } catch {
+      /* ignore */
     }
+  }
 
-    private resolveSsoOutDir(): string {
-        if (process.env.SSO_DIR) return path.resolve(process.env.SSO_DIR);
-        if (process.env.DATA_DIR) return path.resolve(process.env.DATA_DIR, 'sso');
-        return path.resolve(process.cwd(), 'out', 'sso');
+  private copySsoToStandardDir(ssoFile: string) {
+    try {
+      const outDir = this.resolveSsoOutDir();
+      if (!fs.existsSync(outDir)) {
+        fs.mkdirSync(outDir, { recursive: true });
+      }
+      const basename = path.basename(ssoFile);
+      const dest = path.join(outDir, basename);
+      if (path.resolve(ssoFile) !== path.resolve(dest)) {
+        fs.copyFileSync(ssoFile, dest);
+      }
+    } catch {
+      /* ignore */
     }
+  }
+
+  private resolveSsoOutDir(): string {
+    if (process.env.SSO_DIR) return path.resolve(process.env.SSO_DIR);
+    if (process.env.DATA_DIR) return path.resolve(process.env.DATA_DIR, 'sso');
+    return path.resolve(process.cwd(), 'out', 'sso');
+  }
 }
 
 export const registerBot = new RegisterBot();

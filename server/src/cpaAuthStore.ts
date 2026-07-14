@@ -7,6 +7,7 @@ import { join, resolve, basename } from 'node:path';
 import { spawn } from 'node:child_process';
 import { loadSettings, dataDir } from './settingsStore.js';
 import { resolveRegisterRuntime } from './bot/registerRuntime.js';
+import { readBotFlagFromAuthRecord, readBotFlagFromToken } from './jwtBotFlag.js';
 
 export interface CpaAuthItem {
   filename: string;
@@ -24,6 +25,9 @@ export interface CpaAuthItem {
   /** 综合：文件名或 type 任一满足视为带 xai 标识 */
   xai: boolean;
   authType: string;
+  /** access_token/sso JWT 中的 bot_flag_source */
+  botFlagSource?: number | string | null;
+  isBotFlag1?: boolean;
 }
 
 export interface CpaAuthBatchResultItem {
@@ -36,9 +40,11 @@ export interface CpaAuthBatchResultItem {
   xai?: boolean;
   xaiFilename?: boolean;
   xaiType?: boolean;
-  /** mint 预检：alive | dead | banned | unknown */
+  /** mint 预检：alive | dead | banned | unknown | bot_flag */
   verdict?: string;
   skipped?: boolean;
+  botFlagSource?: number | string | null;
+  isBotFlag1?: boolean;
   /** cehuo 风格 CPA /responses 测活 */
   probeAction?: string;
   probeHttp?: number;
@@ -157,6 +163,7 @@ export async function listCpaAuth(): Promise<{ dir: string; items: CpaAuthItem[]
         data = {};
       }
       const flags = xaiFlags(name, data);
+      const bot = readBotFlagFromAuthRecord(data);
       items.push({
         filename: name,
         path: full,
@@ -166,6 +173,8 @@ export async function listCpaAuth(): Promise<{ dir: string; items: CpaAuthItem[]
         disabled: Boolean(data.disabled),
         hasRefresh: Boolean(data.refresh_token),
         mtime: st.mtimeMs,
+        botFlagSource: bot.botFlagSource,
+        isBotFlag1: bot.isBotFlag1,
         ...flags
       });
     } catch {
@@ -292,6 +301,11 @@ export async function mintCpaAuthFromSso(input: {
   concurrency?: number;
   /** 默认 true：mint 前用 sso_probe 验活，仅存活 SSO 继续 */
   precheck?: boolean;
+  /**
+   * 默认 true：SSO JWT 中 bot_flag_source===1 时跳过 mint。
+   * 只读过滤，无法改掉服务端已签发的 claim。
+   */
+  skipBotFlag1?: boolean;
 }): Promise<{
   total: number;
   ok: number;
@@ -299,12 +313,14 @@ export async function mintCpaAuthFromSso(input: {
   skipped: number;
   alive: number;
   banned: number;
+  botFlagSkipped?: number;
   results: CpaAuthBatchResultItem[];
 }> {
   const items = Array.isArray(input.items) ? input.items : [];
   if (items.length === 0) throw new Error('缺少 SSO 列表');
   if (items.length > 50) throw new Error('单次 mint 最多 50 个');
   const doPrecheck = input.precheck !== false;
+  const skipBotFlag1 = input.skipBotFlag1 !== false;
 
   const settings = await loadSettings();
   const dir = resolveAuthDir(settings.authDir);
@@ -366,6 +382,20 @@ print(json.dumps(r, ensure_ascii=False))
         });
         continue;
       }
+      const ssoFlag = readBotFlagFromToken(sso);
+      if (skipBotFlag1 && ssoFlag.isBotFlag1) {
+        results.push({
+          email,
+          ok: false,
+          skipped: true,
+          mode: 'skipped_bot_flag',
+          verdict: 'bot_flag',
+          botFlagSource: ssoFlag.botFlagSource,
+          isBotFlag1: true,
+          error: 'bot_flag_source=1（已跳过 mint）'
+        });
+        continue;
+      }
       try {
         const r = await runPythonJson(runtime!.pythonPath, runtime!.registerDir, code, [
           sso,
@@ -382,6 +412,8 @@ print(json.dumps(r, ensure_ascii=False))
             skipped: true,
             mode: String(r.mode || 'skipped_dead'),
             verdict: String(r.verdict || 'dead'),
+            botFlagSource: ssoFlag.botFlagSource,
+            isBotFlag1: ssoFlag.isBotFlag1,
             error: r.error ? String(r.error) : 'sso not alive'
           });
           continue;
@@ -394,6 +426,18 @@ print(json.dumps(r, ensure_ascii=False))
         const flags = outPath
           ? await readXaiAfter(outPath)
           : { xai: false, xaiFilename: false, xaiType: false, authType: '' };
+        let outFlag = ssoFlag;
+        if (outPath && existsSync(outPath)) {
+          try {
+            const data = JSON.parse(await fsp.readFile(outPath, 'utf-8')) as Record<
+              string,
+              unknown
+            >;
+            outFlag = readBotFlagFromAuthRecord(data);
+          } catch {
+            /* keep sso flag */
+          }
+        }
         results.push({
           filename: String(r.filename || (outPath ? basename(outPath) : '')),
           email: String(r.email || email),
@@ -406,6 +450,8 @@ print(json.dumps(r, ensure_ascii=False))
           xai: flags.xai,
           xaiFilename: flags.xaiFilename,
           xaiType: flags.xaiType,
+          botFlagSource: outFlag.botFlagSource,
+          isBotFlag1: outFlag.isBotFlag1,
           probeAction: probeObj ? String(probeObj.action || '') : undefined,
           probeHttp: probeObj
             ? Number(probeObj.http_status || 0) || undefined
@@ -418,6 +464,8 @@ print(json.dumps(r, ensure_ascii=False))
           ok: false,
           skipped: false,
           mode: 'sso_mint_error',
+          botFlagSource: ssoFlag.botFlagSource,
+          isBotFlag1: ssoFlag.isBotFlag1,
           error: err instanceof Error ? err.message : String(err)
         });
       }
@@ -428,6 +476,9 @@ print(json.dumps(r, ensure_ascii=False))
   const ok = results.filter((r) => r.ok).length;
   const skipped = results.filter((r) => r.skipped).length;
   const banned = results.filter((r) => r.verdict === 'banned' || r.mode === 'skipped_banned').length;
+  const botFlagSkipped = results.filter(
+    (r) => r.verdict === 'bot_flag' || r.mode === 'skipped_bot_flag'
+  ).length;
   const alive = results.filter((r) => !r.skipped).length;
   return {
     total: results.length,
@@ -436,6 +487,7 @@ print(json.dumps(r, ensure_ascii=False))
     skipped,
     alive,
     banned,
+    botFlagSkipped,
     results
   };
 }
@@ -448,6 +500,7 @@ export async function probeCpaAuthBatch(input: {
   filenames?: string[];
   paths?: string[];
   concurrency?: number;
+  /** 未传时读 settings.cpaProbeDeleteOnDead，默认 true */
   deleteOnDead?: boolean;
 }): Promise<{
   total: number;
@@ -470,8 +523,11 @@ export async function probeCpaAuthBatch(input: {
   if (jobs.length === 0) throw new Error('缺少 filenames 或 paths');
   if (jobs.length > 200) throw new Error('单次批量测活最多 200 个');
 
-  const deleteOnDead = input.deleteOnDead !== false;
   const settings = await loadSettings();
+  const deleteOnDead =
+    input.deleteOnDead !== undefined
+      ? input.deleteOnDead !== false
+      : settings.cpaProbeDeleteOnDead !== false;
   const dir = resolveAuthDir(settings.authDir);
   const runtime = resolveRegisterRuntime(settings);
   if (!runtime) throw new Error('未找到注册脚本目录，无法调用 Python 测活');
@@ -555,4 +611,107 @@ print(json.dumps(r, ensure_ascii=False))
     keep,
     results
   };
+}
+
+/** 批量删除 CPA auth 文件（仅 auth 目录内 .json） */
+export async function deleteCpaAuthBatch(input: {
+  filenames?: string[];
+  paths?: string[];
+}): Promise<{
+  total: number;
+  deleted: number;
+  failed: number;
+  results: CpaAuthBatchResultItem[];
+}> {
+  const names = Array.isArray(input.filenames) ? input.filenames : [];
+  const paths = Array.isArray(input.paths) ? input.paths : [];
+  const jobs: { filename?: string; path?: string }[] = [];
+  for (const f of names) {
+    if (String(f || '').trim()) jobs.push({ filename: String(f).trim() });
+  }
+  for (const p of paths) {
+    if (String(p || '').trim()) jobs.push({ path: String(p).trim() });
+  }
+  if (jobs.length === 0) throw new Error('缺少 filenames 或 paths');
+  if (jobs.length > 500) throw new Error('单次批量删除最多 500 个');
+
+  const settings = await loadSettings();
+  const dir = resolveAuthDir(settings.authDir);
+  const results: CpaAuthBatchResultItem[] = [];
+
+  for (const job of jobs) {
+    let resolved = '';
+    try {
+      if (job.path) {
+        resolved = resolve(job.path);
+      } else {
+        const name = basename(String(job.filename || '').trim());
+        if (!name || name.includes('..') || !name.endsWith('.json')) {
+          throw new Error('无效的 filename');
+        }
+        resolved = join(dir, name);
+      }
+      assertInsideAuthDir(resolved, dir);
+      if (!existsSync(resolved)) throw new Error(`文件不存在: ${resolved}`);
+      await fsp.unlink(resolved);
+      results.push({
+        filename: basename(resolved),
+        ok: true,
+        mode: 'deleted',
+        path: resolved
+      });
+    } catch (err) {
+      results.push({
+        filename: job.filename || basename(job.path || resolved || ''),
+        ok: false,
+        mode: 'delete_error',
+        error: err instanceof Error ? err.message : String(err)
+      });
+    }
+  }
+
+  const deleted = results.filter((r) => r.ok).length;
+  return {
+    total: results.length,
+    deleted,
+    failed: results.length - deleted,
+    results
+  };
+}
+
+/** 读取 auth 文件内容（导出用）；单次最多 200 个 */
+export async function readCpaAuthFiles(input: {
+  filenames?: string[];
+}): Promise<{
+  dir: string;
+  files: Array<{ filename: string; email: string; content: string }>;
+}> {
+  const names = Array.isArray(input.filenames) ? input.filenames : [];
+  const list = names.map((n) => String(n || '').trim()).filter(Boolean);
+  if (list.length === 0) throw new Error('缺少 filenames');
+  if (list.length > 200) throw new Error('单次导出最多 200 个');
+
+  const settings = await loadSettings();
+  const dir = resolveAuthDir(settings.authDir);
+  const files: Array<{ filename: string; email: string; content: string }> = [];
+
+  for (const raw of list) {
+    const name = basename(raw);
+    if (!name || name.includes('..') || !name.endsWith('.json')) {
+      throw new Error(`无效的 filename: ${raw}`);
+    }
+    const full = join(dir, name);
+    assertInsideAuthDir(full, dir);
+    if (!existsSync(full)) continue;
+    const content = await fsp.readFile(full, 'utf-8');
+    let email = '';
+    try {
+      const data = JSON.parse(content) as Record<string, unknown>;
+      email = String(data.email || '');
+    } catch {
+      /* ignore */
+    }
+    files.push({ filename: name, email, content });
+  }
+  return { dir, files };
 }

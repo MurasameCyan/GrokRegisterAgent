@@ -630,6 +630,25 @@ export function SettingsForm() {
                     />
                   </Field>
                   <Field
+                    label="IP 使用间隔（秒）"
+                    hint="同一 IP 注册一次后，间隔未到则暂停队列等待；0=不限制。优先换其它已冷却 IP"
+                    error={errors.proxyIpIntervalSec}
+                  >
+                    <Input
+                      type="number"
+                      min={0}
+                      max={86400}
+                      value={draft.proxyIpIntervalSec ?? 0}
+                      onChange={(e) =>
+                        update(
+                          'proxyIpIntervalSec',
+                          Math.max(0, Math.min(86400, Number(e.target.value) || 0))
+                        )
+                      }
+                      placeholder="0"
+                    />
+                  </Field>
+                  <Field
                     label="测活并发"
                     hint="全部测活时的并发数（1～20）"
                     error={errors.proxyProbeConcurrency}
@@ -731,6 +750,12 @@ export function SettingsForm() {
             hint="注册成功后走授权码流程换 token，写出 xai-*.json；最新 CPA 关闭 using_api 即可用"
             checked={draft.autoAuthExport}
             onChange={(v) => update('autoAuthExport', v)}
+          />
+          <ToggleRow
+            label="测活死号自动删除"
+            hint="Auth 页 CPA 测活遇 401/402/403 时删除文件；关闭则仅标记死号"
+            checked={draft.cpaProbeDeleteOnDead !== false}
+            onChange={(v) => update('cpaProbeDeleteOnDead', v)}
           />
           <Field label="Auth 目录" hint="空则 DATA_DIR/auth（容器内多为 /data/auth）">
             <Input

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   CheckSquare,
   ChevronLeft,
@@ -8,12 +8,15 @@ import {
   Eye,
   EyeOff,
   FileDown,
+  FileUp,
   KeyRound,
   ListChecks,
   RefreshCcw,
   ShieldCheck,
   Square,
-  Wand2
+  Trash2,
+  Wand2,
+  X
 } from 'lucide-react';
 import { Button } from '@renderer/components/ui/Button';
 import { AccountDetailDrawer } from '@renderer/components/domain/AccountDetailDrawer';
@@ -21,14 +24,21 @@ import { useAccountsStore } from '@renderer/store/accountsStore';
 import { useRunStore } from '@renderer/store/runStore';
 import { useToastStore } from '@renderer/store/toastStore';
 import { cn } from '@renderer/lib/cn';
+import {
+  loadEmailPrivacyMask,
+  maskEmail,
+  saveEmailPrivacyMask
+} from '@renderer/lib/maskEmail';
+import { readBotFlagFromSso } from '@renderer/lib/botFlag';
 import { fmtBeijing, fmtBeijingTime } from '@renderer/lib/time';
 import type { AccountRecord } from '@shared/runEvents';
-import type { SsoCheckResult } from '@shared/ipc';
+import type { CpaAuthBatchResultItem, SsoCheckResult } from '@shared/ipc';
 
 const PAGE_SIZE_OPTIONS = [10, 20, 50, 100, 500, 1000, 2000] as const;
 type PageSize = (typeof PAGE_SIZE_OPTIONS)[number];
 const DEFAULT_PAGE_SIZE: PageSize = 20;
 const PAGE_SIZE_KEY = 'gra-pool-page-size';
+const MINT_CHUNK = 5;
 
 function loadPageSize(): PageSize {
   try {
@@ -58,21 +68,105 @@ function download(filename: string, text: string) {
   URL.revokeObjectURL(url);
 }
 
+type MintProgress = {
+  total: number;
+  done: number;
+  ok: number;
+  failed: number;
+  skipped: number;
+  banned: number;
+  current?: string;
+  running: boolean;
+};
+
 export function PoolPage() {
   const accounts = useAccountsStore((s) => s.accounts);
   const loading = useAccountsStore((s) => s.loading);
   const reload = useAccountsStore((s) => s.reload);
   const resync = useAccountsStore((s) => s.resync);
+  const remove = useAccountsStore((s) => s.remove);
+  const importText = useAccountsStore((s) => s.importText);
   const phase = useRunStore((s) => s.status.phase);
   const push = useToastStore((s) => s.push);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [ssoMap, setSsoMap] = useState<Map<string, SsoCheckResult>>(new Map());
   const [verifying, setVerifying] = useState(false);
-  const [minting, setMinting] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const [importDraft, setImportDraft] = useState('');
+  const [importSource, setImportSource] = useState('paste');
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [lastRefresh, setLastRefresh] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<PageSize>(() => loadPageSize());
+  const [mintProg, setMintProg] = useState<MintProgress | null>(null);
+  const [emailMasked, setEmailMasked] = useState(() => loadEmailPrivacyMask());
+  /** 补 Auth 时跳过 bot_flag_source=1（默认开，localStorage 记忆） */
+  const [skipBotFlag1, setSkipBotFlag1] = useState(() => {
+    try {
+      const v = localStorage.getItem('gra-skip-bot-flag1');
+      if (v === null) return true;
+      return v === '1' || v === 'true';
+    } catch {
+      return true;
+    }
+  });
+
+  const toggleEmailPrivacy = () => {
+    setEmailMasked((prev) => {
+      const next = !prev;
+      saveEmailPrivacyMask(next);
+      return next;
+    });
+  };
+
+  const doImport = async () => {
+    const text = importDraft.trim();
+    if (!text) {
+      push({ tone: 'warn', title: '请粘贴或选择文件' });
+      return;
+    }
+    setImporting(true);
+    try {
+      const r = await importText(text, importSource || 'paste');
+      push({
+        tone: r.imported > 0 ? 'ok' : 'warn',
+        title: 'SSO 导入完成',
+        description: `新增 ${r.imported} · 跳过 ${r.skipped} · 无效 ${r.invalid} · 号池 ${r.remaining}`
+      });
+      if (r.imported > 0) {
+        setImportOpen(false);
+        setImportDraft('');
+        setImportSource('paste');
+      }
+    } catch (err) {
+      push({
+        tone: 'danger',
+        title: '导入失败',
+        description: err instanceof Error ? err.message : String(err)
+      });
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const onPickImportFile = async (file: File | null) => {
+    if (!file) return;
+    try {
+      const text = await file.text();
+      setImportDraft(text);
+      setImportSource(file.name || 'file');
+      setImportOpen(true);
+    } catch (err) {
+      push({
+        tone: 'danger',
+        title: '读取文件失败',
+        description: err instanceof Error ? err.message : String(err)
+      });
+    }
+  };
 
   const changePageSize = (size: PageSize) => {
     setPageSize(size);
@@ -159,9 +253,7 @@ export function PoolPage() {
   /** 全选：所有分页中的全部账号 */
   const selectAll = () => {
     if (accounts.length === 0) return;
-    setSelected(
-      allSelected ? new Set() : new Set(accounts.map((a) => a.id))
-    );
+    setSelected(allSelected ? new Set() : new Set(accounts.map((a) => a.id)));
   };
 
   /** 本页：仅当前页 */
@@ -231,7 +323,36 @@ export function PoolPage() {
     }
   };
 
-  /** 号池 SSO → 预检存活后 CPA auth 补 mint（写入 auth 目录） */
+  const deleteSelected = async () => {
+    const ids = [...selected];
+    if (ids.length === 0) {
+      push({ tone: 'warn', title: '请先勾选要删除的账号' });
+      return;
+    }
+    if (!window.confirm(`确认从号池删除 ${ids.length} 个账号？\n（仅删号池记录，不删 SSO 历史文件）`)) {
+      return;
+    }
+    setDeleting(true);
+    try {
+      const r = await remove(ids);
+      setSelected(new Set());
+      push({
+        tone: 'ok',
+        title: '已删除',
+        description: `删除 ${r.deleted} · 剩余 ${r.remaining}`
+      });
+    } catch (err) {
+      push({
+        tone: 'danger',
+        title: '删除失败',
+        description: err instanceof Error ? err.message : String(err)
+      });
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  /** 号池 SSO → 预检存活后 CPA auth 补 mint；分块并显示进度 */
   const mintAuthFromSso = async () => {
     const targets = (selected.size > 0 ? accounts.filter((a) => selected.has(a.id)) : accounts).filter(
       (a) => a.sso
@@ -240,42 +361,113 @@ export function PoolPage() {
       push({ tone: 'warn', title: '没有可 mint 的 SSO' });
       return;
     }
-    if (targets.length > 50) {
-      push({ tone: 'warn', title: '单次最多 50 个', description: '请缩小选择范围后再试' });
+    if (targets.length > 200) {
+      push({ tone: 'warn', title: '单次最多 200 个', description: '请缩小选择范围后再试' });
       return;
     }
-    setMinting(true);
+
+    setMintProg({
+      total: targets.length,
+      done: 0,
+      ok: 0,
+      failed: 0,
+      skipped: 0,
+      banned: 0,
+      running: true,
+      current: targets[0]?.email || ''
+    });
+
+    let ok = 0;
+    let failed = 0;
+    let skipped = 0;
+    let banned = 0;
+    let probeDead = 0;
+    let probeOk = 0;
+    let noXai = 0;
+    const allResults: CpaAuthBatchResultItem[] = [];
+
     try {
-      const r = await window.api.mintCpaAuthFromSso({
-        items: targets.map((a) => ({ sso: a.sso, email: a.email }))
-      });
-      const noXai = r.results.filter((x) => x.ok && x.xai === false).length;
-      const skipped = r.skipped ?? r.results.filter((x) => x.skipped).length;
-      const banned = r.banned ?? r.results.filter((x) => x.verdict === 'banned').length;
-      const probeDead = r.results.filter((x) => x.probeAction === 'dead' || x.probeDeleted).length;
-      const probeOk = r.results.filter((x) => x.probeAction === 'ok').length;
+      for (let i = 0; i < targets.length; i += MINT_CHUNK) {
+        const chunk = targets.slice(i, i + MINT_CHUNK);
+        setMintProg((p) =>
+          p
+            ? {
+                ...p,
+                current: chunk[0]?.email || chunk[0]?.sso?.slice(0, 12) || '',
+                running: true
+              }
+            : p
+        );
+        const r = await window.api.mintCpaAuthFromSso({
+          items: chunk.map((a) => ({ sso: a.sso, email: a.email })),
+          concurrency: Math.min(3, chunk.length),
+          skipBotFlag1
+        });
+        allResults.push(...(r.results || []));
+        ok += r.ok || 0;
+        failed += r.failed || 0;
+        skipped += r.skipped ?? r.results.filter((x) => x.skipped).length;
+        banned += r.banned ?? r.results.filter((x) => x.verdict === 'banned').length;
+        const botSkip =
+          r.botFlagSkipped ?? r.results.filter((x) => x.verdict === 'bot_flag').length;
+        skipped += 0; // keep skipped as server total
+        probeDead += r.results.filter((x) => x.probeAction === 'dead' || x.probeDeleted).length;
+        probeOk += r.results.filter((x) => x.probeAction === 'ok').length;
+        noXai += r.results.filter((x) => x.ok && x.xai === false).length;
+        // bot flag 计入 skipped 已由 r.skipped 包含
+        void botSkip;
+
+        const done = Math.min(i + chunk.length, targets.length);
+        setMintProg({
+          total: targets.length,
+          done,
+          ok,
+          failed,
+          skipped,
+          banned,
+          current: chunk[chunk.length - 1]?.email || '',
+          running: done < targets.length
+        });
+      }
+
+      const botFlagN = allResults.filter((x) => x.verdict === 'bot_flag').length;
       const parts = [
-        `成功 ${r.ok}`,
-        `失败 ${r.failed}`,
+        `成功 ${ok}`,
+        `失败 ${failed}`,
         skipped ? `预检跳过 ${skipped}` : '',
+        botFlagN ? `bot_flag=1 跳过 ${botFlagN}` : '',
         banned ? `封禁 ${banned}` : '',
         probeOk ? `CPA测活OK ${probeOk}` : '',
         probeDead ? `CPA测活挂 ${probeDead}` : '',
-        noXai ? `无 xai ${noXai}` : r.ok > 0 ? '均含 xai' : ''
+        noXai ? `无 xai ${noXai}` : ok > 0 ? '均含 xai' : ''
       ].filter(Boolean);
       push({
-        tone: r.failed > 0 || banned > 0 || probeDead > 0 ? 'warn' : r.ok > 0 ? 'ok' : 'warn',
-        title: 'SSO 补 mint 完成（预检+CPA测活）',
+        tone: failed > 0 || banned > 0 || probeDead > 0 ? 'warn' : ok > 0 ? 'ok' : 'warn',
+        title: 'SSO 补 Auth 完成',
         description: parts.join(' · ')
       });
     } catch (err) {
       push({
         tone: 'danger',
-        title: '补 mint 失败',
+        title: '补 Auth 失败',
         description: err instanceof Error ? err.message : String(err)
       });
     } finally {
-      setMinting(false);
+      setMintProg((p) =>
+        p
+          ? {
+              ...p,
+              running: false,
+              done: p.total,
+              ok,
+              failed,
+              skipped,
+              banned
+            }
+          : null
+      );
+      // 进度条保留几秒再收起
+      window.setTimeout(() => setMintProg(null), 4000);
     }
   };
 
@@ -283,6 +475,13 @@ export function PoolPage() {
   const openAccount = accounts.find((a) => a.id === openId) ?? null;
   const rangeFrom = accounts.length === 0 ? 0 : pageStart + 1;
   const rangeTo = Math.min(pageStart + pageSize, accounts.length);
+  const minting = !!mintProg?.running;
+  const busy = verifying || minting || deleting || importing;
+
+  const mintPct =
+    mintProg && mintProg.total > 0
+      ? Math.min(100, Math.round((mintProg.done / mintProg.total) * 100))
+      : 0;
 
   return (
     <div className="space-y-5">
@@ -296,6 +495,35 @@ export function PoolPage() {
           Icon={RefreshCcw}
         />
       </section>
+
+      {mintProg && (
+        <div className="rounded-[16px] border border-primary/30 bg-primary/5 px-4 py-3 shadow-[var(--ios-shadow)]">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="min-w-0">
+              <p className="text-[13px] font-semibold tracking-tight">
+                {mintProg.running ? '补 Auth 进行中' : '补 Auth 已完成'}
+              </p>
+              <p className="mt-0.5 truncate text-[12px] text-muted-foreground">
+                {mintProg.done}/{mintProg.total}
+                {mintProg.current ? ` · 当前 ${mintProg.current}` : ''}
+                {` · 成功 ${mintProg.ok} · 失败 ${mintProg.failed}`}
+                {mintProg.skipped ? ` · 跳过 ${mintProg.skipped}` : ''}
+                {mintProg.banned ? ` · 封禁 ${mintProg.banned}` : ''}
+              </p>
+            </div>
+            <span className="chip tabular-nums">{mintPct}%</span>
+          </div>
+          <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted">
+            <div
+              className={cn(
+                'h-full rounded-full transition-all duration-300',
+                mintProg.running ? 'bg-primary' : 'bg-emerald-500'
+              )}
+              style={{ width: `${mintPct}%` }}
+            />
+          </div>
+        </div>
+      )}
 
       <div className="ios-group">
         <div className="flex flex-col gap-3 border-b border-border/70 px-4 py-3.5 sm:flex-row sm:items-center sm:justify-between">
@@ -311,8 +539,17 @@ export function PoolPage() {
             <Button
               variant="secondary"
               size="sm"
+              onClick={toggleEmailPrivacy}
+              title={emailMasked ? '显示完整邮箱' : '遮蔽邮箱（仅前5位）'}
+            >
+              {emailMasked ? <Eye className="h-3.5 w-3.5" /> : <EyeOff className="h-3.5 w-3.5" />}
+              {emailMasked ? '显示邮箱' : '遮蔽邮箱'}
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
               onClick={selectAll}
-              disabled={accounts.length === 0}
+              disabled={accounts.length === 0 || busy}
               title="选择所有分页中的全部账号"
             >
               {allSelected ? (
@@ -326,30 +563,52 @@ export function PoolPage() {
               variant="secondary"
               size="sm"
               onClick={selectPage}
-              disabled={pageAccounts.length === 0}
+              disabled={pageAccounts.length === 0 || busy}
               title="仅选择当前页"
             >
               <ListChecks className="h-3.5 w-3.5" />
               {pageAllSelected ? '取消本页' : '本页'}
             </Button>
-            <Button size="sm" onClick={() => void verifyBatch()} disabled={verifying || minting || accounts.length === 0}>
+            <Button size="sm" onClick={() => void verifyBatch()} disabled={busy || accounts.length === 0}>
               <ShieldCheck className={cn('h-3.5 w-3.5', verifying && 'animate-pulse')} />
               {verifying ? '验活中…' : selected.size > 0 ? `验活(${selected.size})` : '验活全部'}
             </Button>
             <Button
               variant="secondary"
               size="sm"
-              onClick={() => void mintAuthFromSso()}
-              disabled={minting || verifying || accounts.length === 0}
+              onClick={() => {
+                setSkipBotFlag1((v) => {
+                  const next = !v;
+                  try {
+                    localStorage.setItem('gra-skip-bot-flag1', next ? '1' : '0');
+                  } catch {
+                    /* ignore */
+                  }
+                  return next;
+                });
+              }}
               title={
-                selected.size > 0
-                  ? '先验活/封禁预检，仅存活 SSO 转 CPA Auth'
-                  : '先验活/封禁预检，仅存活 SSO 转 CPA Auth（最多 50）'
+                skipBotFlag1
+                  ? '补 Auth 将跳过 bot_flag_source=1（点击改为不跳过）'
+                  : '补 Auth 不跳过 bot_flag=1（点击改为跳过）'
+              }
+            >
+              {skipBotFlag1 ? '跳过flag1:开' : '跳过flag1:关'}
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => void mintAuthFromSso()}
+              disabled={busy || accounts.length === 0}
+              title={
+                skipBotFlag1
+                  ? '预检存活 + 跳过 bot_flag_source=1 后 mint'
+                  : '预检存活后 mint（含 bot_flag=1）'
               }
             >
               <Wand2 className={cn('h-3.5 w-3.5', minting && 'animate-pulse')} />
               {minting
-                ? 'Mint 中…'
+                ? `Mint ${mintProg?.done ?? 0}/${mintProg?.total ?? 0}`
                 : selected.size > 0
                   ? `补 Auth(${picked.filter((a) => a.sso).length})`
                   : '补 Auth'}
@@ -357,8 +616,39 @@ export function PoolPage() {
             <Button
               variant="secondary"
               size="sm"
+              onClick={() => void deleteSelected()}
+              disabled={busy || selected.size === 0}
+              title="从号池删除已选账号"
+            >
+              <Trash2 className={cn('h-3.5 w-3.5', deleting && 'animate-pulse')} />
+              {deleting ? '删除中…' : `删除(${selected.size})`}
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setImportOpen(true)}
+              disabled={busy}
+              title="粘贴或上传 SSO 文本导入号池"
+            >
+              <FileUp className="h-3.5 w-3.5" />
+              导入SSO
+            </Button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".txt,.csv,.log,text/plain"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0] || null;
+                e.target.value = '';
+                void onPickImportFile(f);
+              }}
+            />
+            <Button
+              variant="secondary"
+              size="sm"
               onClick={() => exportSso(picked.length > 0 ? picked : accounts)}
-              disabled={accounts.length === 0}
+              disabled={accounts.length === 0 || busy}
               title={picked.length > 0 ? '导出已选账号的 SSO' : '导出全部 SSO'}
             >
               <FileDown className="h-3.5 w-3.5" />
@@ -369,12 +659,16 @@ export function PoolPage() {
               variant="secondary"
               size="sm"
               onClick={() => exportAccounts(picked)}
-              disabled={picked.length === 0}
+              disabled={picked.length === 0 || busy}
             >
               <FileDown className="h-3.5 w-3.5" />
               选中账号
             </Button>
-            <Button size="sm" onClick={() => exportAccounts(accounts)} disabled={accounts.length === 0}>
+            <Button
+              size="sm"
+              onClick={() => exportAccounts(accounts)}
+              disabled={accounts.length === 0 || busy}
+            >
               <FileDown className="h-3.5 w-3.5" />
               全部账号
             </Button>
@@ -382,7 +676,7 @@ export function PoolPage() {
               variant="secondary"
               size="sm"
               onClick={() => void doReload(true)}
-              disabled={loading}
+              disabled={loading || busy}
               title="重新扫描 /data/sso 历史文件并刷新列表"
             >
               <RefreshCcw className={cn('h-3.5 w-3.5', loading && 'animate-spin')} />
@@ -405,6 +699,7 @@ export function PoolPage() {
                 account={a}
                 checked={selected.has(a.id)}
                 ssoResult={ssoMap.get(a.id)}
+                emailMasked={emailMasked}
                 onToggle={() => toggle(a.id)}
                 onOpen={() => setOpenId(a.id)}
               />
@@ -431,6 +726,77 @@ export function PoolPage() {
         ssoResult={openId ? ssoMap.get(openId) : undefined}
         onSsoResult={(r) => applyResults([r])}
       />
+
+      {importOpen && (
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center">
+          <div
+            className="absolute inset-0"
+            onClick={() => !importing && setImportOpen(false)}
+            aria-hidden
+          />
+          <div className="relative z-10 w-full max-w-xl rounded-2xl border border-border bg-card p-4 shadow-xl">
+            <div className="mb-3 flex items-start justify-between gap-2">
+              <div>
+                <h3 className="text-[16px] font-semibold tracking-tight">导入 SSO</h3>
+                <p className="mt-1 text-[12px] leading-5 text-muted-foreground">
+                  每行一条，支持：
+                  <br />
+                  <code className="text-[11px]">email | password | sso</code>
+                  <br />
+                  <code className="text-[11px]">email----password----sso</code>
+                  <br />
+                  <code className="text-[11px]">纯 JWT</code> / <code className="text-[11px]">sso=...</code>
+                  <br />
+                  按 SSO 去重；# 开头行为注释。
+                </p>
+              </div>
+              <button
+                type="button"
+                className="rounded-lg p-1.5 text-muted-foreground hover:bg-muted hover:text-foreground"
+                onClick={() => !importing && setImportOpen(false)}
+                aria-label="关闭"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <textarea
+              value={importDraft}
+              onChange={(e) => setImportDraft(e.target.value)}
+              rows={12}
+              placeholder="粘贴 SSO 列表…"
+              className="w-full resize-y rounded-xl border border-border bg-muted/40 px-3 py-2 font-mono text-[12px] outline-none focus:border-primary"
+              disabled={importing}
+            />
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={importing}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <FileUp className="h-3.5 w-3.5" />
+                选择文件
+              </Button>
+              <div className="flex gap-1.5">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={importing}
+                  onClick={() => {
+                    setImportOpen(false);
+                    setImportDraft('');
+                  }}
+                >
+                  取消
+                </Button>
+                <Button size="sm" disabled={importing || !importDraft.trim()} onClick={() => void doImport()}>
+                  {importing ? '导入中…' : '确认导入'}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -457,9 +823,7 @@ function PaginationBar({
   return (
     <div className="flex flex-col items-stretch justify-between gap-3 sm:flex-row sm:items-center">
       <p className="text-[12px] text-muted-foreground">
-        {total === 0
-          ? '共 0 条'
-          : `第 ${rangeFrom}–${rangeTo} 条 · 共 ${total} 条`}
+        {total === 0 ? '共 0 条' : `第 ${rangeFrom}–${rangeTo} 条 · 共 ${total} 条`}
       </p>
       <div className="flex flex-wrap items-center justify-end gap-1.5">
         <label className="flex items-center gap-1.5 text-[12px] text-muted-foreground">
@@ -506,12 +870,14 @@ function AccountCard({
   account,
   checked,
   ssoResult,
+  emailMasked,
   onToggle,
   onOpen
 }: {
   account: AccountRecord;
   checked: boolean;
   ssoResult?: SsoCheckResult;
+  emailMasked: boolean;
   onToggle(): void;
   onOpen(): void;
 }) {
@@ -530,6 +896,15 @@ function AccountCard({
   };
 
   const stop = (e: React.MouseEvent) => e.stopPropagation();
+  const emailDisplay = maskEmail(account.email, emailMasked, { empty: '(无邮箱)' });
+  // 优先验活结果；否则本地解码 SSO JWT（无需点验活）
+  const localFlag = readBotFlagFromSso(account.sso);
+  const flagSource =
+    ssoResult?.botFlagSource !== undefined && ssoResult?.botFlagSource !== null
+      ? ssoResult.botFlagSource
+      : localFlag.botFlagSource;
+  const flagIs1 =
+    ssoResult?.isBotFlag1 !== undefined ? ssoResult.isBotFlag1 : localFlag.isBotFlag1;
 
   return (
     <div
@@ -548,90 +923,158 @@ function AccountCard({
           className="mt-1 h-4 w-4 shrink-0 accent-[hsl(var(--primary))]"
         />
         <div className="min-w-0 flex-1">
-          <div className="break-all text-sm font-semibold leading-5 tracking-tight">
-            {account.email || '(无邮箱)'}
+          <div
+            className="break-all text-sm font-semibold leading-5 tracking-tight"
+            title={emailMasked && account.email ? '已遮蔽 · 点工具栏「显示邮箱」查看完整' : account.email || undefined}
+          >
+            {emailDisplay}
           </div>
-          <div className="mt-1 text-[11px] text-muted-foreground">
-            {fmtBeijing(account.createdAt)}
-          </div>
+          <div className="mt-1 text-[11px] text-muted-foreground">{fmtBeijing(account.createdAt)}</div>
         </div>
-        <SsoBadge result={ssoResult} />
-      </div>
-
-      <div className="rounded-[12px] bg-muted/60 px-3 py-2" onClick={stop}>
-        <div className="flex items-center justify-between gap-2">
-          <span className="field-label">密码</span>
-          <div className="flex items-center gap-1">
-            <button
-              type="button"
-              onClick={() => setShowPw((v) => !v)}
-              className="rounded p-1 text-muted-foreground hover:text-foreground"
-              title={showPw ? '隐藏' : '显示'}
-            >
-              {showPw ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-            </button>
-            <button
-              type="button"
-              onClick={() => void copy(account.password, '密码')}
-              className="rounded p-1 text-muted-foreground hover:text-foreground"
-              title="复制"
-            >
-              <Copy className="h-3.5 w-3.5" />
-            </button>
-          </div>
-        </div>
-        <div className="mt-1 break-all text-xs tabular-nums">
-          {showPw ? account.password || '(无)' : '••••••••••'}
+        <div className="flex shrink-0 flex-col items-end gap-1">
+          <SsoBadge result={ssoResult} />
+          <BotFlagBadge flag={flagSource} is1={flagIs1} />
         </div>
       </div>
 
-      <div className="rounded-[12px] bg-muted/60 px-3 py-2" onClick={stop}>
-        <div className="flex items-center justify-between gap-2">
-          <span className="field-label">SSO</span>
-          <div className="flex items-center gap-1">
-            <button
-              type="button"
-              onClick={() => setShowSso((v) => !v)}
-              className="rounded p-1 text-muted-foreground hover:text-foreground"
-              title={showSso ? '收起' : '查看'}
-            >
-              {showSso ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-            </button>
-            <button
-              type="button"
-              onClick={() => void copy(account.sso, 'SSO')}
-              className="rounded p-1 text-muted-foreground hover:text-foreground"
-              title="复制"
-            >
-              <Copy className="h-3.5 w-3.5" />
-            </button>
-          </div>
-        </div>
-        <div
-          className={cn(
-            'mt-1 text-xs',
-            showSso ? 'break-all' : 'truncate text-muted-foreground'
-          )}
-        >
-          {account.sso || '(无)'}
-        </div>
-      </div>
+      <SecretRow
+        label="密码"
+        value={account.password || ''}
+        reveal={showPw}
+        onToggleReveal={() => setShowPw((v) => !v)}
+        onCopy={() => void copy(account.password || '', '密码')}
+        onClick={stop}
+      />
+      <SecretRow
+        label="SSO"
+        value={account.sso || ''}
+        reveal={showSso}
+        onToggleReveal={() => setShowSso((v) => !v)}
+        onCopy={() => void copy(account.sso || '', 'SSO')}
+        onClick={stop}
+        mono
+      />
+    </div>
+  );
+}
+
+function SecretRow({
+  label,
+  value,
+  reveal,
+  onToggleReveal,
+  onCopy,
+  onClick,
+  mono
+}: {
+  label: string;
+  value: string;
+  reveal: boolean;
+  onToggleReveal(): void;
+  onCopy(): void;
+  onClick(e: React.MouseEvent): void;
+  mono?: boolean;
+}) {
+  const display = !value
+    ? '—'
+    : reveal
+      ? value
+      : label === 'SSO'
+        ? `${value.slice(0, 8)}…${value.slice(-6)}`
+        : '••••••••';
+  return (
+    <div className="flex items-center gap-2 rounded-xl bg-muted/50 px-2.5 py-1.5" onClick={onClick}>
+      <span className="w-10 shrink-0 text-[11px] text-muted-foreground">{label}</span>
+      <span
+        className={cn(
+          'min-w-0 flex-1 truncate text-[12px]',
+          mono && 'font-mono',
+          !value && 'text-muted-foreground'
+        )}
+        title={reveal && value ? value : undefined}
+      >
+        {display}
+      </span>
+      {value ? (
+        <>
+          <button
+            type="button"
+            className="rounded-md p-1 text-muted-foreground hover:bg-background hover:text-foreground"
+            onClick={onToggleReveal}
+            title={reveal ? '隐藏' : '显示'}
+          >
+            {reveal ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+          </button>
+          <button
+            type="button"
+            className="rounded-md p-1 text-muted-foreground hover:bg-background hover:text-foreground"
+            onClick={onCopy}
+            title="复制"
+          >
+            <Copy className="h-3.5 w-3.5" />
+          </button>
+        </>
+      ) : null}
     </div>
   );
 }
 
 function SsoBadge({ result }: { result?: SsoCheckResult }) {
   if (!result) {
-    return <span className="mt-1 h-2.5 w-2.5 shrink-0 rounded-full bg-muted-foreground/30" title="未验活" />;
+    return (
+      <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
+        未验
+      </span>
+    );
+  }
+  if (result.alive) {
+    return (
+      <span className="shrink-0 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
+        存活
+      </span>
+    );
   }
   return (
     <span
-      className={cn(
-        'mt-1 h-2.5 w-2.5 shrink-0 rounded-full',
-        result.alive ? 'bg-ok' : 'bg-danger'
-      )}
-      title={result.alive ? '存活' : '已失效'}
-    />
+      className="shrink-0 rounded-full bg-destructive/15 px-2 py-0.5 text-[10px] font-medium text-destructive"
+      title={result.error || ''}
+    >
+      失效
+    </span>
+  );
+}
+
+function BotFlagBadge({
+  flag,
+  is1
+}: {
+  flag?: number | string | null;
+  is1?: boolean;
+}) {
+  if (flag === undefined || flag === null) {
+    return (
+      <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground" title="未解码或无 claim">
+        flag—
+      </span>
+    );
+  }
+  if (is1 || flag === 1 || flag === '1') {
+    return (
+      <span
+        className="rounded-full bg-destructive/15 px-2 py-0.5 text-[10px] font-medium text-destructive"
+        title="bot_flag_source=1（服务端签发，无法抹掉）"
+      >
+        flag1
+      </span>
+    );
+  }
+  return (
+    <span
+      className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400"
+      title={`bot_flag_source=${String(flag)}`}
+    >
+      flag{String(flag)}
+    </span>
   );
 }
 
@@ -645,12 +1088,12 @@ function PoolMetric({
   Icon: typeof Database;
 }) {
   return (
-    <div className="metric-panel">
-      <div className="flex items-center justify-between gap-3">
-        <div className="metric-kicker">{label}</div>
-        <Icon className="h-4 w-4 text-muted-foreground" />
+    <div className="rounded-[16px] border border-border bg-card p-4 shadow-[var(--ios-shadow)]">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-[12px] text-muted-foreground">{label}</p>
+        <Icon className="h-4 w-4 text-muted-foreground/80" />
       </div>
-      <div className="metric-value">{value}</div>
+      <p className="mt-2 text-[22px] font-semibold tracking-tight tabular-nums">{value}</p>
     </div>
   );
 }

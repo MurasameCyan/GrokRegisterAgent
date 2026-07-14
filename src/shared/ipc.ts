@@ -2,7 +2,30 @@ import type { AppSettings, MailSettings, ThemeMode } from './settings';
 import type { AccountRecord, RunEvent, RunStatus, TestResult } from './runEvents';
 
 /** 渲染→主：register:start 的可选覆盖项（保存设置之外的临时调整） */
-export type RegisterStartArgs = Partial<Pick<AppSettings, 'runCount'>>;
+export type RegisterStartArgs = Partial<Pick<AppSettings, 'runCount'>> & {
+  maxParallel?: number;
+};
+
+/** 并行注册任务摘要（列表浏览） */
+export interface RegisterJobSummary {
+  runId: string;
+  phase: import('./runEvents').RunPhase;
+  pid: number | null;
+  startedAt: number | null;
+  finishedAt: number | null;
+  current: number;
+  total: number;
+  success: number;
+  failed: number;
+  errorMessage: string | null;
+  focused: boolean;
+}
+
+export interface RegisterJobsListResult {
+  jobs: RegisterJobSummary[];
+  active: number;
+  focus: string | null;
+}
 
 export interface ThemeState {
   mode: ThemeMode;
@@ -61,6 +84,9 @@ export interface SsoCheckResult {
   /** 验活时间 ISO */
   checkedAt: string;
   error?: string;
+  /** JWT claim bot_flag_source（解码 SSO） */
+  botFlagSource?: number | string | null;
+  isBotFlag1?: boolean;
 }
 
 /** CPA auth 文件列表项 */
@@ -80,6 +106,8 @@ export interface CpaAuthItem {
   /** 文件名或 type 任一为 xai */
   xai: boolean;
   authType: string;
+  botFlagSource?: number | string | null;
+  isBotFlag1?: boolean;
 }
 
 export interface CpaAuthListResult {
@@ -115,9 +143,11 @@ export interface CpaAuthBatchResultItem {
   xai?: boolean;
   xaiFilename?: boolean;
   xaiType?: boolean;
-  /** mint 预检：alive | dead | banned | unknown */
+  /** mint 预检：alive | dead | banned | unknown | bot_flag */
   verdict?: string;
   skipped?: boolean;
+  botFlagSource?: number | string | null;
+  isBotFlag1?: boolean;
   /** cehuo /responses 测活 */
   probeAction?: string;
   probeHttp?: number;
@@ -128,12 +158,14 @@ export interface CpaAuthBatchResult {
   total: number;
   ok: number;
   failed: number;
-  /** mint 预检跳过（dead/banned） */
+  /** mint 预检跳过（dead/banned/bot_flag） */
   skipped?: number;
   /** 通过预检进入 mint 的数量 */
   alive?: number;
   /** 预检判 banned */
   banned?: number;
+  /** 因 bot_flag_source=1 跳过 */
+  botFlagSkipped?: number;
   /** 批量 CPA 测活：dead / 已删 / keep */
   dead?: number;
   deleted?: number;
@@ -194,20 +226,41 @@ export interface RendererApi {
 
   // register
   startRegister(args?: RegisterStartArgs): Promise<{ runId: string }>;
-  stopRegister(runId: string): Promise<{ ok: boolean }>;
+  stopRegister(runId?: string, opts?: { stopAll?: boolean }): Promise<{ ok: boolean; stopped?: string[] }>;
   getStatus(): Promise<RunStatus>;
+  listRegisterJobs(): Promise<RegisterJobsListResult>;
+  getRegisterJobStatus(runId: string): Promise<RunStatus>;
+  focusRegisterJob(runId: string | null): Promise<{ ok: boolean; runId: string | null }>;
   onRegisterEvent(cb: (e: RunEvent) => void): () => void;
 
   // accounts
   listAccounts(): Promise<AccountRecord[]>;
   /** 从 DATA_DIR/sso 与旧路径重新扫描导入历史 */
   resyncAccounts(): Promise<{ total: number; imported: number }>;
+  /** 按 id 批量删除号池账号 */
+  deleteAccounts(ids: string[]): Promise<{
+    deleted: number;
+    requested: number;
+    remaining: number;
+  }>;
+  /** 粘贴/上传文本导入 SSO 到号池 */
+  importAccounts(input: {
+    text: string;
+    source?: string;
+  }): Promise<{
+    totalLines: number;
+    parsed: number;
+    imported: number;
+    skipped: number;
+    invalid: number;
+    remaining: number;
+  }>;
 
   // mail & sso
   getMailCode(address: string): Promise<MailCodeResult>;
   checkSso(items: SsoCheckItem[]): Promise<SsoCheckResult[]>;
 
- // CPA auth（与登录 /api/auth 区分）
+  // CPA auth（与登录 /api/auth 区分）
   listCpaAuth(): Promise<CpaAuthListResult>;
   resignCpaAuth(input: CpaAuthResignInput): Promise<CpaAuthResignResult>;
   resignCpaAuthBatch(input: {
@@ -218,6 +271,8 @@ export interface RendererApi {
   mintCpaAuthFromSso(input: {
     items: CpaAuthMintItem[];
     concurrency?: number;
+    /** 默认 true：跳过 bot_flag_source=1 的 SSO */
+    skipBotFlag1?: boolean;
   }): Promise<CpaAuthBatchResult>;
   /** 批量 CPA 测活（cehuo /responses） */
   probeCpaAuthBatch(input: {
@@ -226,6 +281,23 @@ export interface RendererApi {
     concurrency?: number;
     deleteOnDead?: boolean;
   }): Promise<CpaAuthBatchResult>;
+  /** 批量删除 CPA auth 文件 */
+  deleteCpaAuth(input: {
+    filenames?: string[];
+    paths?: string[];
+  }): Promise<{
+    total: number;
+    deleted: number;
+    failed: number;
+    results: CpaAuthBatchResultItem[];
+  }>;
+  /** 读取 auth 文件内容（导出） */
+  exportCpaAuth(input: {
+    filenames: string[];
+  }): Promise<{
+    dir: string;
+    files: Array<{ filename: string; email: string; content: string }>;
+  }>;
 
   // theme
   getTheme(): Promise<ThemeState>;

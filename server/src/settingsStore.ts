@@ -121,7 +121,25 @@ function merge(partial: unknown): AppSettings {
     cpaManagementKey:
       typeof (p as AppSettings).cpaManagementKey === 'string'
         ? (p as AppSettings).cpaManagementKey
-        : DEFAULT_SETTINGS.cpaManagementKey
+        : DEFAULT_SETTINGS.cpaManagementKey,
+    cpaProbeDeleteOnDead: asBool(
+      (p as AppSettings).cpaProbeDeleteOnDead,
+      DEFAULT_SETTINGS.cpaProbeDeleteOnDead
+    ),
+    proxyIpIntervalSec: (() => {
+      const n = Number((p as AppSettings).proxyIpIntervalSec);
+      if (!Number.isFinite(n) || n < 0) return DEFAULT_SETTINGS.proxyIpIntervalSec;
+      return Math.min(Math.floor(n), 86400);
+    })(),
+    maxParallelWorkers: (() => {
+      const n = Number((p as AppSettings).maxParallelWorkers);
+      if (!Number.isFinite(n) || n < 1) return DEFAULT_SETTINGS.maxParallelWorkers;
+      return Math.min(Math.floor(n), 8);
+    })(),
+    skipBotFlag1OnMint: asBool(
+      (p as AppSettings).skipBotFlag1OnMint,
+      DEFAULT_SETTINGS.skipBotFlag1OnMint
+    )
   };
   // 旧配置无此字段时回落到默认 60
   if (

@@ -202,7 +202,13 @@ except Exception:
     pass
 
 try:
-    from pools import next_proxy, reload_pools, peek_status
+    from pools import (
+        next_proxy,
+        reload_pools,
+        peek_status,
+        acquire_proxy_for_register,
+        proxy_identity_key,
+    )
 except Exception:
     def next_proxy(fallback: str = "") -> str:
         return fallback
@@ -212,6 +218,12 @@ except Exception:
 
     def peek_status() -> dict:
         return {}
+
+    def acquire_proxy_for_register(fallback: str = "", *, log=print):
+        return (fallback or "").strip(), 0.0
+
+    def proxy_identity_key(proxy_url: str) -> str:
+        return (proxy_url or "").strip()
 
 try:
     from proxy_auth_ext import apply_proxy_to_chromium_options, parse_proxy_url
@@ -226,7 +238,7 @@ except Exception:
     _stop_local_forward_early = None
 
 # 启动自检：新代码是否在容器内
-_REGISTER_BUILD = "proxy-auth-local+pool-idx-2026-07-13"
+_REGISTER_BUILD = "bot-flag+stealth-v2-2026-07-14"
 print(f"[*] register build: {_REGISTER_BUILD}")
 if apply_proxy_to_chromium_options is None:
     print("[Warn] 缺少 proxy_auth_ext —— 请确认 ./register 已挂载并重启容器")
@@ -234,11 +246,17 @@ else:
     print("[*] proxy_auth_ext: OK（支持带密码 HTTP 代理：扩展/本地转发）")
 
 try:
-    from fingerprint import build_fingerprint, apply_to_chromium_options, stealth_js
+    from fingerprint import (
+        build_fingerprint,
+        apply_to_chromium_options,
+        stealth_js,
+        human_pause,
+    )
 except Exception:
     build_fingerprint = None
     apply_to_chromium_options = None
     stealth_js = None
+    human_pause = None
 
 try:
     from auth_service import sso_to_cpa_auth, default_auth_dir
@@ -352,25 +370,25 @@ DEFAULT_SSO_FILE = os.path.join(_sso_dir, f"sso_{_sso_ts}_{os.getpid()}.txt")
 
 
 def _apply_stealth_patches(tab=None):
-    """弱化常见自动化指纹。Turnstile 失败反馈页出现时尤其需要。"""
+    """弱化常见自动化指纹（有限规避；无法抹掉已签发 bot_flag_source=1）。
+
+    优先注入本轮 fingerprint.stealth_js；再叠基础 webdriver/chrome 补丁。
+    """
     target = tab or page
     if target is None:
         return
+    # 本轮随机特征：新文档 + 当前页双注入
+    fp_src = None
     try:
-        target.run_cdp(
-            "Page.addScriptToEvaluateOnNewDocument",
-            source=r"""
+        if _current_fingerprint is not None and stealth_js is not None:
+            fp_src = stealth_js(_current_fingerprint)
+    except Exception:
+        fp_src = None
+    base_src = r"""
 Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
 try {
-  if (!window.chrome) window.chrome = { runtime: {} };
-} catch (e) {}
-try {
-  Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'] });
-} catch (e) {}
-try {
-  Object.defineProperty(navigator, 'plugins', {
-    get: () => [1, 2, 3, 4, 5],
-  });
+  if (!window.chrome) window.chrome = { runtime: {}, loadTimes: function(){}, csi: function(){}, app: {} };
+  else if (!window.chrome.runtime) window.chrome.runtime = {};
 } catch (e) {}
 try {
   const originalQuery = window.navigator.permissions && window.navigator.permissions.query;
@@ -378,22 +396,22 @@ try {
     window.navigator.permissions.query = (parameters) => (
       parameters && parameters.name === 'notifications'
         ? Promise.resolve({ state: Notification.permission })
-        : originalQuery(parameters)
+        : originalQuery.call(window.navigator.permissions, parameters)
     );
   }
 } catch (e) {}
-            """,
-        )
-    except Exception:
-        pass
-    try:
-        target.run_js(
-            """
-try { Object.defineProperty(navigator, 'webdriver', { get: () => undefined }); } catch (e) {}
-            """
-        )
-    except Exception:
-        pass
+"""
+    for src in (base_src, fp_src):
+        if not src:
+            continue
+        try:
+            target.run_cdp("Page.addScriptToEvaluateOnNewDocument", source=src)
+        except Exception:
+            pass
+        try:
+            target.run_js(src)
+        except Exception:
+            pass
 
 
 def _probe_browser_version() -> str:
@@ -618,8 +636,12 @@ def start_browser():
 
     proxy_apply_result = None
     try:
-        # 池优先；池空则 next_proxy 返回 fallback（browser_proxy/proxy）
-        picked = (next_proxy(_browser_proxy) or "").strip()
+        # 池优先；池空则 acquire 返回 fallback（browser_proxy/proxy）
+        # 同一 IP 未到使用间隔时会 sleep 等待（暂停队列）
+        picked, waited_ip = acquire_proxy_for_register(_browser_proxy, log=print)
+        picked = (picked or "").strip()
+        if waited_ip and waited_ip > 0.05:
+            print(f"[*] IP 间隔累计等待 {waited_ip:.1f}s 后继续")
         if picked:
             _browser_proxy = picked
             # 脱敏日志
@@ -631,6 +653,12 @@ def start_browser():
                         log_proxy = (
                             f"{p['scheme']}://{p['username'][:8]}…:***@{p['host']}:{p['port']}"
                         )
+            except Exception:
+                pass
+            try:
+                ik = proxy_identity_key(picked) if callable(proxy_identity_key) else ""
+                if ik:
+                    print(f"[*] 本轮代理 IP 键: {ik}")
             except Exception:
                 pass
 
@@ -908,8 +936,20 @@ return !!(givenInput && familyInput && passwordInput);
         return False
 
 
+def _step_pause(lo_ms: int = 180, hi_ms: int = 650) -> None:
+    """注册步骤间短随机停顿（有限行为随机）。"""
+    try:
+        if human_pause is not None:
+            human_pause(lo_ms, hi_ms)
+            return
+    except Exception:
+        pass
+    time.sleep(0.2 + secrets.randbelow(40) / 100.0)
+
+
 def click_email_signup_button(timeout=10):
     # 页面打开后，自动点击“使用邮箱注册”按钮。
+    _step_pause(200, 700)
     deadline = time.time() + timeout
     while time.time() < deadline:
         clicked = page.run_js(r"""
@@ -928,15 +968,17 @@ return true;
         """)
 
         if clicked:
+            _step_pause(150, 500)
             return True
 
-        time.sleep(0.5)
+        time.sleep(0.4 + secrets.randbelow(30) / 100.0)
 
     raise Exception('未找到“使用邮箱注册”按钮')
 
 
 def fill_email_and_submit(timeout=15):
     # 复用 `email_register.py` 里的邮箱获取逻辑，保留邮箱与 token 供后续验证码步骤继续使用。
+    _step_pause(250, 800)
     email, dev_token = get_email_and_token()
     if not email or not dev_token:
         raise Exception("获取邮箱失败")
@@ -1056,9 +1098,10 @@ return true;
 
             if clicked:
                 print(f"[*] 已填写邮箱并点击注册: {email}")
+                _step_pause(200, 600)
                 return email, dev_token
 
-        time.sleep(0.5)
+        time.sleep(0.4 + secrets.randbelow(25) / 100.0)
 
     raise Exception("未找到邮箱输入框或注册按钮")
 
@@ -1070,6 +1113,7 @@ def fill_code_and_submit(email, dev_token, timeout=60):
     if not code:
         raise Exception("获取验证码失败")
 
+    _step_pause(180, 550)
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:

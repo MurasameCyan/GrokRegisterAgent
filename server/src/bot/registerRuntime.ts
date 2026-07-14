@@ -179,6 +179,11 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
       ? true
       : settings.proxyPreferLocalForward === true;
 
+  // 同一 IP 注册间隔（秒）；0=不限制
+  const ipInterval = Number(settings.proxyIpIntervalSec);
+  config.proxy_ip_interval_sec =
+    Number.isFinite(ipInterval) && ipInterval > 0 ? Math.min(Math.floor(ipInterval), 86400) : 0;
+
   config.random_fingerprint =
     settings.randomFingerprint === undefined ? true : !!settings.randomFingerprint;
   config.auto_auth_export =
@@ -222,7 +227,9 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
     console.log(
       `[writeConfig] proxy_pool=${nPool} proxy=${config.proxy ? 'set' : 'empty'} ` +
         `browser_proxy=${config.browser_proxy ? 'set' : 'empty'} ` +
-        `mail_domains=${nDom} prefer_local_forward=${!!config.proxy_prefer_local_forward}`
+        `mail_domains=${nDom} prefer_local_forward=${!!config.proxy_prefer_local_forward} ` +
+        `ip_interval=${config.proxy_ip_interval_sec || 0}s ` +
+        `cpa_remote=${config.cpa_remote_url ? 'set' : 'off'}`
     );
   } catch {
     /* ignore */
