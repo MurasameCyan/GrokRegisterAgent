@@ -33,7 +33,7 @@ export function decodeJwtPayload(token: string): Record<string, unknown> | null 
   return b64urlJson(t.split('.')[1]);
 }
 
-/** 从 payload 取 bot_flag 类 claim（含 0 / "None"） */
+/** 从 payload 取 bot_flag 类 claim（含 0 / "None" / "0"） */
 function pickBotFlagRaw(pl: Record<string, unknown>): unknown {
   const keys = [
     'bot_flag_source',
@@ -43,11 +43,10 @@ function pickBotFlagRaw(pl: Record<string, unknown>): unknown {
     'bot_flag_src'
   ];
   for (const k of keys) {
-    if (pl[k] !== undefined && pl[k] !== null && pl[k] !== '') {
-      return pl[k];
-    }
-    // 显式 0 也要取（上面 !== '' 已放过 number 0）
-    if (pl[k] === 0 || pl[k] === '0') return pl[k];
+    const v = pl[k];
+    // 0 / "0" 是合法 None，不能用 !v；仅跳过缺失与空串
+    if (v === undefined || v === null || v === '') continue;
+    return v;
   }
   return undefined;
 }
@@ -104,9 +103,9 @@ export function readBotFlagFromAuthRecord(data: Record<string, unknown>): BotFla
   const tryToken = (tok: string): BotFlagInfo | null => {
     if (!tok) return null;
     const r = readBotFlagFromToken(tok);
-    // 有明确 claim（含 0）→ 采用；0 绝不能被当缺失
+    // 有明确 claim（含 number 0）→ 采用。
+    // 0 != null 且 0 !== ''，勿再写 === 0（TS 会判与收窄后类型无交集）
     if (r.botFlagSource != null && r.botFlagSource !== '') return r;
-    if (r.botFlagSource === 0) return r;
     return null;
   };
 
