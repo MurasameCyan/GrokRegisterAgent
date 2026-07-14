@@ -84,6 +84,25 @@
   }
 }
 
+/* 测活结果闪烁：绿 O / 红 X */
+@keyframes gra-probe-flash {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(1.12);
+  }
+}
+
+@layer utilities {
+  .animate-probe-flash {
+    animation: gra-probe-flash 0.7s ease-in-out 4;
+  }
+}
+
 @layer components {
   /* 布局 */
   .app-shell {
@@ -546,4 +565,21 @@
   .terminal-copy {
     @apply text-sm text-muted-foreground;
   }
+}
+
+/* 测活结果闪烁：绿 O / 红 X（Auth 列表） */
+@keyframes gra-probe-flash {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(1.12);
+  }
+}
+
+.animate-probe-flash {
+  animation: gra-probe-flash 0.7s ease-in-out 4;
 }

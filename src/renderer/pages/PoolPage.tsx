@@ -431,6 +431,9 @@ export function PoolPage() {
       }
 
       const botFlagN = allResults.filter((x) => x.verdict === 'bot_flag').length;
+      const remoteOkN = allResults.filter((x) => x.remoteOk === true).length;
+      const remoteFailN = allResults.filter((x) => x.remoteOk === false).length;
+      const remoteErrSample = allResults.find((x) => x.remoteOk === false)?.remoteError;
       const parts = [
         `成功 ${ok}`,
         `失败 ${failed}`,
@@ -439,10 +442,19 @@ export function PoolPage() {
         banned ? `封禁 ${banned}` : '',
         probeOk ? `CPA测活OK ${probeOk}` : '',
         probeDead ? `CPA测活挂 ${probeDead}` : '',
-        noXai ? `无 xai ${noXai}` : ok > 0 ? '均含 xai' : ''
+        noXai ? `无 xai ${noXai}` : ok > 0 ? '均含 xai' : '',
+        remoteOkN ? `远程推送OK ${remoteOkN}` : '',
+        remoteFailN
+          ? `远程失败 ${remoteFailN}${remoteErrSample ? `（${remoteErrSample.slice(0, 80)}）` : ''}`
+          : ''
       ].filter(Boolean);
       push({
-        tone: failed > 0 || banned > 0 || probeDead > 0 ? 'warn' : ok > 0 ? 'ok' : 'warn',
+        tone:
+          failed > 0 || banned > 0 || probeDead > 0 || remoteFailN > 0
+            ? 'warn'
+            : ok > 0
+              ? 'ok'
+              : 'warn',
         title: 'SSO 补 Auth 完成',
         description: parts.join(' · ')
       });

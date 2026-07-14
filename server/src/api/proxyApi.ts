@@ -19,9 +19,20 @@ export type ProxyProbeResult = {
   latencyMs?: number;
 };
 
-function stripHashComment(raw: string): string {
+/**
+ * 去掉行尾备注，只保留可连的代理地址。
+ * 支持：`#标签`、`（日本，elite，HTTPS）`、`(Japan, elite, HTTPS)`。
+ */
+function stripProxyAnnotation(raw: string): string {
   let s = String(raw || '').trim();
   if (!s) return '';
+  // 尾部括号备注（可叠多层，最多 3 次）
+  const parenRe = /[（(][^）)]*[）)]\s*$/;
+  for (let i = 0; i < 3; i++) {
+    const next = s.replace(parenRe, '').trim();
+    if (next === s) break;
+    s = next;
+  }
   const schemeIdx = s.indexOf('://');
   const searchFrom = schemeIdx >= 0 ? schemeIdx + 3 : 0;
   const hashIdx = s.indexOf('#', searchFrom);
@@ -30,10 +41,11 @@ function stripHashComment(raw: string): string {
 }
 
 export function normalizeProxyUrl(raw: string): string {
-  let s = stripHashComment(raw);
+  let s = stripProxyAnnotation(raw);
   if (!s) return '';
   if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) {
     // 无 scheme：默认 http（住宅 HTTP 代理常见）
+    // 列表里的 “HTTPS” 一般指支持 CONNECT，不是 https:// 代理协议
     s = `http://${s}`;
   }
   // 统一 socks 写法
@@ -184,9 +196,24 @@ export async function probeProxy(
             latencyMs
           };
         }
-        lastErr = `HTTP ${res.status}`;
+        // 407 = Proxy Authentication Required：缺账号密码或凭据错误
+        if (res.status === 407) {
+          lastErr =
+            'HTTP 407 代理需要认证（请写成 user:pass@ip:port，或检查账号密码）';
+        } else if (res.status === 403) {
+          lastErr = `HTTP 403 代理拒绝（IP 白名单/套餐限制）`;
+        } else {
+          lastErr = `HTTP ${res.status}`;
+        }
       } catch (e) {
-        lastErr = (e as Error).message || String(e);
+        const msg = (e as Error).message || String(e);
+        // axios 有时把 407 放进 message
+        if (/\b407\b/.test(msg) || /Proxy Authentication Required/i.test(msg)) {
+          lastErr =
+            'HTTP 407 代理需要认证（请写成 user:pass@ip:port，或检查账号密码）';
+        } else {
+          lastErr = msg;
+        }
       }
     }
     return {

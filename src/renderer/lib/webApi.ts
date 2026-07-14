@@ -163,6 +163,7 @@ const webApi: RendererApi = {
   resignCpaAuthBatch: (input) => http('POST', '/api/cpa-auth/resign-batch', input),
   mintCpaAuthFromSso: (input) => http('POST', '/api/cpa-auth/mint', input),
   probeCpaAuthBatch: (input) => http('POST', '/api/cpa-auth/probe-batch', input),
+  pushCpaAuthRemote: (input) => http('POST', '/api/cpa-auth/push-remote', input),
   deleteCpaAuth: (input) => http('POST', '/api/cpa-auth/delete', input),
   exportCpaAuth: (input) => http('POST', '/api/cpa-auth/export', input),
 
@@ -190,6 +191,11 @@ const webApi: RendererApi = {
   },
 
   testMail: (b) => http<TestResult>('POST', '/api/test/mail', b),
+  testCpaRemote: (input) =>
+    http<TestResult & { status?: number; remoteUrl?: string }>('POST', '/api/test/cpa-remote', {
+      url: input?.url,
+      key: input?.key
+    }),
   testProxy: (proxy) =>
     http<TestResult & { exitIp?: string; latencyMs?: number }>('POST', '/api/test/proxy', {
       proxy

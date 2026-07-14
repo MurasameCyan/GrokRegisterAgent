@@ -119,12 +119,15 @@ def sso_to_cpa_auth(
     remote_url: str = "",
     management_key: str = "",
     skip_remote: bool = False,
+    delete_on_dead: bool = True,
     log: LogFn | None = None,
 ) -> dict[str, Any]:
     """SSO cookie → Auth Code+PKCE → data/auth/xai-<email>.json [+ 远程推送]
 
     产出文件可在最新 CPA 中手动登录使用：关闭认证文件设置中的
     「使用官方 API（using_api）」即可，无需手改 headers。
+
+    delete_on_dead: mint 后 probe 为 401/402/403 时是否删除本地文件（默认 True）。
     """
     log = log or _noop
     sso = (sso or "").strip()
@@ -185,8 +188,10 @@ def sso_to_cpa_auth(
         elif r_url and not r_key:
             log("[auth] 已配置 cpa_remote_url 但无 management_key，跳过远程推送")
 
-    # mint 后 cehuo 风格 /responses 测活；401/402/403 删文件
-    probe = probe_and_cleanup(path, proxy=proxy or "", delete_on_dead=True)
+    # mint 后 cehuo 风格 /responses 测活；dead 时是否删文件由 delete_on_dead 控制
+    probe = probe_and_cleanup(
+        path, proxy=proxy or "", delete_on_dead=bool(delete_on_dead)
+    )
     log(
         f"[auth] probe action={probe.get('action')} http={probe.get('http_status')} "
         f"deleted={probe.get('deleted')} {probe.get('summary') or probe.get('error') or ''}"
@@ -277,14 +282,45 @@ def refresh_access_token(
         return {"error": str(e)}
 
 
+def _try_push_remote(
+    payload: dict[str, Any],
+    *,
+    log: LogFn,
+    remote_url: str = "",
+    management_key: str = "",
+) -> dict[str, Any] | None:
+    """可选远程推送；未配置则返回 None。"""
+    r_url = (remote_url or "").strip()
+    r_key = (management_key or "").strip()
+    if not r_url or not r_key:
+        cfg_url, cfg_key = _read_cpa_remote_config()
+        r_url = r_url or cfg_url
+        r_key = r_key or cfg_key
+    if not r_url or not r_key:
+        if r_url and not r_key:
+            log("[auth] 已配置 cpa_remote_url 但无 management_key，跳过远程推送")
+        return None
+    try:
+        name = upload_cpa_auth_remote(r_url, r_key, payload)
+        log(f"[auth] CPA 远程推送 OK → {r_url.rstrip('/')}/.../{name}")
+        return {"ok": True, "url": r_url, "name": name}
+    except Exception as e:
+        log(f"[auth] CPA 远程推送失败: {e}")
+        return {"ok": False, "error": str(e), "url": r_url}
+
+
 def resign_auth_file(
     path: str | Path,
     *,
     sso: str = "",
     proxy: str = "",
+    push_remote: bool = False,
     log: LogFn | None = None,
 ) -> dict[str, Any]:
-    """重签单个 auth JSON：优先 refresh_token；失败则用 sso 重 mint。"""
+    """重签单个 auth JSON：优先 refresh_token；失败则用 sso 重 mint。
+
+    push_remote=True 时，成功后按 config/环境推送 Management API（默认 False）。
+    """
     log = log or _noop
     p = Path(path).expanduser().resolve()
     if not p.is_file():
@@ -360,6 +396,8 @@ def resign_auth_file(
             }
             if not ref:
                 out["referrer_warn"] = "missing referrer claim"
+            if push_remote:
+                out["remote"] = _try_push_remote(new_payload, log=log)
             return out
         log(f"[auth] refresh failed: {token}")
 
@@ -373,7 +411,8 @@ def resign_auth_file(
             proxy=proxy,
             auth_dir=p.parent,
             random_fingerprint=bool(raw_headers is None),
-            skip_remote=True,
+            # 默认不推；push_remote=True 时与 mint 一致走远程
+            skip_remote=not push_remote,
             log=log,
         )
         if r.get("ok"):
@@ -387,6 +426,8 @@ def resign_auth_file(
         }
         if r.get("probe") is not None:
             out["probe"] = r.get("probe")
+        if r.get("remote") is not None:
+            out["remote"] = r.get("remote")
         if "deleted" in r:
             out["deleted"] = r.get("deleted")
         if r.get("path"):

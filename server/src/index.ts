@@ -33,9 +33,11 @@ import {
   listCpaAuth,
   mintCpaAuthFromSso,
   probeCpaAuthBatch,
+  pushCpaAuthRemoteBatch,
   readCpaAuthFiles,
   resignCpaAuth,
-  resignCpaAuthBatch
+  resignCpaAuthBatch,
+  testCpaRemoteConnectivity
 } from './cpaAuthStore.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -222,10 +224,15 @@ app.get('/api/cpa-auth', async (_req, res) => {
   }
 });
 
-/** 重签单个 CPA auth（refresh 优先，失败可带 sso） */
+/** 重签单个 CPA auth（refresh 优先，失败可带 sso；可选 pushRemote） */
 app.post('/api/cpa-auth/resign', async (req: Request, res: Response) => {
   try {
-    const body = (req.body ?? {}) as { filename?: string; path?: string; sso?: string };
+    const body = (req.body ?? {}) as {
+      filename?: string;
+      path?: string;
+      sso?: string;
+      pushRemote?: boolean;
+    };
     res.json(await resignCpaAuth(body));
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -240,8 +247,24 @@ app.post('/api/cpa-auth/resign-batch', async (req: Request, res: Response) => {
       filenames?: string[];
       paths?: string[];
       concurrency?: number;
+      pushRemote?: boolean;
     };
     res.json(await resignCpaAuthBatch(body));
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(400).json({ error: message });
+  }
+});
+
+/** 批量推送已有 auth 到远程 CPA（不重新 mint） */
+app.post('/api/cpa-auth/push-remote', async (req: Request, res: Response) => {
+  try {
+    const body = (req.body ?? {}) as {
+      filenames?: string[];
+      paths?: string[];
+      concurrency?: number;
+    };
+    res.json(await pushCpaAuthRemoteBatch(body));
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(400).json({ error: message });
@@ -387,6 +410,17 @@ app.post('/api/test/mail', async (req, res) => {
     }
   } catch (e: any) {
     return res.json({ ok: false, message: `连接失败: ${e.message}` });
+  }
+});
+
+/** 远程 CPA Management API 连通性检测（不上传文件） */
+app.post('/api/test/cpa-remote', async (req, res) => {
+  try {
+    const body = (req.body ?? {}) as { url?: string; key?: string };
+    const result = await testCpaRemoteConnectivity(body);
+    return res.json(result);
+  } catch (e: any) {
+    return res.json({ ok: false, message: `检测异常: ${e?.message || e}` });
   }
 });
 

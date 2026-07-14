@@ -48,11 +48,15 @@ export interface AppSettings {
   /** Python 进程使用的 HTTP 代理（单代理；proxyPoolEnabled 关时使用） */
   proxy: string;
   /**
-   * 代理池（多行或逗号分隔）。开启 proxyPoolEnabled 时优先。
+   * 代理池（多行或逗号分隔）。粘贴/待测区；测活成功后移入 proxyPoolAlive。
    * 支持行尾 #备注：`http://user:pass@ip:port#香港-01`
-   * 写入 Python config：proxy_pool
    */
   proxyPool: string;
+  /**
+   * 可用池：测活成功的代理（多行）。注册时优先写入 Python proxy_pool。
+   * 与 proxyPool 去重后合并（可用在前）。
+   */
+  proxyPoolAlive: string;
   /** 是否使用代理池（开=池；关=单代理） */
   proxyPoolEnabled: boolean;
   /** 代理池轮换模式 */
@@ -131,6 +135,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   proxyEnabled: false,
   proxy: '',
   proxyPool: '',
+  proxyPoolAlive: '',
   proxyPoolEnabled: false,
   proxyMode: 'round_robin',
   proxyProbeConcurrency: 8,
@@ -185,19 +190,57 @@ function proxyHostPort(proxyUrl: string): string {
   }
 }
 
-/** 解析单行代理：URL + 可选 #标签 */
+/**
+ * 剥离行尾备注/元数据，转为 proxy + label。
+ * 支持：
+ * - `http://u:p@ip:port#香港-02`
+ * - `8.216.35.12:8888（日本，elite，HTTPS）` / 半角 `(日本, elite, HTTPS)`
+ * - 混写：`ip:port（日本）#备用`
+ */
+function splitProxyAnnotation(rawLine: string): { proxy: string; label: string } {
+  let s = String(rawLine || '').trim();
+  if (!s) return { proxy: '', label: '' };
+
+  const labels: string[] = [];
+
+  // 1) 尾部全角/半角括号备注：…（日本，elite，HTTPS） / …(Japan, elite, HTTPS)
+  //    从右向左匹配最外层一对括号（供应商列表常见）
+  const parenRe = /[（(]([^）)]*)[）)]\s*$/;
+  for (let i = 0; i < 3; i++) {
+    const m = s.match(parenRe);
+    if (!m) break;
+    const inner = (m[1] || '').trim();
+    if (inner) {
+      // 逗号（半角/全角）统一成「 · 」作标签展示
+      const pretty = inner.replace(/[,\uFF0C]+/g, ' \u00b7 ');
+      labels.push(pretty);
+    }
+    s = s.slice(0, m.index).trim();
+  }
+
+  // 2) 行尾 # 备注（须在 scheme 之后，避免误伤）
+  const schemeIdx = s.indexOf('://');
+  const searchFrom = schemeIdx >= 0 ? schemeIdx + 3 : 0;
+  const hashIdx = s.indexOf('#', searchFrom);
+  if (hashIdx >= 0) {
+    const hashLabel = decodeProxyLabel(s.slice(hashIdx + 1));
+    if (hashLabel) labels.push(hashLabel);
+    s = s.slice(0, hashIdx).trim();
+  }
+
+  // 3) 无 scheme 时：若括号元数据暗示 socks，可保留由测活/使用侧加 http://
+  //    此处不改 scheme；HTTPS 在代理列表里通常表示「支持 HTTPS 隧道」，仍走 http:// 代理协议
+  return {
+    proxy: s,
+    label: labels.filter(Boolean).join(' · ')
+  };
+}
+
+/** 解析单行代理：URL + 可选 #标签 / （地区，类型，协议） */
 export function parseProxyLine(line: string): ProxyPoolEntry | null {
   const raw = String(line || '').trim();
   if (!raw || raw.startsWith('#')) return null;
-  const schemeIdx = raw.indexOf('://');
-  const searchFrom = schemeIdx >= 0 ? schemeIdx + 3 : 0;
-  const hashIdx = raw.indexOf('#', searchFrom);
-  let proxy = raw;
-  let label = '';
-  if (hashIdx >= 0) {
-    proxy = raw.slice(0, hashIdx).trim();
-    label = decodeProxyLabel(raw.slice(hashIdx + 1));
-  }
+  const { proxy, label } = splitProxyAnnotation(raw);
   if (!proxy) return null;
   return {
     raw,
@@ -212,13 +255,34 @@ export function stripProxyComment(line: string): string {
   return parseProxyLine(line)?.proxy || '';
 }
 
+/**
+ * 拆分代理池文本为行。
+ * - 换行分隔
+ * - 半角逗号也可分隔多条（兼容旧粘贴）
+ * - 括号内的逗号/全角逗号不拆（如 `ip:port（日本，elite，HTTPS）`）
+ */
+function splitProxyPoolText(raw: string): string[] {
+  const text = String(raw || '').replace(/\r\n/g, '\n');
+  const out: string[] = [];
+  for (const line of text.split('\n')) {
+    // 保护括号内逗号，避免被当成条目分隔符
+    const protectedLine = line.replace(/[（(][^）)]*[）)]/g, (m) =>
+      m.replace(/,/g, '\u0000')
+    );
+    for (const part of protectedLine.split(',')) {
+      const one = part.replace(/\u0000/g, ',').trim();
+      if (one) out.push(one);
+    }
+  }
+  return out;
+}
+
 /** 解析代理池 → 条目列表（保序去重，按 proxy URL） */
 export function parseProxyPoolEntries(raw?: string): ProxyPoolEntry[] {
   if (!raw || !String(raw).trim()) return [];
-  const text = String(raw).replace(/\r\n/g, '\n').replace(/,/g, '\n');
   const seen = new Set<string>();
   const out: ProxyPoolEntry[] = [];
-  for (const line of text.split('\n')) {
+  for (const line of splitProxyPoolText(raw)) {
     const entry = parseProxyLine(line);
     if (!entry) continue;
     if (seen.has(entry.proxy)) continue;
@@ -265,6 +329,84 @@ export function removeProxiesFromPoolText(raw: string, proxiesToRemove: string[]
     .replace(/\n{3,}/g, '\n\n')
     .replace(/^\n+/, '')
     .replace(/\n+$/, '');
+}
+
+/**
+ * 把代理行追加到池文本（按 URL 去重；保留标签行原文若能从 source 找回）。
+ */
+export function appendProxiesToPoolText(
+  targetRaw: string,
+  proxiesToAdd: string[],
+  sourceRaw?: string
+): string {
+  const existing = new Set(parseProxyPool(targetRaw));
+  const sourceLines = new Map<string, string>();
+  if (sourceRaw) {
+    for (const line of String(sourceRaw).replace(/\r\n/g, '\n').split('\n')) {
+      const entry = parseProxyLine(line);
+      if (entry && !sourceLines.has(entry.proxy)) {
+        sourceLines.set(entry.proxy, line.trim());
+      }
+    }
+  }
+  const addLines: string[] = [];
+  for (const p of proxiesToAdd) {
+    const key = stripProxyComment(p) || String(p || '').trim();
+    if (!key || existing.has(key)) continue;
+    existing.add(key);
+    addLines.push(sourceLines.get(key) || key);
+  }
+  if (addLines.length === 0) return String(targetRaw || '').trim();
+  const base = String(targetRaw || '').trim();
+  return base ? `${base}\n${addLines.join('\n')}` : addLines.join('\n');
+}
+
+/**
+ * 测活成功：从「待测池」移到「可用池」（保留标签行）。
+ */
+export function moveProxiesToAlivePool(
+  poolRaw: string,
+  aliveRaw: string,
+  okProxies: string[]
+): { proxyPool: string; proxyPoolAlive: string; moved: number } {
+  const keys = okProxies
+    .map((p) => stripProxyComment(p) || String(p || '').trim())
+    .filter(Boolean);
+  if (keys.length === 0) {
+    return {
+      proxyPool: poolRaw,
+      proxyPoolAlive: aliveRaw,
+      moved: 0
+    };
+  }
+  const beforeAlive = parseProxyPool(aliveRaw).length;
+  const nextAlive = appendProxiesToPoolText(aliveRaw, keys, poolRaw);
+  const nextPool = removeProxiesFromPoolText(poolRaw, keys);
+  const afterAlive = parseProxyPool(nextAlive).length;
+  return {
+    proxyPool: nextPool,
+    proxyPoolAlive: nextAlive,
+    moved: Math.max(0, afterAlive - beforeAlive)
+  };
+}
+
+/**
+ * 注册用代理列表：可用池在前，待测池在后，按 URL 去重。
+ */
+export function resolveProxyPoolForRuntime(settings: {
+  proxyPool?: string;
+  proxyPoolAlive?: string;
+}): string[] {
+  const alive = parseProxyPool(settings.proxyPoolAlive);
+  const pending = parseProxyPool(settings.proxyPool);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const p of [...alive, ...pending]) {
+    if (seen.has(p)) continue;
+    seen.add(p);
+    out.push(p);
+  }
+  return out;
 }
 
 /** 解析通用多行/逗号列表（域名等） */
@@ -326,8 +468,10 @@ export function validateSettings(s: AppSettings): Record<string, string> {
   }
   if (s.proxyEnabled) {
     if (s.proxyPoolEnabled) {
-      if (parseProxyPool(s.proxyPool).length === 0) {
-        errors.proxyPool = '代理池已开启，请至少填一条代理';
+      const n =
+        parseProxyPool(s.proxyPool).length + parseProxyPool(s.proxyPoolAlive).length;
+      if (n === 0) {
+        errors.proxyPool = '代理池已开启，请在待测池或可用池至少填一条代理';
       }
     } else if (!s.proxy.trim() && !s.browserProxy.trim()) {
       errors.proxy = '已开启代理，请填写 HTTP 代理或浏览器代理';

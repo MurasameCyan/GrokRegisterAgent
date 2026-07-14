@@ -45,10 +45,22 @@ def _config_path() -> Path:
 
 
 def _strip_proxy_comment(line: str) -> str:
-    """去掉代理行尾 #备注（如 http://u:p@ip:port#香港-01 或 #%E9%A6%99%E6%B8%AF-02）。"""
+    """去掉代理行尾备注，只保留可连地址。
+
+    支持：
+    - `http://u:p@ip:port#香港-01` / `#%E9%A6%99%E6%B8%AF-02`
+    - `8.216.35.12:8888（日本，elite，HTTPS）`
+    - `ip:port(Japan, elite, HTTPS)`
+    """
     s = (line or "").strip()
     if not s or s.startswith("#"):
         return ""
+    # 尾部全角/半角括号备注
+    for _ in range(3):
+        ns = re.sub(r"[（(][^）)]*[）)]\s*$", "", s).strip()
+        if ns == s:
+            break
+        s = ns
     scheme_idx = s.find("://")
     search_from = scheme_idx + 3 if scheme_idx >= 0 else 0
     hash_idx = s.find("#", search_from)
@@ -57,18 +69,37 @@ def _strip_proxy_comment(line: str) -> str:
     return s
 
 
+def _split_proxy_pool_text(text: str) -> List[str]:
+    """按换行/半角逗号拆分；括号内逗号不拆。"""
+    text = (text or "").replace("\r\n", "\n")
+    items: List[str] = []
+    for line in text.split("\n"):
+        # 保护括号内半角逗号
+        def _protect(m: re.Match) -> str:
+            return m.group(0).replace(",", "\0")
+
+        protected = re.sub(r"[（(][^）)]*[）)]", _protect, line)
+        for part in protected.split(","):
+            one = part.replace("\0", ",").strip()
+            if one:
+                items.append(one)
+    return items
+
+
 def _parse_lines(raw, *, strip_proxy_hash: bool = False) -> List[str]:
     """支持 list / 多行字符串 / 逗号分隔。
 
-    strip_proxy_hash=True 时剥离行尾 #备注（代理池专用）。
+    strip_proxy_hash=True 时剥离行尾 # / （…） 备注（代理池专用）。
     """
     if raw is None:
         return []
     if isinstance(raw, list):
         items = [str(x).strip() for x in raw]
     else:
-        text = str(raw).replace("\r\n", "\n").replace(",", "\n")
-        items = [ln.strip() for ln in text.split("\n")]
+        items = _split_proxy_pool_text(str(raw)) if strip_proxy_hash else [
+            ln.strip()
+            for ln in str(raw).replace("\r\n", "\n").replace(",", "\n").split("\n")
+        ]
     out: List[str] = []
     for it in items:
         if not it or it.startswith("#"):

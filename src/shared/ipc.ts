@@ -119,6 +119,8 @@ export interface CpaAuthResignInput {
   filename?: string;
   path?: string;
   sso?: string;
+  /** 重签成功后推送远程 CPA（默认 false） */
+  pushRemote?: boolean;
 }
 
 export type CpaAuthResignResult = Record<string, unknown> & {
@@ -131,6 +133,9 @@ export type CpaAuthResignResult = Record<string, unknown> & {
   xai?: boolean;
   xaiFilename?: boolean;
   xaiType?: boolean;
+  remoteOk?: boolean | null;
+  remoteError?: string;
+  remoteName?: string;
 };
 
 export interface CpaAuthBatchResultItem {
@@ -152,6 +157,10 @@ export interface CpaAuthBatchResultItem {
   probeAction?: string;
   probeHttp?: number;
   probeDeleted?: boolean;
+  /** Management API 推送：true/false；null/undefined=未配置或未尝试 */
+  remoteOk?: boolean | null;
+  remoteError?: string;
+  remoteName?: string;
 }
 
 export interface CpaAuthBatchResult {
@@ -166,6 +175,9 @@ export interface CpaAuthBatchResult {
   banned?: number;
   /** 因 bot_flag_source=1 跳过 */
   botFlagSkipped?: number;
+  /** 远程推送成功/失败计数 */
+  remoteOk?: number;
+  remoteFailed?: number;
   /** 批量 CPA 测活：dead / 已删 / keep */
   dead?: number;
   deleted?: number;
@@ -267,6 +279,7 @@ export interface RendererApi {
     filenames?: string[];
     paths?: string[];
     concurrency?: number;
+    pushRemote?: boolean;
   }): Promise<CpaAuthBatchResult>;
   mintCpaAuthFromSso(input: {
     items: CpaAuthMintItem[];
@@ -281,6 +294,12 @@ export interface RendererApi {
     concurrency?: number;
     deleteOnDead?: boolean;
   }): Promise<CpaAuthBatchResult>;
+  /** 批量推送已有 auth 到远程 CPA（不重新 mint） */
+  pushCpaAuthRemote(input: {
+    filenames?: string[];
+    paths?: string[];
+    concurrency?: number;
+  }): Promise<CpaAuthBatchResult & { remoteConfigured?: boolean; remoteUrl?: string }>;
   /** 批量删除 CPA auth 文件 */
   deleteCpaAuth(input: {
     filenames?: string[];
@@ -306,6 +325,10 @@ export interface RendererApi {
 
   // tests
   testMail(block: MailSettings): Promise<TestResult>;
+  /** 远程 CPA Management API 连通性（地址+密钥；不上传文件） */
+  testCpaRemote(input?: { url?: string; key?: string }): Promise<
+    TestResult & { status?: number; remoteUrl?: string }
+  >;
   /** 单条代理测活（经代理访问公网 IP） */
   testProxy(proxy: string): Promise<TestResult & { exitIp?: string; latencyMs?: number }>;
   /** 批量并发代理测活（大批量请前端分块调用，避免反向代理 524） */

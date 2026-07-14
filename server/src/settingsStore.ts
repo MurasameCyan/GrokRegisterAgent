@@ -68,6 +68,10 @@ function merge(partial: unknown): AppSettings {
   const mailDomains =
     typeof p.mailDomains === 'string' ? p.mailDomains : DEFAULT_SETTINGS.mailDomains;
   const proxyPool = typeof p.proxyPool === 'string' ? p.proxyPool : DEFAULT_SETTINGS.proxyPool;
+  const proxyPoolAlive =
+    typeof (p as AppSettings).proxyPoolAlive === 'string'
+      ? (p as AppSettings).proxyPoolAlive
+      : DEFAULT_SETTINGS.proxyPoolAlive;
   const proxy = typeof p.proxy === 'string' ? p.proxy : DEFAULT_SETTINGS.proxy;
   const browserProxy =
     typeof p.browserProxy === 'string' ? p.browserProxy : DEFAULT_SETTINGS.browserProxy;
@@ -76,9 +80,12 @@ function merge(partial: unknown): AppSettings {
   const inferProxyOn = !!(
     String(proxy || '').trim() ||
     String(proxyPool || '').trim() ||
+    String(proxyPoolAlive || '').trim() ||
     String(browserProxy || '').trim()
   );
-  const inferProxyPoolOn = !!String(proxyPool || '').trim();
+  const inferProxyPoolOn = !!(
+    String(proxyPool || '').trim() || String(proxyPoolAlive || '').trim()
+  );
   const inferMailPoolOn = !!String(mailDomains || '').trim();
 
   const merged: AppSettings = {
@@ -91,6 +98,7 @@ function merge(partial: unknown): AppSettings {
     proxyEnabled: asBool(p.proxyEnabled, inferProxyOn),
     proxy,
     proxyPool,
+    proxyPoolAlive,
     proxyPoolEnabled: asBool(p.proxyPoolEnabled, inferProxyPoolOn),
     proxyMode: asPoolMode(p.proxyMode, DEFAULT_SETTINGS.proxyMode),
     proxyProbeConcurrency: (() => {

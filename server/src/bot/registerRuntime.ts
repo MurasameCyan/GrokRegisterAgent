@@ -133,8 +133,18 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
   config.mail_domain_mode = settings.mailDomainMode || 'round_robin';
   config.email_domain_mode = settings.mailDomainMode || 'round_robin';
 
-  // 代理：以「池/单条是否有内容」为准，避免 UI 总开关未勾选却把已填池清掉
-  const poolProxies = parseProxyPool(settings.proxyPool);
+  // 代理：可用池优先 + 待测池；避免 UI 总开关未勾选却把已填池清掉
+  const alivePool = parseProxyPool(
+    (settings as { proxyPoolAlive?: string }).proxyPoolAlive || ''
+  );
+  const pendingPool = parseProxyPool(settings.proxyPool);
+  const poolSeen = new Set<string>();
+  const poolProxies: string[] = [];
+  for (const p of [...alivePool, ...pendingPool]) {
+    if (poolSeen.has(p)) continue;
+    poolSeen.add(p);
+    poolProxies.push(p);
+  }
   const singleProxy = stripProxyComment(settings.proxy || '');
   const browserOnly = stripProxyComment(settings.browserProxy || '');
   // 显式关闭才直连；未设置/true 或有代理内容 → 启用

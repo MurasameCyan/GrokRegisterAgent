@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Activity,
   CheckSquare,
+  CloudUpload,
   Eye,
   EyeOff,
   FileDown,
@@ -49,16 +50,20 @@ function downloadBlob(filename: string, blob: Blob) {
 }
 
 type TaskProgress = {
-  kind: 'probe' | 'resign' | 'delete' | 'export';
+  kind: 'probe' | 'resign' | 'delete' | 'export' | 'push';
   total: number;
   done: number;
   ok: number;
   failed: number;
   dead?: number;
   deleted?: number;
+  remoteOk?: number;
+  remoteFailed?: number;
   current?: string;
   running: boolean;
 };
+
+const RESIGN_PUSH_KEY = 'gra-resign-push-remote';
 
 export function AuthPage() {
   const push = useToastStore((s) => s.push);
@@ -67,16 +72,27 @@ export function AuthPage() {
   const [items, setItems] = useState<CpaAuthItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [rowBusy, setRowBusy] = useState<string | null>(null);
-  const [batchBusy, setBatchBusy] = useState<'resign' | 'probe' | 'delete' | 'export' | null>(
-    null
-  );
+  const [batchBusy, setBatchBusy] = useState<
+    'resign' | 'probe' | 'delete' | 'export' | 'push' | null
+  >(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   /** 最近一次测活结果：filename → probeAction */
   const [probeMap, setProbeMap] = useState<Record<string, string>>({});
   const [prog, setProg] = useState<TaskProgress | null>(null);
   const [emailMasked, setEmailMasked] = useState(() => loadEmailPrivacyMask());
+  /** 重签成功后是否再推远程（默认关，localStorage 记忆） */
+  const [resignPushRemote, setResignPushRemote] = useState(() => {
+    try {
+      return localStorage.getItem(RESIGN_PUSH_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
 
   const deleteOnDead = settings?.cpaProbeDeleteOnDead !== false;
+  const remoteReady = Boolean(
+    String(settings?.cpaRemoteUrl || '').trim() && String(settings?.cpaManagementKey || '').trim()
+  );
 
   const toggleEmailPrivacy = () => {
     setEmailMasked((prev) => {
@@ -138,7 +154,10 @@ export function AuthPage() {
   const resign = async (item: CpaAuthItem) => {
     setRowBusy(`resign:${item.filename}`);
     try {
-      const r = await window.api.resignCpaAuth({ filename: item.filename });
+      const r = await window.api.resignCpaAuth({
+        filename: item.filename,
+        pushRemote: resignPushRemote
+      });
       if (r.ok === false || r.error) {
         push({
           tone: 'danger',
@@ -154,10 +173,21 @@ export function AuthPage() {
               : r.xai
                 ? ' · xai 部分'
                 : '';
+        const remoteHint =
+          r.remoteOk === true
+            ? ' · 远程推送OK'
+            : r.remoteOk === false
+              ? ` · 远程失败: ${r.remoteError || '?'}`
+              : resignPushRemote
+                ? ' · 远程未配置/跳过'
+                : '';
         push({
-          tone: r.xai === false ? 'warn' : 'ok',
+          tone:
+            r.xai === false || r.remoteOk === false
+              ? 'warn'
+              : 'ok',
           title: '重签成功',
-          description: `${item.email || item.filename}（${r.mode || 'ok'}）${xaiHint}`
+          description: `${item.email || item.filename}（${r.mode || 'ok'}）${xaiHint}${remoteHint}`
         });
         await reload();
       }
@@ -173,6 +203,15 @@ export function AuthPage() {
   };
 
   const probeOne = async (item: CpaAuthItem) => {
+    // 开启「死号自动删」时，单条测活前确认
+    let willDelete = deleteOnDead;
+    if (deleteOnDead) {
+      const ok = window.confirm(
+        `测活「${item.email || item.filename}」\n\n若判定为死号（401/402/403），将删除本地 Auth 文件。\n\n确定继续？\n（可在设置关闭「测活死号自动删除」）`
+      );
+      if (!ok) return;
+      willDelete = true;
+    }
     setRowBusy(`probe:${item.filename}`);
     setProg({
       kind: 'probe',
@@ -187,7 +226,7 @@ export function AuthPage() {
       const r = await window.api.probeCpaAuthBatch({
         filenames: [item.filename],
         concurrency: 1,
-        deleteOnDead
+        deleteOnDead: willDelete
       });
       const one = r.results[0];
       if (one?.filename) {
@@ -213,7 +252,7 @@ export function AuthPage() {
           title: '测活：死号',
           description: `${item.email || item.filename}${one.probeDeleted ? ' · 已删' : ' · 已保留'}`
         });
-        await reload();
+        if (one.probeDeleted) await reload();
       } else if (one?.ok || one?.probeAction === 'ok') {
         push({
           tone: 'ok',
@@ -252,6 +291,8 @@ export function AuthPage() {
       done: 0,
       ok: 0,
       failed: 0,
+      remoteOk: 0,
+      remoteFailed: 0,
       running: true
     });
     try {
@@ -260,6 +301,8 @@ export function AuthPage() {
       let ok = 0;
       let failed = 0;
       let noXai = 0;
+      let remoteOkN = 0;
+      let remoteFailedN = 0;
       for (let i = 0; i < filenames.length; i += CHUNK) {
         const chunk = filenames.slice(i, i + CHUNK);
         setProg((p) =>
@@ -267,30 +310,110 @@ export function AuthPage() {
             ? { ...p, current: chunk[0], running: true }
             : p
         );
-        const r = await window.api.resignCpaAuthBatch({ filenames: chunk });
+        const r = await window.api.resignCpaAuthBatch({
+          filenames: chunk,
+          pushRemote: resignPushRemote
+        });
         ok += r.ok || 0;
         failed += r.failed || 0;
         noXai += r.results.filter((x) => x.ok && x.xai === false).length;
+        remoteOkN += r.remoteOk ?? r.results.filter((x) => x.remoteOk === true).length;
+        remoteFailedN +=
+          r.remoteFailed ?? r.results.filter((x) => x.remoteOk === false).length;
         setProg({
           kind: 'resign',
           total: filenames.length,
           done: Math.min(i + chunk.length, filenames.length),
           ok,
           failed,
+          remoteOk: remoteOkN,
+          remoteFailed: remoteFailedN,
           running: i + chunk.length < filenames.length,
           current: chunk[chunk.length - 1]
         });
       }
+      const remotePart = resignPushRemote
+        ? ` · 远程OK ${remoteOkN}${remoteFailedN ? ` · 远程失败 ${remoteFailedN}` : ''}`
+        : '';
       push({
-        tone: failed > 0 ? 'warn' : 'ok',
+        tone: failed > 0 || remoteFailedN > 0 ? 'warn' : 'ok',
         title: '批量重签完成',
-        description: `成功 ${ok} · 失败 ${failed}${noXai ? ` · 无 xai ${noXai}` : ''}`
+        description: `成功 ${ok} · 失败 ${failed}${noXai ? ` · 无 xai ${noXai}` : ''}${remotePart}`
       });
       await reload();
     } catch (err) {
       push({
         tone: 'danger',
         title: '批量重签失败',
+        description: err instanceof Error ? err.message : String(err)
+      });
+    } finally {
+      setBatchBusy(null);
+      window.setTimeout(() => setProg(null), 3000);
+    }
+  };
+
+  const pushRemoteBatch = async () => {
+    const filenames = targetNames();
+    if (filenames.length === 0) {
+      push({ tone: 'warn', title: '没有可推送的文件' });
+      return;
+    }
+    if (!remoteReady) {
+      push({
+        tone: 'warn',
+        title: '未配置远程 CPA',
+        description: '请在设置中填写「远程 CPA 地址」与「管理密钥」'
+      });
+      return;
+    }
+    setBatchBusy('push');
+    setProg({
+      kind: 'push',
+      total: filenames.length,
+      done: 0,
+      ok: 0,
+      failed: 0,
+      remoteOk: 0,
+      remoteFailed: 0,
+      running: true
+    });
+    try {
+      const CHUNK = 12;
+      let ok = 0;
+      let failed = 0;
+      let remoteUrl = '';
+      for (let i = 0; i < filenames.length; i += CHUNK) {
+        const chunk = filenames.slice(i, i + CHUNK);
+        setProg((p) => (p ? { ...p, current: chunk[0], running: true } : p));
+        const r = await window.api.pushCpaAuthRemote({
+          filenames: chunk,
+          concurrency: Math.min(4, chunk.length)
+        });
+        ok += r.ok || 0;
+        failed += r.failed || 0;
+        if (r.remoteUrl) remoteUrl = r.remoteUrl;
+        setProg({
+          kind: 'push',
+          total: filenames.length,
+          done: Math.min(i + chunk.length, filenames.length),
+          ok,
+          failed,
+          remoteOk: ok,
+          remoteFailed: failed,
+          running: i + chunk.length < filenames.length,
+          current: chunk[chunk.length - 1]
+        });
+      }
+      push({
+        tone: failed > 0 ? 'warn' : 'ok',
+        title: '远程推送完成',
+        description: `成功 ${ok} · 失败 ${failed}${remoteUrl ? ` · ${remoteUrl}` : ''}`
+      });
+    } catch (err) {
+      push({
+        tone: 'danger',
+        title: '远程推送失败',
         description: err instanceof Error ? err.message : String(err)
       });
     } finally {
@@ -516,9 +639,13 @@ export function AuthPage() {
           ? prog.running
             ? '删除进行中'
             : '删除完成'
-          : prog?.running
-            ? '导出进行中'
-            : '导出完成';
+          : prog?.kind === 'push'
+            ? prog.running
+              ? '远程推送进行中'
+              : '远程推送完成'
+            : prog?.running
+              ? '导出进行中'
+              : '导出完成';
 
   return (
     <div className="space-y-5">
@@ -544,6 +671,12 @@ export function AuthPage() {
                 {` · 成功 ${prog.ok} · 失败 ${prog.failed}`}
                 {prog.dead != null ? ` · 死号 ${prog.dead}` : ''}
                 {prog.deleted != null ? ` · 已删 ${prog.deleted}` : ''}
+                {prog.remoteOk != null && prog.remoteOk > 0
+                  ? ` · 远程OK ${prog.remoteOk}`
+                  : ''}
+                {prog.remoteFailed != null && prog.remoteFailed > 0
+                  ? ` · 远程失败 ${prog.remoteFailed}`
+                  : ''}
               </p>
             </div>
             <span className="chip tabular-nums">{progPct}%</span>
@@ -612,8 +745,36 @@ export function AuthPage() {
             <Button
               variant="secondary"
               size="sm"
+              onClick={() => {
+                setResignPushRemote((v) => {
+                  const next = !v;
+                  try {
+                    localStorage.setItem(RESIGN_PUSH_KEY, next ? '1' : '0');
+                  } catch {
+                    /* ignore */
+                  }
+                  return next;
+                });
+              }}
+              title={
+                resignPushRemote
+                  ? '重签成功后会推送到远程 CPA（点击关闭）'
+                  : '重签后不推远程（点击开启）'
+              }
+            >
+              <CloudUpload className="h-3.5 w-3.5" />
+              {resignPushRemote ? '重签后推:开' : '重签后推:关'}
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
               onClick={() => void resignBatch()}
               disabled={busy || items.length === 0}
+              title={
+                resignPushRemote
+                  ? '重签后按设置推送到远程 CPA'
+                  : '仅本地重签（不推远程）'
+              }
             >
               <RotateCcw
                 className={cn('h-3.5 w-3.5', batchBusy === 'resign' && 'animate-spin')}
@@ -623,6 +784,26 @@ export function AuthPage() {
                 : selected.size > 0
                   ? `重签所选(${selected.size})`
                   : '批量重签'}
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => void pushRemoteBatch()}
+              disabled={busy || items.length === 0}
+              title={
+                remoteReady
+                  ? '把已有 auth 文件上传到远程 CPA（不重新 mint）'
+                  : '请先在设置中配置远程 CPA 地址与密钥'
+              }
+            >
+              <CloudUpload
+                className={cn('h-3.5 w-3.5', batchBusy === 'push' && 'animate-pulse')}
+              />
+              {batchBusy === 'push'
+                ? `推送 ${prog?.done ?? 0}/${prog?.total ?? 0}`
+                : selected.size > 0
+                  ? `推送远程(${selected.size})`
+                  : '推送远程'}
             </Button>
             <Button
               variant="secondary"
@@ -821,17 +1002,35 @@ function ProbeBadge({ action }: { action?: string }) {
   if (!action) {
     return <span className="text-[11px] text-muted-foreground">—</span>;
   }
+  // 队列列表：绿 O / 红 X 闪烁提示（不拆单独卡片）
   if (action === 'ok') {
     return (
-      <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
-        OK
+      <span
+        className="inline-flex items-center gap-1.5"
+        title="测活通过"
+      >
+        <span
+          className="inline-flex h-5 w-5 animate-probe-flash items-center justify-center rounded-full bg-emerald-500/20 text-[12px] font-bold leading-none text-emerald-600 dark:text-emerald-400"
+          aria-label="OK"
+        >
+          O
+        </span>
+        <span className="text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
+          活
+        </span>
       </span>
     );
   }
   if (action === 'dead') {
     return (
-      <span className="rounded-full bg-destructive/15 px-2 py-0.5 text-[10px] font-medium text-destructive">
-        死号
+      <span className="inline-flex items-center gap-1.5" title="死号">
+        <span
+          className="inline-flex h-5 w-5 animate-probe-flash items-center justify-center rounded-full bg-destructive/20 text-[12px] font-bold leading-none text-destructive"
+          aria-label="死号"
+        >
+          X
+        </span>
+        <span className="text-[10px] font-medium text-destructive">死</span>
       </span>
     );
   }

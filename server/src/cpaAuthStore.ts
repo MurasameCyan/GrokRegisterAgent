@@ -8,6 +8,7 @@ import { spawn } from 'node:child_process';
 import { loadSettings, dataDir } from './settingsStore.js';
 import { resolveRegisterRuntime } from './bot/registerRuntime.js';
 import { readBotFlagFromAuthRecord, readBotFlagFromToken } from './jwtBotFlag.js';
+import { proxiedRequest } from './httpClient.js';
 
 export interface CpaAuthItem {
   filename: string;
@@ -30,6 +31,13 @@ export interface CpaAuthItem {
   isBotFlag1?: boolean;
 }
 
+export interface CpaRemoteResult {
+  ok: boolean;
+  url?: string;
+  name?: string;
+  error?: string;
+}
+
 export interface CpaAuthBatchResultItem {
   filename?: string;
   email?: string;
@@ -49,6 +57,35 @@ export interface CpaAuthBatchResultItem {
   probeAction?: string;
   probeHttp?: number;
   probeDeleted?: boolean;
+  /** Management API 远程推送结果（未配置时 undefined） */
+  remoteOk?: boolean | null;
+  remoteError?: string;
+  remoteName?: string;
+}
+
+function parseRemoteField(raw: unknown): {
+  remoteOk?: boolean | null;
+  remoteError?: string;
+  remoteName?: string;
+  remote?: CpaRemoteResult | null;
+} {
+  if (raw == null) {
+    return { remoteOk: null, remote: null };
+  }
+  if (typeof raw !== 'object') {
+    return { remoteOk: null, remote: null };
+  }
+  const o = raw as Record<string, unknown>;
+  const ok = o.ok !== false && !o.error;
+  const err = o.error != null ? String(o.error) : undefined;
+  const name = o.name != null ? String(o.name) : undefined;
+  const url = o.url != null ? String(o.url) : undefined;
+  return {
+    remoteOk: ok,
+    remoteError: err,
+    remoteName: name,
+    remote: { ok, url, name, error: err }
+  };
 }
 
 function resolveAuthDir(configured?: string): string {
@@ -189,6 +226,8 @@ export async function resignCpaAuth(input: {
   filename?: string;
   path?: string;
   sso?: string;
+  /** 重签成功后是否推送到远程 CPA（默认 false） */
+  pushRemote?: boolean;
 }): Promise<Record<string, unknown>> {
   const settings = await loadSettings();
   const dir = resolveAuthDir(settings.authDir);
@@ -208,6 +247,7 @@ export async function resignCpaAuth(input: {
   const runtime = resolveRegisterRuntime(settings);
   if (!runtime) throw new Error('未找到注册脚本目录，无法调用 Python 重签');
 
+  const pushRemote = input.pushRemote === true;
   const code = `
 import json, sys
 sys.path.insert(0, ${JSON.stringify(runtime.registerDir)})
@@ -215,22 +255,29 @@ from auth_service import resign_auth_file
 path = sys.argv[1]
 proxy = sys.argv[2] if len(sys.argv) > 2 else ""
 sso = sys.argv[3] if len(sys.argv) > 3 else ""
-r = resign_auth_file(path, sso=sso, proxy=proxy)
+push = (sys.argv[4] if len(sys.argv) > 4 else "0") == "1"
+r = resign_auth_file(path, sso=sso, proxy=proxy, push_remote=push)
 print(json.dumps(r, ensure_ascii=False))
 `.trim();
 
   const r = await runPythonJson(runtime.pythonPath, runtime.registerDir, code, [
     resolved,
     settings.proxy || '',
-    String(input.sso || '').trim()
+    String(input.sso || '').trim(),
+    pushRemote ? '1' : '0'
   ]);
 
   const outPath = String(r.path || resolved);
   const flags = await readXaiAfter(outPath);
+  const remote = parseRemoteField(r.remote);
   return {
     ...r,
     filename: r.filename || basename(outPath),
-    ...flags
+    ...flags,
+    remoteOk: remote.remoteOk,
+    remoteError: remote.remoteError,
+    remoteName: remote.remoteName,
+    remote: remote.remote
   };
 }
 
@@ -238,7 +285,16 @@ export async function resignCpaAuthBatch(input: {
   filenames?: string[];
   paths?: string[];
   concurrency?: number;
-}): Promise<{ total: number; ok: number; failed: number; results: CpaAuthBatchResultItem[] }> {
+  /** 重签成功后推送远程（默认 false） */
+  pushRemote?: boolean;
+}): Promise<{
+  total: number;
+  ok: number;
+  failed: number;
+  remoteOk?: number;
+  remoteFailed?: number;
+  results: CpaAuthBatchResultItem[];
+}> {
   const names = Array.isArray(input.filenames) ? input.filenames : [];
   const paths = Array.isArray(input.paths) ? input.paths : [];
   const jobs: { filename?: string; path?: string }[] = [];
@@ -252,6 +308,7 @@ export async function resignCpaAuthBatch(input: {
   if (jobs.length > 100) throw new Error('单次批量重签最多 100 个');
 
   const concurrency = Math.min(5, Math.max(1, Number(input.concurrency) || 2));
+  const pushRemote = input.pushRemote === true;
   const results: CpaAuthBatchResultItem[] = [];
   let idx = 0;
 
@@ -260,7 +317,7 @@ export async function resignCpaAuthBatch(input: {
       const i = idx++;
       const job = jobs[i];
       try {
-        const r = await resignCpaAuth(job);
+        const r = await resignCpaAuth({ ...job, pushRemote });
         const probeObj =
           r.probe && typeof r.probe === 'object'
             ? (r.probe as Record<string, unknown>)
@@ -279,7 +336,15 @@ export async function resignCpaAuthBatch(input: {
           probeHttp: probeObj
             ? Number(probeObj.http_status || 0) || undefined
             : undefined,
-          probeDeleted: Boolean(r.deleted) || Boolean(probeObj?.deleted)
+          probeDeleted: Boolean(r.deleted) || Boolean(probeObj?.deleted),
+          remoteOk:
+            typeof r.remoteOk === 'boolean'
+              ? r.remoteOk
+              : r.remoteOk === null
+                ? null
+                : undefined,
+          remoteError: r.remoteError ? String(r.remoteError) : undefined,
+          remoteName: r.remoteName ? String(r.remoteName) : undefined
         });
       } catch (err) {
         results.push({
@@ -293,7 +358,262 @@ export async function resignCpaAuthBatch(input: {
 
   await Promise.all(Array.from({ length: concurrency }, () => worker()));
   const ok = results.filter((r) => r.ok).length;
-  return { total: results.length, ok, failed: results.length - ok, results };
+  const remoteOk = results.filter((r) => r.remoteOk === true).length;
+  const remoteFailed = results.filter((r) => r.remoteOk === false).length;
+  return {
+    total: results.length,
+    ok,
+    failed: results.length - ok,
+    remoteOk,
+    remoteFailed,
+    results
+  };
+}
+
+/**
+ * 批量把已有 auth JSON 推到远程 CPA Management API（不重新 mint）。
+ * POST {cpaRemoteUrl}/v0/management/auth-files?name=...
+ */
+export async function pushCpaAuthRemoteBatch(input: {
+  filenames?: string[];
+  paths?: string[];
+  concurrency?: number;
+}): Promise<{
+  total: number;
+  ok: number;
+  failed: number;
+  remoteConfigured: boolean;
+  remoteUrl?: string;
+  results: CpaAuthBatchResultItem[];
+}> {
+  const settings = await loadSettings();
+  let base = String(settings.cpaRemoteUrl || '').trim().replace(/\/+$/, '');
+  const key = String(settings.cpaManagementKey || '').trim();
+  if (base.endsWith('/v1')) base = base.slice(0, -3).replace(/\/+$/, '');
+
+  if (!base || !key) {
+    throw new Error(
+      '未配置远程 CPA：请在设置中填写「远程 CPA 地址」与「远程 CPA 管理密钥」'
+    );
+  }
+
+  const dir = resolveAuthDir(settings.authDir);
+  const names = Array.isArray(input.filenames) ? input.filenames : [];
+  const paths = Array.isArray(input.paths) ? input.paths : [];
+  const jobs: { filename: string; path: string }[] = [];
+
+  for (const f of names) {
+    const name = String(f || '').trim();
+    if (!name) continue;
+    const full = join(dir, name);
+    assertInsideAuthDir(full, dir);
+    jobs.push({ filename: name, path: full });
+  }
+  for (const p of paths) {
+    const full = resolve(String(p || '').trim());
+    if (!full) continue;
+    assertInsideAuthDir(full, dir);
+    jobs.push({ filename: basename(full), path: full });
+  }
+  // 去重
+  const seen = new Set<string>();
+  const unique = jobs.filter((j) => {
+    const k = j.path.toLowerCase();
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+  if (unique.length === 0) throw new Error('缺少 filenames 或 paths');
+  if (unique.length > 200) throw new Error('单次远程推送最多 200 个');
+
+  const concurrency = Math.min(6, Math.max(1, Number(input.concurrency) || 3));
+  const results: CpaAuthBatchResultItem[] = [];
+  let idx = 0;
+
+  async function worker() {
+    while (idx < unique.length) {
+      const i = idx++;
+      const job = unique[i];
+      try {
+        if (!existsSync(job.path)) {
+          results.push({
+            filename: job.filename,
+            ok: false,
+            remoteOk: false,
+            error: '文件不存在',
+            remoteError: '文件不存在'
+          });
+          continue;
+        }
+        const raw = await fsp.readFile(job.path, 'utf-8');
+        let data: Record<string, unknown>;
+        try {
+          data = JSON.parse(raw) as Record<string, unknown>;
+        } catch {
+          results.push({
+            filename: job.filename,
+            ok: false,
+            remoteOk: false,
+            error: 'JSON 解析失败',
+            remoteError: 'JSON 解析失败'
+          });
+          continue;
+        }
+        const email = String(data.email || '');
+        const uploadName = job.filename.endsWith('.json')
+          ? job.filename
+          : `${job.filename}.json`;
+        const url = `${base}/v0/management/auth-files?name=${encodeURIComponent(uploadName)}`;
+        const res = await proxiedRequest(url, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${key}`,
+            'Content-Type': 'application/json'
+          },
+          body: data,
+          timeoutMs: 30000
+        });
+        if (res.status >= 400) {
+          const body =
+            typeof res.data === 'string'
+              ? res.data
+              : res.data != null
+                ? JSON.stringify(res.data)
+                : '';
+          const msg = `HTTP ${res.status}${body ? `: ${body.slice(0, 200)}` : ''}`;
+          results.push({
+            filename: job.filename,
+            email,
+            ok: false,
+            remoteOk: false,
+            remoteError: msg,
+            error: msg,
+            remoteName: uploadName
+          });
+        } else {
+          results.push({
+            filename: job.filename,
+            email,
+            ok: true,
+            remoteOk: true,
+            remoteName: uploadName
+          });
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        results.push({
+          filename: job.filename,
+          ok: false,
+          remoteOk: false,
+          error: msg,
+          remoteError: msg
+        });
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  const ok = results.filter((r) => r.ok).length;
+  return {
+    total: results.length,
+    ok,
+    failed: results.length - ok,
+    remoteConfigured: true,
+    remoteUrl: base,
+    results
+  };
+}
+
+/**
+ * 检测远程 CPA Management API 连通性（不上传文件）。
+ * GET {base}/v0/management/auth-files 或 HEAD；401/403 也算「密钥到达了服务」。
+ */
+export async function testCpaRemoteConnectivity(input?: {
+  url?: string;
+  key?: string;
+}): Promise<{
+  ok: boolean;
+  message: string;
+  ms?: number;
+  status?: number;
+  remoteUrl?: string;
+}> {
+  const settings = await loadSettings();
+  let base = String(input?.url ?? settings.cpaRemoteUrl ?? '')
+    .trim()
+    .replace(/\/+$/, '');
+  const key = String(input?.key ?? settings.cpaManagementKey ?? '').trim();
+  if (base.endsWith('/v1')) base = base.slice(0, -3).replace(/\/+$/, '');
+  if (!base) {
+    return { ok: false, message: '请先填写远程 CPA 地址' };
+  }
+  if (!key) {
+    return { ok: false, message: '请先填写远程 CPA 管理密钥' };
+  }
+
+  const started = Date.now();
+  const url = `${base}/v0/management/auth-files`;
+  try {
+    const res = await proxiedRequest(url, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${key}`,
+        Accept: 'application/json'
+      },
+      timeoutMs: 12000
+    });
+    const ms = Date.now() - started;
+    // 2xx = 连通且鉴权通过
+    if (res.status >= 200 && res.status < 300) {
+      return {
+        ok: true,
+        message: `远程 CPA 连通（Management API 可用）`,
+        ms,
+        status: res.status,
+        remoteUrl: base
+      };
+    }
+    // 401/403 = 服务在线但密钥错误
+    if (res.status === 401 || res.status === 403) {
+      return {
+        ok: false,
+        message: `已连上 ${base}，但密钥被拒（HTTP ${res.status}）`,
+        ms,
+        status: res.status,
+        remoteUrl: base
+      };
+    }
+    // 404 = 路径不对或未开 Management
+    if (res.status === 404) {
+      return {
+        ok: false,
+        message: `HTTP 404：请确认地址为 Management 根（不要带 /v1），且已开启 remote-management`,
+        ms,
+        status: 404,
+        remoteUrl: base
+      };
+    }
+    const body =
+      typeof res.data === 'string'
+        ? res.data
+        : res.data != null
+          ? JSON.stringify(res.data)
+          : '';
+    return {
+      ok: false,
+      message: `HTTP ${res.status}${body ? `: ${body.slice(0, 120)}` : ''}`,
+      ms,
+      status: res.status,
+      remoteUrl: base
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      message: err instanceof Error ? err.message : String(err),
+      ms: Date.now() - started,
+      remoteUrl: base
+    };
+  }
 }
 
 export async function mintCpaAuthFromSso(input: {
@@ -314,6 +634,8 @@ export async function mintCpaAuthFromSso(input: {
   alive: number;
   banned: number;
   botFlagSkipped?: number;
+  remoteOk?: number;
+  remoteFailed?: number;
   results: CpaAuthBatchResultItem[];
 }> {
   const items = Array.isArray(input.items) ? input.items : [];
@@ -327,6 +649,8 @@ export async function mintCpaAuthFromSso(input: {
   await fsp.mkdir(dir, { recursive: true });
   const runtime = resolveRegisterRuntime(settings);
   if (!runtime) throw new Error('未找到注册脚本目录，无法调用 Python mint');
+  // mint 后 probe 死号是否删文件：跟随设置（默认 true）
+  const deleteOnDead = settings.cpaProbeDeleteOnDead !== false;
 
   // 预检 + mint 合并为一次 Python 调用（check_sso_ban / sso2gropcpa 思路）
   const code = `
@@ -339,6 +663,7 @@ email = sys.argv[2] if len(sys.argv) > 2 else ""
 proxy = sys.argv[3] if len(sys.argv) > 3 else ""
 auth_dir = sys.argv[4] if len(sys.argv) > 4 else ""
 precheck = (sys.argv[5] if len(sys.argv) > 5 else "1") != "0"
+delete_on_dead = (sys.argv[6] if len(sys.argv) > 6 else "1") != "0"
 if precheck:
     p = probe_sso(sso, proxy=proxy)
     if not p.get("alive"):
@@ -353,7 +678,10 @@ if precheck:
         raise SystemExit(0)
     if not email and p.get("email"):
         email = p.get("email") or email
-r = sso_to_cpa_auth(sso=sso, email=email, proxy=proxy, auth_dir=auth_dir or None, random_fingerprint=True)
+r = sso_to_cpa_auth(
+    sso=sso, email=email, proxy=proxy, auth_dir=auth_dir or None,
+    random_fingerprint=True, delete_on_dead=delete_on_dead,
+)
 if isinstance(r, dict):
     r.setdefault("mode", "sso_mint")
     r.setdefault("verdict", "alive")
@@ -402,7 +730,8 @@ print(json.dumps(r, ensure_ascii=False))
           email,
           settings.proxy || '',
           dir,
-          doPrecheck ? '1' : '0'
+          doPrecheck ? '1' : '0',
+          deleteOnDead ? '1' : '0'
         ]);
         const skipped = Boolean(r.skipped) || String(r.mode || '').startsWith('skipped_');
         if (skipped) {
@@ -438,6 +767,7 @@ print(json.dumps(r, ensure_ascii=False))
             /* keep sso flag */
           }
         }
+        const remote = parseRemoteField(r.remote);
         results.push({
           filename: String(r.filename || (outPath ? basename(outPath) : '')),
           email: String(r.email || email),
@@ -456,7 +786,10 @@ print(json.dumps(r, ensure_ascii=False))
           probeHttp: probeObj
             ? Number(probeObj.http_status || 0) || undefined
             : undefined,
-          probeDeleted: Boolean(r.deleted) || Boolean(probeObj?.deleted)
+          probeDeleted: Boolean(r.deleted) || Boolean(probeObj?.deleted),
+          remoteOk: remote.remoteOk,
+          remoteError: remote.remoteError,
+          remoteName: remote.remoteName
         });
       } catch (err) {
         results.push({
@@ -480,6 +813,8 @@ print(json.dumps(r, ensure_ascii=False))
     (r) => r.verdict === 'bot_flag' || r.mode === 'skipped_bot_flag'
   ).length;
   const alive = results.filter((r) => !r.skipped).length;
+  const remoteOkN = results.filter((r) => r.remoteOk === true).length;
+  const remoteFailedN = results.filter((r) => r.remoteOk === false).length;
   return {
     total: results.length,
     ok,
@@ -488,6 +823,8 @@ print(json.dumps(r, ensure_ascii=False))
     alive,
     banned,
     botFlagSkipped,
+    remoteOk: remoteOkN,
+    remoteFailed: remoteFailedN,
     results
   };
 }
