@@ -5,6 +5,7 @@ import { loadSettings } from '../settingsStore.js';
 import { appendAccount } from '../accountStore.js';
 import type { AccountRecord, LogLevel, RunEvent, RunPhase, RunStatus } from '@shared/runEvents';
 import { EMPTY_STATUS } from '@shared/runEvents';
+import type { AppSettings } from '@shared/settings';
 import fs from 'fs';
 import path from 'path';
 import { resolveRegisterRuntime, writeConfigForPython } from './registerRuntime.js';
@@ -166,8 +167,8 @@ export class RegisterBot extends EventEmitter {
       Math.max(
         1,
         opts.maxParallelOverride ??
-          (Number.isFinite(Number((settings as { maxParallelWorkers?: number }).maxParallelWorkers))
-            ? Math.floor(Number((settings as { maxParallelWorkers?: number }).maxParallelWorkers))
+          (Number.isFinite(Number(settings.maxParallelWorkers))
+            ? Math.floor(Number(settings.maxParallelWorkers))
             : DEFAULT_MAX_PARALLEL)
       )
     );
@@ -353,7 +354,7 @@ export class RegisterBot extends EventEmitter {
     job.childProcess = null;
   }
 
-  private async runPython(job: Job, count: number, settings: Record<string, unknown>) {
+  private async runPython(job: Job, count: number, settings: AppSettings) {
     const runId = job.runId;
     job.status.phase = 'running';
 
