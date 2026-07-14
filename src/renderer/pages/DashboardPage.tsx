@@ -82,11 +82,11 @@ export function DashboardPage({ username }: { username: string }) {
           <VersionBadge update={update} loading={updateLoading} onCheck={() => void loadUpdate()} />
         </section>
 
-        {/* 右：号池最近（与左侧同宽同高） */}
+        {/* 右：SSO 最近（与左侧同宽同高） */}
         <section className="ios-group flex h-full min-h-0 flex-col">
           <div className="flex items-center justify-between border-b border-border/70 px-4 pb-3 pt-4 sm:pt-5">
             <div>
-              <p className="page-kicker">号池</p>
+              <p className="page-kicker">SSO</p>
               <h3 className="mt-0.5 text-[16px] font-semibold tracking-[-0.02em]">最近</h3>
             </div>
             <span className="chip">{accounts.length} 账号</span>

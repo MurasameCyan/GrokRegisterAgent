@@ -32,7 +32,7 @@ type Tab = 'dashboard' | 'register' | 'pool' | 'auth' | 'settings';
 const tabs: { id: Tab; label: string; Icon: typeof LayoutDashboard }[] = [
   { id: 'dashboard', label: '仪表盘', Icon: LayoutDashboard },
   { id: 'register', label: '注册机', Icon: PlayCircle },
-  { id: 'pool', label: '号池', Icon: Database },
+  { id: 'pool', label: 'SSO', Icon: Database },
   { id: 'auth', label: 'Auth', Icon: KeyRound },
   { id: 'settings', label: '配置', Icon: Settings2 }
 ];

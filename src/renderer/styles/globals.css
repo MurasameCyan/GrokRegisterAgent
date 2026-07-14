@@ -117,25 +117,27 @@
     @apply min-w-0 flex-1 px-4 py-4 sm:px-2 lg:px-1 lg:py-0;
   }
 
-  /* 导航：总宽 180，图标左 80、标题右 */
+  /* 导航：总宽 180 — 图标与三行站名等高对齐 */
   .nav-brand {
-    @apply flex items-center gap-2 px-2.5 py-3;
+    @apply flex items-center gap-2.5 px-2.5 py-3;
   }
 
-  /* 侧边栏图标 80×80 + 标题字号适配剩余宽度（仅 .nav-brand，不影响登录/启动页） */
+  /* 侧边栏品牌：64×64 图标；站名字号/行距铺满同高（仅 .nav-brand） */
   .nav-brand .nav-logo {
-    @apply h-20 w-20 shrink-0 text-[22px];
+    @apply h-16 w-16 shrink-0 text-[17px];
   }
 
   .nav-brand .site-name {
-    font-size: 13px;
-    line-height: 1.15;
-    gap: 1px;
-    min-width: 0;
     flex: 1;
-    text-align: left;
+    min-width: 0;
+    height: 4rem; /* 与 h-16 图标同高 */
+    justify-content: space-between;
     align-items: flex-start;
-    letter-spacing: -0.04em;
+    text-align: left;
+    font-size: 15px;
+    line-height: 1.05;
+    letter-spacing: -0.045em;
+    gap: 0;
   }
 
   .nav-logo {

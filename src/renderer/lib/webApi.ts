@@ -215,7 +215,8 @@ const webApi: RendererApi = {
   fetchProxiesFromUrl: (input) =>
     http('POST', '/api/proxy/fetch', {
       url: input?.url,
-      viaProxy: input?.viaProxy === true
+      viaProxy: input?.viaProxy === true,
+      pages: input?.pages
     }),
   testProxyBatch: (input) =>
     http('POST', '/api/test/proxy-batch', {

@@ -385,10 +385,12 @@ export interface RendererApi {
   /**
    * 从网页拉取代理（hide.mn 表格 / 明文 ip:port）。
    * viaProxy：是否用当前 HTTP 代理去拉页面。
+   * pages：hide.mn 翻页数（1–20）。
    */
   fetchProxiesFromUrl(input: {
     url?: string;
     viaProxy?: boolean;
+    pages?: number;
   }): Promise<{
     ok: boolean;
     url: string;
@@ -397,6 +399,7 @@ export interface RendererApi {
     format: string;
     message: string;
     sample: string[];
+    pagesFetched?: number;
   }>;
 
   // system

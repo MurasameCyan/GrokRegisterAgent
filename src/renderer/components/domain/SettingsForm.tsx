@@ -79,21 +79,30 @@ function ToggleRow({
   label,
   hint,
   checked,
-  onChange
+  onChange,
+  className
 }: {
   label: string;
   hint?: string;
   checked: boolean;
   onChange: (v: boolean) => void;
+  className?: string;
 }) {
   return (
-    <div className="flex items-start justify-between gap-4 rounded-xl bg-muted/60 px-3.5 py-3">
+    <div
+      className={cn(
+        'flex items-center justify-between gap-4 rounded-xl bg-muted/60 px-3.5 py-3',
+        className
+      )}
+    >
       <div className="min-w-0">
-        <div className="text-[14px] font-medium">{label}</div>
-        {hint && <div className="mt-0.5 text-[12px] leading-5 text-muted-foreground">{hint}</div>}
+        <div className="text-[14px] font-medium leading-snug">{label}</div>
+        {hint && (
+          <div className="mt-0.5 text-[12px] leading-5 text-muted-foreground">{hint}</div>
+        )}
       </div>
       <Switch
-        className="mt-0.5"
+        className="shrink-0"
         size="md"
         checked={checked}
         onChange={onChange}
@@ -266,6 +275,8 @@ export function SettingsForm() {
   const [fetchingProxies, setFetchingProxies] = useState(false);
   /** 拉列表时是否走当前 HTTP 代理（被墙时） */
   const [fetchViaProxy, setFetchViaProxy] = useState(false);
+  /** hide.mn 翻页数（每页约 64 条） */
+  const [fetchPages, setFetchPages] = useState(1);
 
   useEffect(() => {
     if (data && !draft) setDraft(data);
@@ -318,29 +329,43 @@ export function SettingsForm() {
   const update = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) =>
     setDraft({ ...draft, [key]: value });
 
-  /** 从网页拉取代理并追加到待测池 */
+  /** 从网页拉取代理并追加到待测池（默认 hide.mn） */
   const fetchProxiesFromWeb = async () => {
     if (!draft) return;
-    const url = String(draft.proxyFetchUrl || '').trim();
-    if (!url) {
-      push({ tone: 'warn', title: '请填写拉取 URL' });
+    const url = String(
+      draft.proxyFetchUrl || 'https://hide.mn/en/proxy-list/'
+    ).trim();
+    if (!/^https?:\/\//i.test(url)) {
+      push({ tone: 'warn', title: 'URL 须以 http(s):// 开头' });
+      return;
+    }
+    if (fetchViaProxy && !String(draft.proxy || '').trim()) {
+      push({
+        tone: 'warn',
+        title: '未配置 HTTP 代理',
+        description: '已勾选「经代理拉取」，请先填写上方 HTTP 代理，或关闭该开关直连'
+      });
       return;
     }
     setFetchingProxies(true);
     try {
       const r = await window.api.fetchProxiesFromUrl({
         url,
-        viaProxy: fetchViaProxy
+        viaProxy: fetchViaProxy,
+        pages: fetchPages
       });
       if (!r.ok || !r.lines?.length) {
         push({
           tone: 'danger',
           title: '拉取失败',
-          description: r.message || '未解析到代理'
+          description:
+            (r.message || '未解析到代理') +
+            (fetchViaProxy ? '' : ' · 若本机打不开 hide.mn，可开「经 HTTP 代理拉取」')
         });
         return;
       }
       const before = parseProxyPoolEntries(draft.proxyPool).length;
+      // 第三参用 lines 原文，保留国家/协议标签
       const nextPool = appendProxiesToPoolText(
         draft.proxyPool || '',
         r.lines,
@@ -353,9 +378,10 @@ export function SettingsForm() {
         tone: added > 0 ? 'ok' : 'warn',
         title: added > 0 ? '已写入待测池' : '无新增（可能已存在）',
         description:
-          `${r.message} · 新增 ${added} 条 · 池内共 ${after} 条` +
-          (r.sample?.length ? ` · 例: ${r.sample.slice(0, 3).join(' | ')}` : '') +
-          ' · 请测活后迁入可用池，并点保存'
+          `${r.message} · 新增 ${added} · 池内 ${after}` +
+          (r.pagesFetched && r.pagesFetched > 1 ? ` · 抓取 ${r.pagesFetched} 页` : '') +
+          (r.sample?.length ? ` · 例 ${r.sample.slice(0, 2).join(' | ')}` : '') +
+          ' · 请测活后点保存'
       });
     } catch (err) {
       push({
@@ -748,20 +774,26 @@ export function SettingsForm() {
             </div>
           }
         />
-        <CardBody className="grid gap-4 lg:grid-cols-2">
-          <Field
-            label="API 地址"
-            hint="Worker API 根地址（如 https://xxx.workers.dev），不要填前端 Pages 域名"
-            error={errors['mail.apiBase']}
-          >
-            <Input
-              value={draft.mail.apiBase}
-              onChange={(e) => updateMail('apiBase', e.target.value)}
-              invalid={!!errors['mail.apiBase']}
-            />
-          </Field>
-          <div className="lg:col-span-2">
-            <Field label="管理密码" hint="Temp Email 管理员密码" error={errors['mail.adminAuth']}>
+        <CardBody className="space-y-4">
+          {/* 连接：API + 密码 并排 */}
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field
+              label="API 地址"
+              hint="Worker API 根地址，勿填前端 Pages 域名"
+              error={errors['mail.apiBase']}
+            >
+              <Input
+                value={draft.mail.apiBase}
+                onChange={(e) => updateMail('apiBase', e.target.value)}
+                invalid={!!errors['mail.apiBase']}
+                placeholder="https://xxx.workers.dev"
+              />
+            </Field>
+            <Field
+              label="管理密码"
+              hint="Temp Email 管理员密码（X-Admin-Auth）"
+              error={errors['mail.adminAuth']}
+            >
               <PasswordInput
                 value={draft.mail.adminAuth}
                 onChange={(e) => updateMail('adminAuth', e.target.value)}
@@ -770,53 +802,53 @@ export function SettingsForm() {
             </Field>
           </div>
 
-          <div className="lg:col-span-2">
+          {/* 域名：开关 + 对应表单 */}
+          <div className="space-y-3 rounded-xl border border-border/70 bg-muted/25 p-3.5">
             <ToggleRow
               label="启用域名池"
-              hint="开：多域名轮换；关：只用默认邮件域名"
+              hint="开：多域名轮换；关：只用下方默认域名"
               checked={!!draft.mailDomainPoolEnabled}
               onChange={(v) => update('mailDomainPoolEnabled', v)}
+              className="bg-card/60"
             />
-          </div>
 
-          {!draft.mailDomainPoolEnabled && (
-            <Field
-              label="默认邮件域名"
-              hint="单域名，例如 example.com"
-              error={errors['mail.domain']}
-            >
-              <Input
-                value={draft.mail.domain}
-                onChange={(e) => updateMail('domain', e.target.value)}
-                invalid={!!errors['mail.domain']}
-              />
-            </Field>
-          )}
-
-          {draft.mailDomainPoolEnabled && (
-            <>
-              <div className="lg:col-span-2">
+            {!draft.mailDomainPoolEnabled ? (
+              <Field
+                label="默认邮件域名"
+                hint="单域名，例如 example.com"
+                error={errors['mail.domain']}
+              >
+                <Input
+                  value={draft.mail.domain}
+                  onChange={(e) => updateMail('domain', e.target.value)}
+                  invalid={!!errors['mail.domain']}
+                  placeholder="example.com"
+                />
+              </Field>
+            ) : (
+              <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(11rem,14rem)] lg:items-start">
                 <Field
                   label="邮箱域名池"
                   hint="每行一个，或逗号分隔"
                   error={errors['mail.domain']}
                 >
                   <textarea
-                    className={TEXTAREA_CLASS}
+                    className={cn(TEXTAREA_CLASS, 'min-h-[120px] font-mono text-[13px]')}
                     value={draft.mailDomains}
                     onChange={(e) => update('mailDomains', e.target.value)}
-                    placeholder={'example.com\nother.com'}
+                    placeholder={'mail.example.com\noai.example.com'}
+                    spellCheck={false}
+                  />
+                </Field>
+                <Field label="轮换模式" hint="注册时从池中取域名">
+                  <PoolModeSelect
+                    value={draft.mailDomainMode}
+                    onChange={(v) => update('mailDomainMode', v)}
                   />
                 </Field>
               </div>
-              <Field label="域名池模式">
-                <PoolModeSelect
-                  value={draft.mailDomainMode}
-                  onChange={(v) => update('mailDomainMode', v)}
-                />
-              </Field>
-            </>
-          )}
+            )}
+          </div>
         </CardBody>
       </Card>
 
@@ -839,7 +871,7 @@ export function SettingsForm() {
             <>
               <div className="lg:col-span-2 grid gap-3 sm:grid-cols-2">
                 <ToggleRow
-                  label="号池验活走代理"
+                  label="SSO 验活走代理"
                   hint="开：SSO 验活经 HTTP 代理访问 grok；关：直连"
                   checked={draft.ssoCheckUseProxy !== false}
                   onChange={(v) => update('ssoCheckUseProxy', v)}
@@ -861,7 +893,7 @@ export function SettingsForm() {
                 />
               </div>
 
-              {/* 单条 HTTP 代理：号池验活 / Auth mint·重签·测活 出站用（与注册机代理池无关） */}
+              {/* 单条 HTTP 代理：SSO 验活 / Auth mint·重签·测活 出站用（与注册机代理池无关） */}
               <Field
                 label={
                   draft.proxyPoolEnabled
@@ -870,7 +902,7 @@ export function SettingsForm() {
                 }
                 hint={
                   draft.proxyPoolEnabled
-                    ? '代理池仅给注册机浏览器轮换；此处单条给号池验活、Auth 转换/重签/测活'
+                    ? '代理池仅给注册机浏览器轮换；此处单条给 SSO 验活、Auth 转换/重签/测活'
                     : '例如 http://127.0.0.1:7890'
                 }
                 error={errors.proxy}
@@ -894,51 +926,84 @@ export function SettingsForm() {
 
               {draft.proxyPoolEnabled && (
                 <>
-                  <div className="lg:col-span-2 space-y-3 rounded-xl border border-border/60 bg-muted/30 p-3.5">
-                    <div>
-                      <div className="text-[13px] font-medium tracking-tight">
-                        从网页拉取代理
+                  <div className="lg:col-span-2 space-y-3 rounded-xl border border-primary/25 bg-primary/5 p-3.5">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="text-[13px] font-semibold tracking-tight">
+                          从网页拉取代理
+                        </div>
+                        <p className="mt-0.5 text-[11px] leading-4 text-muted-foreground">
+                          默认{' '}
+                          <a
+                            href="https://hide.mn/en/proxy-list/"
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-primary underline-offset-2 hover:underline"
+                          >
+                            hide.mn/proxy-list
+                          </a>
+                          （表格 IP/Port/国家/类型）。写入下方「待测池」→ 测活 →
+                          可用池 → 保存。
+                        </p>
                       </div>
-                      <p className="mt-0.5 text-[11px] leading-4 text-muted-foreground">
-                        适配 hide.mn 列表页表格（IP/Port/国家/类型），以及纯文本
-                        ip:port。写入「待测池」后请测活再迁入可用池。
-                      </p>
-                    </div>
-                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                      <Input
-                        className="min-w-0 flex-1"
-                        value={draft.proxyFetchUrl || ''}
-                        onChange={(e) => update('proxyFetchUrl', e.target.value)}
-                        placeholder="https://hide.mn/en/proxy-list/"
-                      />
                       <Button
                         type="button"
                         size="sm"
                         className="shrink-0"
                         disabled={fetchingProxies}
                         onClick={() => void fetchProxiesFromWeb()}
-                        title="拉取并追加到待测池（需保存设置后生效于其它设备）"
+                        title="拉取并追加到待测池"
                       >
                         {fetchingProxies ? (
                           <Loader2 className="h-3.5 w-3.5 animate-spin" />
                         ) : (
                           <Download className="h-3.5 w-3.5" />
                         )}
-                        {fetchingProxies ? '拉取中…' : '拉取并写入待测池'}
+                        {fetchingProxies ? '拉取中…' : '一键拉取 hide.mn'}
                       </Button>
+                    </div>
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                      <Input
+                        className="min-w-0 flex-1 font-mono text-[13px]"
+                        value={
+                          draft.proxyFetchUrl ||
+                          'https://hide.mn/en/proxy-list/'
+                        }
+                        onChange={(e) => update('proxyFetchUrl', e.target.value)}
+                        placeholder="https://hide.mn/en/proxy-list/"
+                        spellCheck={false}
+                      />
+                      <label className="flex shrink-0 items-center gap-1.5 text-[12px] text-muted-foreground">
+                        <span className="whitespace-nowrap">页数</span>
+                        <select
+                          className={cn(SELECT_CLASS, 'h-9 w-[4.5rem] px-2 text-[13px]')}
+                          value={fetchPages}
+                          onChange={(e) =>
+                            setFetchPages(Math.min(20, Math.max(1, Number(e.target.value) || 1)))
+                          }
+                          title="hide.mn 每页约 64 条，可多页合并去重"
+                        >
+                          {[1, 2, 3, 5, 10, 15, 20].map((n) => (
+                            <option key={n} value={n}>
+                              {n}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
                     </div>
                     <ToggleRow
                       label="经 HTTP 代理拉取页面"
-                      hint="本机直连打不开列表时打开（用上方单条 HTTP 代理出站）"
+                      hint="本机打不开 hide.mn 时开启（用上方「HTTP 代理」出站）"
                       checked={fetchViaProxy}
                       onChange={setFetchViaProxy}
+                      className="bg-card/70"
                     />
                   </div>
 
                   <div className="lg:col-span-2">
                     <Field
                       label="代理池（待测）"
-                      hint="可为空。支持 URL、#备注、括号备注、CSV：序号,ip:port,地区,协议,质量；可从网页拉取"
+                      hint="可为空。支持 URL、#备注、括号备注、CSV；可用上方「网页拉取」填入"
                     >
                       <textarea
                         className={TEXTAREA_CLASS}

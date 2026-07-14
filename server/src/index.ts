@@ -483,17 +483,24 @@ app.post('/api/test/proxy', async (req, res) => {
 /**
  * 从网页拉取代理列表（hide.mn 表格 / 纯文本 ip:port 等）。
  * viaProxy=true 时用当前配置的 HTTP 代理出站（被墙时）。
+ * pages：hide.mn 翻页数（1–20，默认 1）。
  */
 app.post('/api/proxy/fetch', async (req: Request, res: Response) => {
   try {
     const settings = await loadSettings();
-    const url = String(req.body?.url || settings.proxyFetchUrl || '').trim();
+    const url = String(
+      req.body?.url || settings.proxyFetchUrl || 'https://hide.mn/en/proxy-list/'
+    ).trim();
     const useVia =
       req.body?.viaProxy === true ||
       req.body?.viaProxy === '1' ||
       req.body?.viaProxy === 1;
+    // 拉列表：仅看总开关 + 单条 proxy（不绑 sso/cpa 用途）
     const viaProxy = useVia ? resolveHttpProxy(settings) : '';
-    const result = await fetchProxiesFromUrl({ url, viaProxy });
+    let pages = Number(req.body?.pages);
+    if (!Number.isFinite(pages) || pages < 1) pages = 1;
+    pages = Math.min(Math.floor(pages), 20);
+    const result = await fetchProxiesFromUrl({ url, viaProxy, pages });
     res.json(result);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

@@ -20,6 +20,7 @@ import { Button } from '@renderer/components/ui/Button';
 import { Switch } from '@renderer/components/ui/Switch';
 import { PaginationBar } from '@renderer/components/ui/PaginationBar';
 import { AccountDetailDrawer } from '@renderer/components/domain/AccountDetailDrawer';
+import { BotFlagBadge } from '@renderer/components/domain/BotFlagBadge';
 import { useClientPagination } from '@renderer/hooks/useClientPagination';
 import { useAccountsStore } from '@renderer/store/accountsStore';
 import { useRunStore } from '@renderer/store/runStore';
@@ -135,8 +136,6 @@ export function PoolPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [lastRefresh, setLastRefresh] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState<PageSize>(() => loadPageSize());
   const [mintProg, setMintProg] = useState<MintProgress | null>(null);
   const [emailMasked, setEmailMasked] = useState(() => loadEmailPrivacyMask());
   /** 补 Auth 时跳过 bot_flag_source=1（默认开，localStorage 记忆） */
@@ -199,7 +198,7 @@ export function PoolPage() {
       push({
         tone: r.imported > 0 ? 'ok' : 'warn',
         title: 'SSO 导入完成',
-        description: `新增 ${r.imported} · 跳过 ${r.skipped} · 无效 ${r.invalid} · 号池 ${r.remaining}`
+        description: `新增 ${r.imported} · 跳过 ${r.skipped} · 无效 ${r.invalid} · 剩余 ${r.remaining}`
       });
       if (r.imported > 0) {
         setImportOpen(false);
@@ -251,7 +250,7 @@ export function PoolPage() {
     } catch (err) {
       push({
         tone: 'danger',
-        title: '加载号池失败',
+        title: '加载 SSO 失败',
         description: err instanceof Error ? err.message : String(err)
       });
     } finally {
@@ -513,7 +512,7 @@ export function PoolPage() {
       push({
         tone: 'ok',
         title: '验活完成',
-        description: `存活 ${alive} / ${results.length}（已写入号池库 + 本机缓存）${emailHint}`
+        description: `存活 ${alive} / ${results.length}（已写入账号库 + 本机缓存）${emailHint}`
       });
     } catch (err) {
       push({ tone: 'danger', title: '批量验活失败', description: String(err) });
@@ -528,7 +527,7 @@ export function PoolPage() {
       push({ tone: 'warn', title: '请先勾选要删除的账号' });
       return;
     }
-    if (!window.confirm(`确认从号池删除 ${ids.length} 个账号？\n（仅删号池记录，不删 SSO 历史文件）`)) {
+    if (!window.confirm(`确认删除 ${ids.length} 个账号？\n（仅删 SSO 列表记录，不删历史文件）`)) {
       return;
     }
     setDeleting(true);
@@ -739,7 +738,7 @@ export function PoolPage() {
         <div className="space-y-3 border-b border-border/70 px-4 py-3.5">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
             <div className="min-w-0">
-              <p className="page-kicker">号池</p>
+              <p className="page-kicker">SSO</p>
               <h3 className="mt-0.5 text-[17px] font-semibold tracking-[-0.02em]">账号列表</h3>
               <p className="mt-0.5 text-[12px] text-muted-foreground">
                 {selected.size > 0 ? `已选 ${selected.size} 项` : '未选择'}
@@ -966,7 +965,7 @@ export function PoolPage() {
                 size="sm"
                 onClick={() => setImportOpen(true)}
                 disabled={busy}
-                title="粘贴或上传 SSO 导入号池"
+                title="粘贴或上传 SSO 导入列表"
               >
                 <FileUp className="h-3.5 w-3.5" />
                 导入SSO
@@ -1013,7 +1012,7 @@ export function PoolPage() {
                 size="sm"
                 onClick={() => void deleteSelected()}
                 disabled={busy || selected.size === 0}
-                title="从号池删除已选"
+                title="从列表删除已选"
               >
                 <Trash2 className={cn('h-3.5 w-3.5', deleting && 'animate-pulse')} />
                 {deleting ? '删除中…' : `删除(${selected.size})`}
@@ -1246,7 +1245,7 @@ function AccountCard({
         <div className="flex shrink-0 flex-col items-end gap-1">
           <AuthConvertedBadge converted={authConverted} />
           <SsoBadge result={ssoResult} />
-          <BotFlagBadge flag={flagSource} is1={flagIs1} />
+          <BotFlagBadge flag={flagSource} is1={flagIs1} missing="muted" />
         </div>
       </div>
 
@@ -1381,47 +1380,6 @@ function SsoBadge({ result }: { result?: SsoCheckResult }) {
       title={(result.error || '失效') + when}
     >
       失效
-    </span>
-  );
-}
-
-function BotFlagBadge({
-  flag,
-  is1
-}: {
-  flag?: number | string | null;
-  is1?: boolean;
-}) {
-  if (flag === undefined || flag === null) {
-    return (
-      <span
-        className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground"
-        title={
-          'flag—：SSO 无法解析 bot_flag_source。' +
-          '常见原因：无 SSO / 不是标准 JWT / JWT 无该 claim。' +
-          '与「未验」（是否请求过 grok 验活）无关。'
-        }
-      >
-        flag—
-      </span>
-    );
-  }
-  if (is1 || flag === 1 || flag === '1') {
-    return (
-      <span
-        className="rounded-full bg-destructive/15 px-2 py-0.5 text-[10px] font-medium text-destructive"
-        title="bot_flag_source=1（服务端签发，无法抹掉）"
-      >
-        flag1
-      </span>
-    );
-  }
-  return (
-    <span
-      className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400"
-      title={`bot_flag_source=${String(flag)}`}
-    >
-      flag{String(flag)}
     </span>
   );
 }

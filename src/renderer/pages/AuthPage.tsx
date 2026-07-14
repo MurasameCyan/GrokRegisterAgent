@@ -18,6 +18,7 @@ import {
 import { Button } from '@renderer/components/ui/Button';
 import { Switch } from '@renderer/components/ui/Switch';
 import { PaginationBar } from '@renderer/components/ui/PaginationBar';
+import { BotFlagBadge } from '@renderer/components/domain/BotFlagBadge';
 import { useClientPagination } from '@renderer/hooks/useClientPagination';
 import { useToastStore } from '@renderer/store/toastStore';
 import { useSettingsStore } from '@renderer/store/settingsStore';
@@ -306,9 +307,10 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
       });
       const one = r.results[0];
       if (one?.filename) {
+        const fname = one.filename;
         setProbeMap((m) => ({
           ...m,
-          [one.filename]: one.probeAction || (one.ok ? 'ok' : 'error')
+          [fname]: one.probeAction || (one.ok ? 'ok' : 'error')
         }));
       }
       setProg({
@@ -759,11 +761,11 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
 
     if (force) {
       const step1 = window.confirm(
-        `【强制覆盖】从号池按 email 重写 sso\n\n` +
+        `【强制覆盖】从 SSO 列表按 email 重写 sso\n\n` +
           `将处理 ${targets.length} 个文件` +
           (already > 0 ? `（其中 ${already} 个已有 sso，将被覆盖）` : '') +
           `。\n` +
-          `匹配：号池同邮箱最新 SSO。\n\n` +
+          `匹配：SSO 列表同邮箱最新记录。\n\n` +
           `注意：无邮箱的 auth（${noEmail} 个）无法靠 email 回填，` +
           `只能重新 mint 或手工补 sso。\n\n` +
           `继续？`
@@ -777,9 +779,9 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
       if (!step2) return;
     } else {
       const ok = window.confirm(
-        `从号池按 email 回填 sso\n\n` +
+        `从 SSO 列表按 email 回填 sso\n\n` +
           `将处理 ${targets.length} 个无 sso 文件（已有 sso 跳过）。\n` +
-          `匹配：号池同邮箱（忽略大小写）的最新 SSO。\n\n` +
+          `匹配：SSO 列表同邮箱（忽略大小写）的最新记录。\n\n` +
           `无邮箱 auth（${noEmail} 个）无法回填，需重新 mint 或手工补 sso。\n` +
           `需要覆盖已有 sso 时：长按「回填SSO」约 0.6 秒进入强制模式。`
       );
@@ -817,7 +819,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
         tone: r.filled > 0 ? 'ok' : 'warn',
         title: force ? '强制回填 SSO 完成' : '回填 SSO 完成',
         description:
-          `写入 ${r.filled} · 已有跳过 ${r.alreadyHasSso} · 号池无匹配 ${r.skippedNoMatch} · ` +
+          `写入 ${r.filled} · 已有跳过 ${r.alreadyHasSso} · 列表无匹配 ${r.skippedNoMatch} · ` +
           `失败 ${r.failed}${noEmailHint}`
       });
       await reload();
@@ -931,8 +933,13 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
             <div className="min-w-0">
               <p className="page-kicker">Auth</p>
               <h3 className="mt-0.5 text-[17px] font-semibold tracking-[-0.02em]">CPA 凭证</h3>
-              <p className="mt-0.5 truncate text-[12px] text-muted-foreground" title={dir}>
-                {selected.size > 0 ? `已选 ${selected.size} 项` : '未选择'}
+              <p
+                className="mt-0.5 min-h-[1.125rem] truncate text-[12px] text-muted-foreground"
+                title={dir}
+              >
+                <span className="inline-block min-w-[4.5rem] tabular-nums">
+                  {selected.size > 0 ? `已选 ${selected.size}` : '未选择'}
+                </span>
                 {hasActiveMetaFilter
                   ? ` · 筛选 ${filteredItems.length}/${items.length}`
                   : ` · 共 ${items.length}`}
@@ -946,6 +953,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
               <Button
                 variant="secondary"
                 size="sm"
+                className="min-w-[6.5rem] justify-center"
                 onClick={toggleEmailPrivacy}
                 title={emailMasked ? '显示完整邮箱' : '遮蔽邮箱（仅前5位）'}
               >
@@ -1013,83 +1021,101 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
               <Button
                 variant="secondary"
                 size="sm"
+                className="min-w-[5.5rem] justify-center"
                 onClick={selectAll}
                 disabled={filteredItems.length === 0 || busy}
-                title="全选当前筛选列表"
+                title={
+                  allSelected
+                    ? '取消全选'
+                    : selected.size > 0
+                      ? `已选 ${selected.size}，点此全选筛选结果`
+                      : '全选当前筛选列表'
+                }
               >
                 {allSelected ? (
                   <CheckSquare className="h-3.5 w-3.5" />
                 ) : (
                   <Square className="h-3.5 w-3.5" />
                 )}
-                {allSelected ? '取消全选' : '全选'}
+                全选
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                className="min-w-[5.5rem] justify-center"
+                onClick={selectPage}
+                disabled={pageItems.length === 0 || busy}
+                title={pageAllSelected ? '取消本页选择' : '仅选择当前分页'}
+              >
+                <ListChecks className="h-3.5 w-3.5" />
+                本页
               </Button>
               <span className="mx-0.5 hidden h-4 w-px bg-border sm:inline-block" aria-hidden />
               <span className="mr-0.5 hidden text-[10px] text-muted-foreground sm:inline">业务</span>
               <Button
                 size="sm"
+                className="min-w-[5.75rem] justify-center tabular-nums"
                 onClick={() => void probeBatch()}
                 disabled={busy || filteredItems.length === 0}
-                title={deleteOnDead ? '401/402/403 将删除文件' : '死号仅标记不删'}
+                title={
+                  (selected.size > 0
+                    ? `测活已选 ${selected.size} 条`
+                    : hasActiveMetaFilter
+                      ? `测活筛选 ${filteredItems.length} 条`
+                      : '测活全部') +
+                  (deleteOnDead ? ' · 401/402/403 将删除' : ' · 死号仅标记不删')
+                }
               >
                 <Activity
                   className={cn('h-3.5 w-3.5', batchBusy === 'probe' && 'animate-pulse')}
                 />
-                {batchBusy === 'probe'
-                  ? `测活 ${prog?.done ?? 0}/${prog?.total ?? 0}`
-                  : selected.size > 0
-                    ? `测活(${selected.size})`
-                    : hasActiveMetaFilter
-                      ? `测活(${filteredItems.length})`
-                      : '测活全部'}
+                {batchBusy === 'probe' ? `${prog?.done ?? 0}/${prog?.total ?? 0}` : '测活'}
               </Button>
               <Button
                 variant="secondary"
                 size="sm"
+                className="min-w-[5.75rem] justify-center tabular-nums"
                 onClick={() => void resignBatch()}
                 disabled={busy || filteredItems.length === 0}
                 title={
-                  resignPushRemote
-                    ? '重签后按设置推送到远程 CPA'
-                    : '仅本地重签（不推远程）'
+                  (selected.size > 0
+                    ? `重签已选 ${selected.size} 条`
+                    : hasActiveMetaFilter
+                      ? `重签筛选 ${filteredItems.length} 条`
+                      : '批量重签') +
+                  (resignPushRemote ? ' · 成功后推远程' : ' · 仅本地')
                 }
               >
                 <RotateCcw
                   className={cn('h-3.5 w-3.5', batchBusy === 'resign' && 'animate-spin')}
                 />
-                {batchBusy === 'resign'
-                  ? `重签 ${prog?.done ?? 0}/${prog?.total ?? 0}`
-                  : selected.size > 0
-                    ? `重签(${selected.size})`
-                    : hasActiveMetaFilter
-                      ? `重签(${filteredItems.length})`
-                      : '批量重签'}
+                {batchBusy === 'resign' ? `${prog?.done ?? 0}/${prog?.total ?? 0}` : '重签'}
               </Button>
               <Button
                 variant="secondary"
                 size="sm"
+                className="min-w-[5.75rem] justify-center tabular-nums"
                 onClick={() => void pushRemoteBatch()}
                 disabled={busy || filteredItems.length === 0}
                 title={
                   remoteReady
-                    ? '把已有 auth 文件上传到远程 CPA（不重新 mint）'
+                    ? selected.size > 0
+                      ? `推送已选 ${selected.size} 条`
+                      : hasActiveMetaFilter
+                        ? `推送筛选 ${filteredItems.length} 条`
+                        : '推送远程'
                     : '请先在设置中配置远程 CPA 地址与密钥'
                 }
               >
                 <CloudUpload
                   className={cn('h-3.5 w-3.5', batchBusy === 'push' && 'animate-pulse')}
                 />
-                {batchBusy === 'push'
-                  ? `推送 ${prog?.done ?? 0}/${prog?.total ?? 0}`
-                  : selected.size > 0
-                    ? `推送(${selected.size})`
-                    : hasActiveMetaFilter
-                      ? `推送(${filteredItems.length})`
-                      : '推送远程'}
+                {batchBusy === 'push' ? `${prog?.done ?? 0}/${prog?.total ?? 0}` : '推送'}
               </Button>
               <Button
                 variant="secondary"
                 size="sm"
+                className="min-w-[6.25rem] justify-center"
                 disabled={busy || items.length === 0}
                 onPointerDown={(e) => {
                   if (e.button !== 0) return;
@@ -1105,23 +1131,23 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                 title={
                   '单击：仅回填无 sso 的文件（已有跳过）\n' +
                   '长按约 0.6s：强制覆盖已有 sso（二次确认）\n' +
+                  (selected.size > 0
+                    ? `当前范围：已选 ${selected.size} 条\n`
+                    : missingSsoCount > 0
+                      ? `当前无 sso：${missingSsoCount} 条\n`
+                      : '') +
                   '无邮箱 auth 无法靠 email 回填，需重新 mint 或手工补 sso'
                 }
               >
                 <Link2
                   className={cn('h-3.5 w-3.5', batchBusy === 'backfill' && 'animate-pulse')}
                 />
-                {batchBusy === 'backfill'
-                  ? '回填中…'
-                  : selected.size > 0
-                    ? `回填SSO(${selected.size})`
-                    : missingSsoCount > 0
-                      ? `回填SSO(${missingSsoCount})`
-                      : '回填SSO'}
+                {batchBusy === 'backfill' ? '回填中…' : '回填SSO'}
               </Button>
               <Button
                 variant="secondary"
                 size="sm"
+                className="min-w-[6.5rem] justify-center"
                 onClick={() => {
                   setResignPushRemote((v) => {
                     const next = !v;
@@ -1152,31 +1178,37 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
               <Button
                 variant="secondary"
                 size="sm"
+                className="min-w-[5.75rem] justify-center"
                 onClick={() => void exportBatch()}
                 disabled={busy || filteredItems.length === 0}
-                title="导出 JSON（多文件打 txt 汇总）"
+                title={
+                  selected.size > 0
+                    ? `导出已选 ${selected.size} 条`
+                    : hasActiveMetaFilter
+                      ? `导出筛选 ${filteredItems.length} 条`
+                      : '导出全部 JSON'
+                }
               >
                 <FileDown className="h-3.5 w-3.5" />
-                {batchBusy === 'export'
-                  ? '导出中…'
-                  : selected.size > 0
-                    ? `导出(${selected.size})`
-                    : hasActiveMetaFilter
-                      ? `导出筛选(${filteredItems.length})`
-                      : '导出全部'}
+                {batchBusy === 'export' ? '导出中…' : '导出'}
               </Button>
               <span className="mx-0.5 hidden h-4 w-px bg-border sm:inline-block" aria-hidden />
               <Button
                 variant="secondary"
                 size="sm"
+                className="min-w-[5.5rem] justify-center"
                 onClick={() => void deleteBatch()}
                 disabled={busy || selected.size === 0}
-                title="删除已选 Auth 文件"
+                title={
+                  selected.size > 0
+                    ? `删除已选 ${selected.size} 个 Auth 文件`
+                    : '请先勾选要删除的条目'
+                }
               >
                 <Trash2
                   className={cn('h-3.5 w-3.5', batchBusy === 'delete' && 'animate-pulse')}
                 />
-                {batchBusy === 'delete' ? '删除中…' : `删除(${selected.size})`}
+                {batchBusy === 'delete' ? '删除中…' : '删除'}
               </Button>
             </div>
           </div>
@@ -1193,18 +1225,18 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
               当前有 {noEmailAuthCount} 个 Auth 无邮箱
             </div>
             <p className="mt-1 text-[12px] text-muted-foreground leading-relaxed">
-              无邮箱无法按 email 从号池回填 sso。建议流程：
+              无邮箱无法按 email 从 SSO 列表回填 sso。建议流程：
               <span className="text-foreground">
                 {' '}
-                ① 去号池对对应 SSO 验活（存活时 grok 常返回邮箱并写入号池）→ ②
+                ① 去 SSO 页对对应账号验活（存活时 grok 常返回邮箱并写入列表）→ ②
                 回到本页点「回填SSO」→ ③ 仍无邮箱的只能重新 mint 或手补 sso。
               </span>
             </p>
             <div className="mt-2.5 flex flex-wrap gap-2">
               {onOpenPool && (
-                <Button size="sm" onClick={onOpenPool} title="切换到号池页做 SSO 验活">
+                <Button size="sm" onClick={onOpenPool} title="切换到 SSO 页做验活">
                   <Database className="h-3.5 w-3.5" />
-                  去号池验活补邮箱
+                  去 SSO 验活补邮箱
                 </Button>
               )}
               <Button
@@ -1225,7 +1257,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
         </div>
       ) : items.length === 0 ? (
         <div className="rounded-[16px] border border-dashed border-border bg-card p-12 text-center text-[13px] text-muted-foreground">
-          Auth 目录为空。注册成功自动导出，或在号池点「补 Auth」。
+          Auth 目录为空。注册成功自动导出，或在 SSO 页点「补 Auth」。
         </div>
       ) : filteredItems.length === 0 ? (
         <div className="rounded-[16px] border border-dashed border-border bg-card p-12 text-center text-[13px] text-muted-foreground">
@@ -1309,7 +1341,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                         {rowNoEmail && (
                           <span
                             className="rounded-full bg-orange-500/15 px-2 py-0.5 text-[10px] font-medium text-orange-600 dark:text-orange-400"
-                            title="无邮箱：无法靠号池 email 回填 sso，请重新 mint 或手工写入"
+                            title="无邮箱：无法靠 SSO 列表 email 回填 sso，请重新 mint 或手工写入"
                           >
                             无邮箱
                           </span>
@@ -1343,9 +1375,10 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                       )}
                     </td>
                     <td className="px-3 py-2.5">
-                      <BotFlagCell
+                      <BotFlagBadge
                         flag={item.botFlagSource}
                         is1={item.isBotFlag1}
+                        missing="dash"
                       />
                     </td>
                     <td className="whitespace-nowrap px-3 py-2.5">
@@ -1405,49 +1438,6 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
         </>
       )}
     </div>
-  );
-}
-
-function BotFlagCell({
-  flag,
-  is1
-}: {
-  flag?: number | string | null;
-  is1?: boolean;
-}) {
-  // 与左侧 xai 胶囊同风格：rounded-full + 浅底色
-  // 1=Bot 黄色 · 0=None 绿色 · 其它/缺失 —
-  if (flag === undefined || flag === null || flag === '') {
-    return <span className="text-[11px] text-muted-foreground">—</span>;
-  }
-  if (is1 || flag === 1 || flag === '1') {
-    return (
-      <span
-        className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400"
-        title="bot_flag_source=1（Bot，JWT 内签发，无法抹掉）"
-      >
-        Bot
-      </span>
-    );
-  }
-  if (flag === 0 || flag === '0') {
-    return (
-      <span
-        className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400"
-        title="bot_flag_source=0（None）"
-      >
-        None
-      </span>
-    );
-  }
-  // 其它非 0/1 取值：仍用绿色胶囊，文案用原值
-  return (
-    <span
-      className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400"
-      title={`bot_flag_source=${String(flag)}`}
-    >
-      {String(flag)}
-    </span>
   );
 }
 

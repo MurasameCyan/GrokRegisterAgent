@@ -1,3 +1,4 @@
+import type { MouseEvent as ReactMouseEvent } from 'react';
 import { cn } from '@renderer/lib/cn';
 
 type SwitchSize = 'sm' | 'md';
@@ -36,7 +37,7 @@ export function Switch({
   title?: string;
   'aria-label'?: string;
   /** 如需阻止冒泡（卡片点击） */
-  onClick?: (e: MouseEvent) => void;
+  onClick?: (e: ReactMouseEvent<HTMLButtonElement>) => void;
 }) {
   const s = sizeMap[size];
   return (
