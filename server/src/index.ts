@@ -7,6 +7,7 @@ import { WebSocket, WebSocketServer } from 'ws';
 
 import type { RegisterStartArgs, SystemHealth, SystemHealthCheck } from '@shared/ipc';
 import type { AppSettings } from '@shared/settings';
+import { moveProxiesFromAliveToPending } from '@shared/settings';
 import type { RunEvent } from '@shared/runEvents';
 import { loadSettings, saveSettings, dataDir } from './settingsStore.js';
 import { registerBot } from './bot/registerBot.js';
@@ -477,6 +478,57 @@ app.post('/api/test/proxy', async (req, res) => {
     return res.json(result);
   } catch (e: any) {
     return res.json({ ok: false, message: `测活异常: ${e?.message || e}` });
+  }
+});
+
+/**
+ * 注册失败降级：从「可用池」移到「待定池」。
+ * body: { proxies: string[] | string, reason?: string }
+ * 供 Python 注册机在出口 IP / 页面不可达时回调。
+ */
+app.post('/api/proxy/demote', async (req: Request, res: Response) => {
+  try {
+    const settings = await loadSettings();
+    const raw = req.body?.proxies ?? req.body?.proxy ?? [];
+    const list: string[] = Array.isArray(raw)
+      ? raw.map((x: unknown) => String(x || '').trim()).filter(Boolean)
+      : String(raw || '')
+          .split(/[\n,]/)
+          .map((s) => s.trim())
+          .filter(Boolean);
+    if (list.length === 0) {
+      res.status(400).json({ ok: false, moved: 0, message: 'proxies 为空' });
+      return;
+    }
+    const reason = String(req.body?.reason || '注册失败').trim() || '注册失败';
+    const { proxyPool, proxyPoolAlive, moved } = moveProxiesFromAliveToPending(
+      settings.proxyPool || '',
+      settings.proxyPoolAlive || '',
+      list,
+      reason
+    );
+    if (moved > 0) {
+      await saveSettings({ ...settings, proxyPool, proxyPoolAlive });
+    }
+    res.json({
+      ok: true,
+      moved,
+      pendingCount: proxyPool
+        .split(/\n/)
+        .map((l) => l.trim())
+        .filter((l) => l && !l.startsWith('#')).length,
+      aliveCount: proxyPoolAlive
+        .split(/\n/)
+        .map((l) => l.trim())
+        .filter((l) => l && !l.startsWith('#')).length,
+      message:
+        moved > 0
+          ? `已降级 ${moved} 条 → 待定池（${reason}）`
+          : '未匹配到可用池中的代理（可能已降级或不在可用池）'
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ ok: false, moved: 0, message });
   }
 });
 

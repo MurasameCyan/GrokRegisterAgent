@@ -27,7 +27,10 @@ export const useToastStore = create<ToastState>((set, get) => ({
       ...t
     };
     set((s) => ({ toasts: [...s.toasts, toast] }));
-    setTimeout(() => get().dismiss(id), toast.duration);
+    // duration<=0 表示不自动关闭
+    if (toast.duration > 0) {
+      setTimeout(() => get().dismiss(id), toast.duration);
+    }
   },
   dismiss: (id) => set((s) => ({ toasts: s.toasts.filter((x) => x.id !== id) }))
 }));

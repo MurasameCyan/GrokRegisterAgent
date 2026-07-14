@@ -119,9 +119,8 @@ function parseRemoteField(raw: unknown): {
   };
 }
 
-function resolveAuthDir(configured?: string): string {
-  const trimmed = String(configured || '').trim();
-  if (trimmed) return resolve(trimmed);
+function resolveAuthDir(_configured?: string): string {
+  // 已移除自定义 Auth 目录；仅 DATA_DIR/auth 或环境变量 AUTH_DIR / CPA_AUTH_DIR
   const env = (process.env.AUTH_DIR || process.env.CPA_AUTH_DIR || '').trim();
   if (env) return resolve(env);
   return join(dataDir(), 'auth');
@@ -499,7 +498,8 @@ path = sys.argv[1]
 proxy = sys.argv[2] if len(sys.argv) > 2 else ""
 sso = sys.argv[3] if len(sys.argv) > 3 else ""
 push = (sys.argv[4] if len(sys.argv) > 4 else "0") == "1"
-r = resign_auth_file(path, sso=sso, proxy=proxy, push_remote=push)
+# 重签强制 delete_on_dead=False，避免点重签后文件被 probe 删掉
+r = resign_auth_file(path, sso=sso, proxy=proxy, push_remote=push, delete_on_dead=False)
 print(json.dumps(r, ensure_ascii=False))
 `.trim();
 
@@ -1089,6 +1089,8 @@ export async function probeCpaAuthBatch(input: {
   dead: number;
   deleted: number;
   keep: number;
+  /** 同步删除的号池 SSO 账号数（需开启 cpaProbeDeleteSsoOnDead） */
+  ssoDeleted: number;
   results: CpaAuthBatchResultItem[];
 }> {
   const names = Array.isArray(input.filenames) ? input.filenames : [];
@@ -1104,13 +1106,30 @@ export async function probeCpaAuthBatch(input: {
   if (jobs.length > 200) throw new Error('单次批量测活最多 200 个');
 
   const settings = await loadSettings();
+  // 默认不删死号；仅显式 true 才删
   const deleteOnDead =
     input.deleteOnDead !== undefined
-      ? input.deleteOnDead !== false
-      : settings.cpaProbeDeleteOnDead !== false;
+      ? input.deleteOnDead === true
+      : settings.cpaProbeDeleteOnDead === true;
   const dir = resolveAuthDir(settings.authDir);
   const runtime = resolveRegisterRuntime(settings);
   if (!runtime) throw new Error('未找到注册脚本目录，无法调用 Python 测活');
+
+  // 预载号池 email→password，403 时密码重登二次测活
+  let passwordByEmail = new Map<string, string>();
+  try {
+    const { listAccounts } = await import('./accountStore.js');
+    const accounts = await listAccounts();
+    for (const a of accounts) {
+      const em = String(a.email || '')
+        .trim()
+        .toLowerCase();
+      const pw = String(a.password || '').trim();
+      if (em && pw && !passwordByEmail.has(em)) passwordByEmail.set(em, pw);
+    }
+  } catch {
+    passwordByEmail = new Map();
+  }
 
   const code = `
 import json, sys
@@ -1118,12 +1137,22 @@ sys.path.insert(0, ${JSON.stringify(runtime.registerDir)})
 from cpa_probe import probe_and_cleanup
 path = sys.argv[1]
 proxy = sys.argv[2] if len(sys.argv) > 2 else ""
-delete_on_dead = (sys.argv[3] if len(sys.argv) > 3 else "1") != "0"
-r = probe_and_cleanup(path, proxy=proxy, delete_on_dead=delete_on_dead)
+delete_on_dead = (sys.argv[3] if len(sys.argv) > 3 else "0") == "1"
+email = sys.argv[4] if len(sys.argv) > 4 else ""
+password = sys.argv[5] if len(sys.argv) > 5 else ""
+r = probe_and_cleanup(
+    path,
+    proxy=proxy,
+    delete_on_dead=delete_on_dead,
+    email=email or None,
+    password=password or None,
+    recover_on_403=True,
+)
 print(json.dumps(r, ensure_ascii=False))
 `.trim();
 
-  const concurrency = Math.min(8, Math.max(1, Number(input.concurrency) || 4));
+  // 403 恢复含浏览器登录，并发降为 1，避免多开 Chromium
+  const concurrency = Math.min(2, Math.max(1, Number(input.concurrency) || 1));
   const results: CpaAuthBatchResultItem[] = [];
   let idx = 0;
 
@@ -1145,25 +1174,50 @@ print(json.dumps(r, ensure_ascii=False))
         assertInsideAuthDir(resolved, dir);
         if (!existsSync(resolved)) throw new Error(`文件不存在: ${resolved}`);
 
+        // 从 auth 文件读 email，再查号池密码
+        let emailHint = '';
+        try {
+          const raw = await fsp.readFile(resolved, 'utf-8');
+          const doc = JSON.parse(raw) as { email?: string };
+          emailHint = String(doc.email || '').trim();
+        } catch {
+          /* ignore */
+        }
+        const pw =
+          passwordByEmail.get(emailHint.toLowerCase()) ||
+          passwordByEmail.get(emailHint) ||
+          '';
+
         const r = await runPythonJson(runtime!.pythonPath, runtime!.registerDir, code, [
           resolved,
           resolveHttpProxy(settings, 'cpaAuth'),
-          deleteOnDead ? '1' : '0'
+          deleteOnDead ? '1' : '0',
+          emailHint,
+          pw
         ]);
         const action = String(r.action || '');
         const httpStatus = Number(r.http_status || 0) || undefined;
         const deleted = Boolean(r.deleted);
         const isOk = action === 'ok';
+        const recovered =
+          Boolean(r.recovered_403) || Boolean(r.recovered_auth);
+        const recoverHttp = Number(r.recover_http || 0) || httpStatus;
         results.push({
           filename: basename(resolved),
-          email: String(r.email || ''),
+          email: String(r.email || emailHint || ''),
           ok: isOk,
-          error: r.error ? String(r.error) : action === 'dead' ? `HTTP ${httpStatus || '?'}` : undefined,
-          mode: 'cpa_probe',
+          error: r.error
+            ? String(r.error)
+            : action === 'dead'
+              ? `HTTP ${httpStatus || '?'}`
+              : undefined,
+          // 401/403 密码重登二次测活
+          mode: recovered ? 'cpa_probe_auth_recover' : 'cpa_probe',
           path: deleted ? undefined : resolved,
           probeAction: action || undefined,
           probeHttp: httpStatus,
-          probeDeleted: deleted
+          probeDeleted: deleted,
+          ...(recovered ? { recoverHttp } : {})
         });
       } catch (err) {
         results.push({
@@ -1178,6 +1232,35 @@ print(json.dumps(r, ensure_ascii=False))
   }
 
   await Promise.all(Array.from({ length: concurrency }, () => worker()));
+
+  // 可选：死号删 Auth 后同步删号池同邮箱 SSO（默认关）
+  let ssoDeleted = 0;
+  if (settings.cpaProbeDeleteSsoOnDead === true) {
+    const emails = [
+      ...new Set(
+        results
+          .filter((r) => r.probeAction === 'dead' && r.probeDeleted && r.email)
+          .map((r) => String(r.email || '').trim().toLowerCase())
+          .filter(Boolean)
+      )
+    ];
+    if (emails.length > 0) {
+      try {
+        const { listAccounts, deleteAccounts } = await import('./accountStore.js');
+        const accounts = await listAccounts();
+        const ids = accounts
+          .filter((a) => emails.includes(String(a.email || '').trim().toLowerCase()))
+          .map((a) => a.id);
+        if (ids.length > 0) {
+          const dr = await deleteAccounts(ids);
+          ssoDeleted = dr.deleted;
+        }
+      } catch {
+        /* ignore sso sync failure */
+      }
+    }
+  }
+
   const ok = results.filter((r) => r.ok).length;
   const dead = results.filter((r) => r.probeAction === 'dead').length;
   const deleted = results.filter((r) => r.probeDeleted).length;
@@ -1187,6 +1270,7 @@ print(json.dumps(r, ensure_ascii=False))
     ok,
     failed: results.length - ok,
     dead,
+    ssoDeleted,
     deleted,
     keep,
     results

@@ -103,7 +103,8 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
   });
   const [metaFilter, setMetaFilter] = useState<MetaFilter>(() => loadMetaFilter());
 
-  const deleteOnDead = settings?.cpaProbeDeleteOnDead !== false;
+  /** 默认关；仅设置显式开启时删死号 / 同步删 SSO */
+  const deleteOnDead = settings?.cpaProbeDeleteOnDead === true;
   const remoteReady = Boolean(
     String(settings?.cpaRemoteUrl || '').trim() && String(settings?.cpaManagementKey || '').trim()
   );
@@ -235,7 +236,11 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
         filename: item.filename,
         pushRemote: resignPushRemote
       });
-      if (r.ok === false || r.error) {
+      // 重签写出成功后后端 ok=true；仅 probe 死号时带 probe_warn，文件仍保留
+      const wrote =
+        r.ok === true ||
+        (Boolean(r.path || r.filename) && r.deleted !== true && !String(r.error || '').includes('no refresh'));
+      if (r.ok === false && !wrote) {
         push({
           tone: 'danger',
           title: '重签失败',
@@ -258,13 +263,18 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
               : resignPushRemote
                 ? ' · 远程未配置/跳过'
                 : '';
+        const probeHint = r.probe_warn
+          ? ` · ⚠ ${String(r.probe_warn)}`
+          : r.alive === false
+            ? ' · ⚠ CPA 测活死号（文件已保留）'
+            : '';
         push({
           tone:
-            r.xai === false || r.remoteOk === false
+            r.xai === false || r.remoteOk === false || r.probe_warn || r.alive === false
               ? 'warn'
               : 'ok',
-          title: '重签成功',
-          description: `${item.email || item.filename}（${r.mode || 'ok'}）${xaiHint}${remoteHint}`
+          title: r.probe_warn || r.alive === false ? '重签完成（测活警告）' : '重签成功',
+          description: `${item.email || item.filename}（${r.mode || 'ok'}）${xaiHint}${remoteHint}${probeHint}`
         });
         await reload();
       }
@@ -280,15 +290,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
   };
 
   const probeOne = async (item: CpaAuthItem) => {
-    // 开启「死号自动删」时，单条测活前确认
-    let willDelete = deleteOnDead;
-    if (deleteOnDead) {
-      const ok = window.confirm(
-        `测活「${item.email || item.filename}」\n\n若判定为死号（401/402/403），将删除本地 Auth 文件。\n\n确定继续？\n（可在设置关闭「测活死号自动删除」）`
-      );
-      if (!ok) return;
-      willDelete = true;
-    }
+    // 不再弹窗确认；删死号仅由设置开关控制（默认关）
     setRowBusy(`probe:${item.filename}`);
     setProg({
       kind: 'probe',
@@ -303,7 +305,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
       const r = await window.api.probeCpaAuthBatch({
         filenames: [item.filename],
         concurrency: 1,
-        deleteOnDead: willDelete
+        deleteOnDead
       });
       const one = r.results[0];
       if (one?.filename) {
@@ -324,19 +326,36 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
         running: false,
         current: item.email || item.filename
       });
+      const ssoDel =
+        typeof r.ssoDeleted === 'number' && r.ssoDeleted > 0
+          ? ` · 同步删 SSO ${r.ssoDeleted}`
+          : '';
+      const recoveredAuth =
+        one?.mode === 'cpa_probe_auth_recover' ||
+        one?.mode === 'cpa_probe_403_recover';
+      const recoverCode = Number(one?.recoverHttp || 0);
+      const recoverLabel =
+        recoverCode === 401 || recoverCode === 403
+          ? String(recoverCode)
+          : '401/403';
       if (one?.probeDeleted || one?.probeAction === 'dead') {
         push({
           tone: 'warn',
-          title: '测活：死号',
-          description: `${item.email || item.filename}${one.probeDeleted ? ' · 已删' : ' · 已保留'}`
+          title: recoveredAuth
+            ? `测活：${recoverLabel} 恢复后仍死号`
+            : '测活：死号',
+          description: `${item.email || item.filename}${one.probeDeleted ? ' · 已删 Auth' : ' · 已保留'}${ssoDel}`
         });
         if (one.probeDeleted) await reload();
       } else if (one?.ok || one?.probeAction === 'ok') {
         push({
           tone: 'ok',
-          title: '测活 OK',
+          title: recoveredAuth
+            ? `测活 OK（${recoverLabel} 已重登恢复）`
+            : '测活 OK',
           description: item.email || item.filename
         });
+        if (recoveredAuth) await reload();
       } else {
         push({
           tone: 'warn',
@@ -523,6 +542,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
       let failed = 0;
       let dead = 0;
       let deleted = 0;
+      let ssoDeleted = 0;
       const nextProbe: Record<string, string> = {};
       for (let i = 0; i < filenames.length; i += CHUNK) {
         const chunk = filenames.slice(i, i + CHUNK);
@@ -536,6 +556,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
         failed += r.failed || 0;
         dead += r.dead || 0;
         deleted += r.deleted || 0;
+        ssoDeleted += r.ssoDeleted || 0;
         for (const x of r.results) {
           if (x.filename) {
             nextProbe[x.filename] = x.probeAction || (x.ok ? 'ok' : 'error');
@@ -557,7 +578,10 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
       push({
         tone: dead > 0 || failed > 0 ? 'warn' : 'ok',
         title: '批量 CPA 测活完成',
-        description: `OK ${ok} · 死号 ${dead} · 已删 ${deleted}${deleteOnDead ? '' : ' · 死号不自动删'}`
+        description:
+          `OK ${ok} · 死号 ${dead} · 已删 Auth ${deleted}` +
+          (ssoDeleted > 0 ? ` · 同步删 SSO ${ssoDeleted}` : '') +
+          (deleteOnDead ? '' : ' · 死号不自动删')
       });
       if (deleted > 0) await reload();
     } catch (err) {
@@ -1287,11 +1311,14 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
               <tr>
                 <th className="w-10 px-3 py-2.5" />
                 <th className="px-3 py-2.5 font-medium">邮箱</th>
-                <th className="px-3 py-2.5 font-medium">标记</th>
+                <th className="w-[5.5rem] px-3 py-2.5 font-medium">标记</th>
                 <th className="px-3 py-2.5 font-medium">文件</th>
-                <th className="px-3 py-2.5 font-medium">xai</th>
-                <th className="px-3 py-2.5 font-medium">bot_flag</th>
-                <th className="whitespace-nowrap px-3 py-2.5 font-medium">测活</th>
+                <th className="w-[3.25rem] px-3 py-2.5 font-medium">xai</th>
+                <th className="w-[4.5rem] px-3 py-2.5 font-medium">bot_flag</th>
+                {/* 固定窄列仅放 O/X，避免测活后邻列（标记/sso）横向跳动 */}
+                <th className="w-10 whitespace-nowrap px-2 py-2.5 text-center font-medium">
+                  测活
+                </th>
                 <th className="px-3 py-2.5 font-medium">过期</th>
                 <th className="px-3 py-2.5 font-medium">操作</th>
               </tr>
@@ -1336,11 +1363,12 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                         maskEmail(item.email, emailMasked)
                       )}
                     </td>
-                    <td className="px-3 py-2.5">
-                      <div className="flex flex-wrap items-center gap-1">
+                    <td className="w-[5.5rem] min-w-[5.5rem] max-w-[5.5rem] px-3 py-2.5">
+                      {/* 固定槽位，避免测活结果出现后「无sso」胶囊左右跳 */}
+                      <div className="flex h-5 w-[4.75rem] items-center gap-1 overflow-hidden">
                         {rowNoEmail && (
                           <span
-                            className="rounded-full bg-orange-500/15 px-2 py-0.5 text-[10px] font-medium text-orange-600 dark:text-orange-400"
+                            className="shrink-0 rounded-full bg-orange-500/15 px-2 py-0.5 text-[10px] font-medium text-orange-600 dark:text-orange-400"
                             title="无邮箱：无法靠 SSO 列表 email 回填 sso，请重新 mint 或手工写入"
                           >
                             无邮箱
@@ -1348,14 +1376,16 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                         )}
                         {rowNoSso && (
                           <span
-                            className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400"
+                            className="shrink-0 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400"
                             title="无 sso 字段：可筛选后点「回填SSO」（需有邮箱）"
                           >
                             无sso
                           </span>
                         )}
                         {!rowNoEmail && !rowNoSso && (
-                          <span className="text-[11px] text-muted-foreground">—</span>
+                          <span className="inline-block w-4 shrink-0 text-center text-[11px] text-muted-foreground">
+                            —
+                          </span>
                         )}
                       </div>
                     </td>
@@ -1374,16 +1404,24 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                         <span className="text-[11px] text-muted-foreground">—</span>
                       )}
                     </td>
-                    <td className="px-3 py-2.5">
+                    <td className="w-[4.5rem] min-w-[4.5rem] px-3 py-2.5">
                       <BotFlagBadge
                         flag={item.botFlagSource}
                         is1={item.isBotFlag1}
                         missing="dash"
                       />
                     </td>
-                    <td className="whitespace-nowrap px-3 py-2.5">
-                      <div className="inline-flex flex-row items-center gap-2">
+                    <td className="w-10 min-w-10 max-w-10 whitespace-nowrap px-2 py-2.5 text-center">
+                      {/* 仅固定 O/X 槽，按钮移至操作列，杜绝邻列位移 */}
+                      <span className="inline-flex h-5 w-5 items-center justify-center">
                         <ProbeBadge action={probe} />
+                      </span>
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-2.5 text-[12px] text-muted-foreground">
+                      {item.expired || '—'}
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <div className="inline-flex flex-row items-center gap-1">
                         <Button
                           variant="secondary"
                           size="sm"
@@ -1397,13 +1435,6 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                           />
                           {rowProbe ? '…' : '测活'}
                         </Button>
-                      </div>
-                    </td>
-                    <td className="whitespace-nowrap px-3 py-2.5 text-[12px] text-muted-foreground">
-                      {item.expired || '—'}
-                    </td>
-                    <td className="px-3 py-2.5">
-                      <div className="inline-flex flex-row items-center gap-1">
                         <Button
                           variant="secondary"
                           size="sm"
@@ -1441,58 +1472,59 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
   );
 }
 
+/** 测活结果：仅 O / X，固定 20×20，无「活/死」文字；X 红色 */
 function ProbeBadge({ action }: { action?: string }) {
+  const shell =
+    'inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[12px] font-bold leading-none tabular-nums';
   if (!action) {
     return (
-      <span className="inline-flex h-5 min-w-[1.25rem] items-center justify-center text-[11px] text-muted-foreground">
+      <span className={cn(shell, 'text-muted-foreground')} title="未测活">
         —
       </span>
     );
   }
-  // 横向：绿 O / 红 X 与文字同一行，不竖排
   if (action === 'ok') {
     return (
       <span
-        className="inline-flex flex-row items-center gap-1"
+        className={cn(
+          shell,
+          'animate-probe-flash bg-emerald-500/20 text-emerald-600 dark:text-emerald-400'
+        )}
         title="测活通过"
+        aria-label="OK"
       >
-        <span
-          className="inline-flex h-5 w-5 shrink-0 animate-probe-flash items-center justify-center rounded-full bg-emerald-500/20 text-[12px] font-bold leading-none text-emerald-600 dark:text-emerald-400"
-          aria-label="OK"
-        >
-          O
-        </span>
-        <span className="whitespace-nowrap text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
-          活
-        </span>
+        O
       </span>
     );
   }
   if (action === 'dead') {
     return (
-      <span className="inline-flex flex-row items-center gap-1" title="死号">
-        <span
-          className="inline-flex h-5 w-5 shrink-0 animate-probe-flash items-center justify-center rounded-full bg-destructive/20 text-[12px] font-bold leading-none text-destructive"
-          aria-label="死号"
-        >
-          X
-        </span>
-        <span className="whitespace-nowrap text-[10px] font-medium text-destructive">
-          死
-        </span>
+      <span
+        className={cn(
+          shell,
+          'animate-probe-flash bg-red-600 text-white dark:bg-red-500 dark:text-white'
+        )}
+        title="死号"
+        aria-label="死号"
+      >
+        X
       </span>
     );
   }
+  // keep / error 等：仍只显示单字符，不出现「活/死」文案
   if (action === 'keep') {
     return (
-      <span className="inline-flex whitespace-nowrap rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400">
-        保留
+      <span
+        className={cn(shell, 'bg-amber-500/15 text-amber-700 dark:text-amber-400')}
+        title="存疑（非死号）"
+      >
+        ?
       </span>
     );
   }
   return (
-    <span className="inline-flex whitespace-nowrap rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
-      {action}
+    <span className={cn(shell, 'bg-muted text-muted-foreground')} title={action}>
+      ?
     </span>
   );
 }

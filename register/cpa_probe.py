@@ -196,16 +196,87 @@ def probe_cpa_auth(
         }
 
 
+# 测活 dead 后触发密码重登二次检测的 HTTP 状态
+RECOVER_HTTP_STATUSES = frozenset({401, 403})
+
+
 def probe_and_cleanup(
     path: str | Path,
     *,
     proxy: str = "",
-    delete_on_dead: bool = True,
+    delete_on_dead: bool = False,
+    email: str | None = None,
+    password: str | None = None,
+    recover_on_403: bool = True,
+    recover_on_auth_error: bool | None = None,
 ) -> dict[str, Any]:
-    """测活；若 dead 且 delete_on_dead 则删除文件。"""
+    """测活；若 dead 且 delete_on_dead 则删除文件。
+
+    遇 HTTP 401/403 且提供 email/password 时：密码重登 → mint → 发英文消息 → 二次测活。
+    默认 delete_on_dead=False（仅标记死号）。
+    recover_on_403 为兼容旧参数；recover_on_auth_error 优先（默认与 recover_on_403 相同）。
+    """
     path = Path(path)
     r = probe_cpa_auth(path, proxy=proxy)
     r["deleted"] = False
+    r["recovered_403"] = False  # 兼容：401/403 恢复成功链路均置 True
+    r["recovered_auth"] = False
+    r["recover_http"] = 0
+
+    do_recover = (
+        recover_on_auth_error if recover_on_auth_error is not None else recover_on_403
+    )
+    http_status = int(r.get("http_status") or 0)
+    # 401/403：账号密码重登恢复（不立刻删文件）
+    if (
+        do_recover
+        and r.get("action") == "dead"
+        and http_status in RECOVER_HTTP_STATUSES
+        and str(email or "").strip()
+        and str(password or "").strip()
+    ):
+        try:
+            from password_login import recover_auth_on_dead
+
+            rec = recover_auth_on_dead(
+                str(path),
+                str(email).strip(),
+                str(password).strip(),
+                proxy=proxy,
+                trigger_http=http_status,
+            )
+            r["recover"] = {
+                "ok": bool(rec.get("ok")),
+                "login": rec.get("login"),
+                "mint": rec.get("mint"),
+                "message": rec.get("message"),
+                "error": rec.get("error"),
+                "trigger_http": http_status,
+            }
+            r["recovered_403"] = True
+            r["recovered_auth"] = True
+            r["recover_http"] = http_status
+            # 用二次测活结果覆盖
+            second = rec.get("second_probe") if isinstance(rec.get("second_probe"), dict) else rec
+            if isinstance(second, dict) and second.get("action"):
+                r["action"] = second.get("action")
+                r["ok"] = second.get("action") == "ok"
+                r["alive"] = second.get("action") == "ok"
+                r["http_status"] = second.get("http_status") or r.get("http_status")
+                r["summary"] = second.get("summary") or r.get("summary")
+                if second.get("error"):
+                    r["error"] = second.get("error")
+                elif rec.get("ok"):
+                    r.pop("error", None)
+            elif rec.get("ok"):
+                r["action"] = "ok"
+                r["ok"] = True
+                r["alive"] = True
+            if rec.get("email"):
+                r["email"] = rec.get("email")
+        except Exception as e:
+            r["recover_error"] = str(e)[:300]
+
     if r.get("action") == "dead" and delete_on_dead and path.is_file():
         try:
             path.unlink()

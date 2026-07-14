@@ -134,6 +134,10 @@ function merge(partial: unknown): AppSettings {
       (p as AppSettings).cpaProbeDeleteOnDead,
       DEFAULT_SETTINGS.cpaProbeDeleteOnDead
     ),
+    cpaProbeDeleteSsoOnDead: asBool(
+      (p as AppSettings).cpaProbeDeleteSsoOnDead,
+      DEFAULT_SETTINGS.cpaProbeDeleteSsoOnDead
+    ),
     proxyIpIntervalSec: (() => {
       const n = Number((p as AppSettings).proxyIpIntervalSec);
       if (!Number.isFinite(n) || n < 0) return DEFAULT_SETTINGS.proxyIpIntervalSec;

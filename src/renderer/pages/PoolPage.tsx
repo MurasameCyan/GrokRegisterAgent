@@ -1208,13 +1208,19 @@ function AccountCard({
   const stop = (e: React.MouseEvent) => e.stopPropagation();
   const emailDisplay = maskEmail(account.email, emailMasked, { empty: '(无邮箱)' });
   // 优先验活结果；否则本地解码 SSO JWT（无需点验活）
+  // 注意：bot_flag_source=0（None）是合法值，不能用 !flag / || 吞掉
   const localFlag = readBotFlagFromSso(account.sso);
-  const flagSource =
-    ssoResult?.botFlagSource !== undefined && ssoResult?.botFlagSource !== null
-      ? ssoResult.botFlagSource
-      : localFlag.botFlagSource;
-  const flagIs1 =
-    ssoResult?.isBotFlag1 !== undefined ? ssoResult.isBotFlag1 : localFlag.isBotFlag1;
+  const hasSsoFlag =
+    ssoResult != null &&
+    ssoResult.botFlagSource !== undefined &&
+    ssoResult.botFlagSource !== null &&
+    ssoResult.botFlagSource !== '';
+  const flagSource = hasSsoFlag ? ssoResult!.botFlagSource : localFlag.botFlagSource;
+  const flagIs1 = hasSsoFlag
+    ? ssoResult!.isBotFlag1 === true ||
+      ssoResult!.botFlagSource === 1 ||
+      ssoResult!.botFlagSource === '1'
+    : localFlag.isBotFlag1;
 
   return (
     <div

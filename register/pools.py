@@ -50,6 +50,51 @@ _HOST_PORT_RE = re.compile(
 )
 
 
+def demote_proxy_to_pending(proxy: str, reason: str = "注册失败") -> bool:
+    """注册使用失败：通知 Node 把该代理从可用池降到待定池。
+
+    端点：POST {GRA_API_BASE}/api/proxy/demote
+    环境变量：
+      GRA_API_BASE  默认 http://127.0.0.1:6657（Docker 同网可用 host.docker.internal 或服务名）
+    失败仅打日志，不抛异常（不影响注册主流程）。
+    """
+    p = str(proxy or "").strip()
+    if not p:
+        return False
+    base = (
+        os.environ.get("GRA_API_BASE")
+        or os.environ.get("GRA_SERVER_URL")
+        or "http://127.0.0.1:6657"
+    ).rstrip("/")
+    url = f"{base}/api/proxy/demote"
+    body = json.dumps({"proxies": [p], "reason": str(reason or "注册失败")[:80]}, ensure_ascii=False)
+    try:
+        import urllib.request
+
+        req = urllib.request.Request(
+            url,
+            data=body.encode("utf-8"),
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            raw = resp.read().decode("utf-8", "replace")
+        try:
+            data = json.loads(raw) if raw else {}
+        except Exception:
+            data = {}
+        moved = int(data.get("moved") or 0)
+        msg = data.get("message") or raw[:120]
+        if moved > 0:
+            print(f"[*] 代理已降级→待定池: {p[:64]}… · {msg}")
+            return True
+        print(f"[Warn] 代理降级未生效: {msg}")
+        return False
+    except Exception as e:
+        print(f"[Warn] 代理降级回调失败（{url}）: {e}")
+        return False
+
+
 def _extract_csv_proxy_addr(line: str) -> str:
     """从 `18,172.64.149.71:80,美国,HTTP,平均` 取出代理地址，否则空串。"""
     s = (line or "").strip()

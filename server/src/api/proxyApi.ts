@@ -216,12 +216,13 @@ async function probeTargets(
         }
       })();
       const exitIp = extractIp(body, body);
+      // 明细只保留状态码/耗时，避免把 HTML 错误页塞进 toast
       return {
         ok: true,
         ms,
         status: res.status,
         exitIp: exitIp || undefined,
-        detail: `${host} HTTP ${res.status} · ${ms}ms`
+        detail: `${host} · HTTP ${res.status} · ${ms}ms`
       };
     } catch (e) {
       const msg = (e as Error).message || String(e);

@@ -148,7 +148,7 @@ def sso_to_cpa_auth(
     remote_url: str = "",
     management_key: str = "",
     skip_remote: bool = False,
-    delete_on_dead: bool = True,
+    delete_on_dead: bool = False,
     log: LogFn | None = None,
 ) -> dict[str, Any]:
     """SSO cookie → Auth Code+PKCE → data/auth/xai-<email>.json [+ 远程推送]
@@ -156,7 +156,7 @@ def sso_to_cpa_auth(
     产出文件可在最新 CPA 中手动登录使用：关闭认证文件设置中的
     「使用官方 API（using_api）」即可，无需手改 headers。
 
-    delete_on_dead: mint 后 probe 为 401/402/403 时是否删除本地文件（默认 True）。
+    delete_on_dead: mint 后 probe 为 401/402/403 时是否删除本地文件（默认 False）。
     """
     log = log or _noop
     sso = (sso or "").strip()
@@ -227,14 +227,15 @@ def sso_to_cpa_auth(
         f"deleted={probe.get('deleted')} {probe.get('summary') or probe.get('error') or ''}"
     )
     if probe.get("action") == "dead":
+        still = path.is_file()
         return {
             "ok": False,
             "error": f"cpa probe dead HTTP {probe.get('http_status')}",
             "email": payload.get("email") or email,
-            "path": str(path),
+            "path": str(path) if still else "",
             "filename": path.name,
             "probe": probe,
-            "deleted": bool(probe.get("deleted")),
+            "deleted": bool(probe.get("deleted")) or not still,
             "referrer": ref,
             "remote": remote_result,
         }
@@ -345,12 +346,17 @@ def resign_auth_file(
     sso: str = "",
     proxy: str = "",
     push_remote: bool = False,
+    delete_on_dead: bool = False,
     log: LogFn | None = None,
 ) -> dict[str, Any]:
     """重签单个 auth JSON：优先 refresh_token；失败则用 sso 重 mint。
 
     push_remote=True 时，成功后按 config/环境推送 Management API（默认 False）。
+    delete_on_dead：接口保留兼容，重签路径 **始终不删** 文件（防点重签后文件消失）。
+    需要删死号请用「测活」+ cpaProbeDeleteOnDead。
     """
+    # 兼容旧调用方；重签绝不删文件
+    _ = delete_on_dead
     log = log or _noop
     p = Path(path).expanduser().resolve()
     if not p.is_file():
@@ -398,23 +404,17 @@ def resign_auth_file(
                 log(f"[auth] resign access_token referrer={ref}")
             else:
                 log("[auth] ⚠ resign 后 access_token 无 referrer claim（cli-chat-proxy 可能 403）")
-            probe = probe_and_cleanup(p, proxy=proxy or "", delete_on_dead=True)
+            # 重签：强制不因 probe dead 删文件（避免「点重签后文件没了」）。
+            # 需要删死号请用「测活」且开启 cpaProbeDeleteOnDead。
+            # 即使调用方传 delete_on_dead=True，重签路径也绝不删（仅测活可删）。
+            probe = probe_and_cleanup(
+                p, proxy=proxy or "", delete_on_dead=False
+            )
             log(
                 f"[auth] resign probe action={probe.get('action')} http={probe.get('http_status')} "
                 f"deleted={probe.get('deleted')} {probe.get('summary') or probe.get('error') or ''}"
             )
-            if probe.get("action") == "dead":
-                return {
-                    "ok": False,
-                    "mode": "refresh",
-                    "error": f"cpa probe dead HTTP {probe.get('http_status')}",
-                    "path": str(p),
-                    "email": email,
-                    "filename": p.name,
-                    "probe": probe,
-                    "deleted": bool(probe.get("deleted")),
-                    "referrer": ref,
-                }
+            # 文件已成功写出 → 重签视为成功；probe dead 仅作警告，不删文件、不丢 path
             out: dict[str, Any] = {
                 "ok": True,
                 "mode": "refresh",
@@ -422,9 +422,14 @@ def resign_auth_file(
                 "email": email,
                 "filename": p.name,
                 "probe": probe,
-                "deleted": bool(probe.get("deleted")),
+                "deleted": False,
                 "referrer": ref,
             }
+            if probe.get("action") == "dead":
+                out["probe_warn"] = f"cpa probe dead HTTP {probe.get('http_status')}"
+                out["alive"] = False
+            elif probe.get("action") == "ok":
+                out["alive"] = True
             if not ref:
                 out["referrer_warn"] = "missing referrer claim"
             if push_remote:
@@ -444,11 +449,35 @@ def resign_auth_file(
             random_fingerprint=bool(raw_headers is None),
             # 默认不推；push_remote=True 时与 mint 一致走远程
             skip_remote=not push_remote,
+            # 重签路径强制不删文件
+            delete_on_dead=False,
             log=log,
         )
+        # mint 写出后若仅 probe dead，文件仍在：视为重签成功 + 警告
         if r.get("ok"):
             r["mode"] = "sso"
             return r
+        path_still = str(r.get("path") or "")
+        fname_still = str(r.get("filename") or "")
+        probe = r.get("probe") if isinstance(r.get("probe"), dict) else {}
+        if (
+            path_still
+            and Path(path_still).is_file()
+            and probe.get("action") == "dead"
+            and not r.get("deleted")
+        ):
+            return {
+                "ok": True,
+                "mode": "sso",
+                "path": path_still,
+                "filename": fname_still or Path(path_still).name,
+                "email": r.get("email") or email,
+                "probe": probe,
+                "probe_warn": r.get("error") or f"cpa probe dead HTTP {probe.get('http_status')}",
+                "alive": False,
+                "deleted": False,
+                "remote": r.get("remote"),
+            }
         out = {
             "ok": False,
             "error": r.get("error") or "sso resign failed",
@@ -459,12 +488,12 @@ def resign_auth_file(
             out["probe"] = r.get("probe")
         if r.get("remote") is not None:
             out["remote"] = r.get("remote")
-        if "deleted" in r:
-            out["deleted"] = r.get("deleted")
-        if r.get("path"):
-            out["path"] = r.get("path")
-        if r.get("filename"):
-            out["filename"] = r.get("filename")
+        # 绝不因重签失败误报 deleted
+        out["deleted"] = False
+        if path_still and Path(path_still).is_file():
+            out["path"] = path_still
+        if fname_still:
+            out["filename"] = fname_still
         return out
 
     return {

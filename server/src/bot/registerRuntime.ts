@@ -133,18 +133,24 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
   config.mail_domain_mode = settings.mailDomainMode || 'round_robin';
   config.email_domain_mode = settings.mailDomainMode || 'round_robin';
 
-  // 代理：可用池优先 + 待测池；避免 UI 总开关未勾选却把已填池清掉
+  // 代理：注册优先 **仅可用池**；可用空时回退待定池（尚未测活时）
   const alivePool = parseProxyPool(
     (settings as { proxyPoolAlive?: string }).proxyPoolAlive || ''
   );
   const pendingPool = parseProxyPool(settings.proxyPool);
-  const poolSeen = new Set<string>();
-  const poolProxies: string[] = [];
-  for (const p of [...alivePool, ...pendingPool]) {
-    if (poolSeen.has(p)) continue;
-    poolSeen.add(p);
-    poolProxies.push(p);
-  }
+  const poolProxies: string[] =
+    alivePool.length > 0
+      ? alivePool
+      : (() => {
+          const seen = new Set<string>();
+          const out: string[] = [];
+          for (const p of pendingPool) {
+            if (seen.has(p)) continue;
+            seen.add(p);
+            out.push(p);
+          }
+          return out;
+        })();
   const singleProxy = stripProxyComment(settings.proxy || '');
   const browserOnly = stripProxyComment(settings.browserProxy || '');
   // 显式关闭才直连；未设置/true 或有代理内容 → 启用
@@ -199,15 +205,9 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
   config.auto_auth_export =
     settings.autoAuthExport === undefined ? true : !!settings.autoAuthExport;
 
-  const authDir = String(settings.authDir || '').trim();
-  if (authDir) {
-    config.auth_dir = authDir;
-    config.cpa_auth_dir = authDir;
-  } else {
-    // 让 Python 走 DATA_DIR/auth 或默认 /data/auth
-    delete config.auth_dir;
-    delete config.cpa_auth_dir;
-  }
+  // 固定 DATA_DIR/auth，不再使用自定义 authDir
+  delete config.auth_dir;
+  delete config.cpa_auth_dir;
 
   // CPA 远程推送（Management API）；与本地 auth 目录可同时开
   const cpaRemoteUrl = String(settings.cpaRemoteUrl || '').trim();

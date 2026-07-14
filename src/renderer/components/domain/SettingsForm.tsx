@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   Activity,
   ChevronDown,
@@ -9,7 +9,8 @@ import {
   Loader2,
   Save,
   Shield,
-  Trash2
+  Trash2,
+  X
 } from 'lucide-react';
 import { Card, CardBody, CardHeader } from '@renderer/components/ui/Card';
 import { Button } from '@renderer/components/ui/Button';
@@ -22,7 +23,7 @@ import { useSettingsStore } from '@renderer/store/settingsStore';
 import { useToastStore } from '@renderer/store/toastStore';
 import type { AppSettings, PoolMode, ProxyPoolEntry } from '@shared/settings';
 import {
-  appendProxiesToPoolText,
+  appendProxiesToPoolTextDetailed,
   moveProxiesToAlivePool,
   parseProxyPoolEntries,
   removeProxiesFromPoolText,
@@ -272,17 +273,27 @@ export function SettingsForm() {
   const [probingKey, setProbingKey] = useState<string | null>(null);
   /** 可用池默认折叠 */
   const [alivePoolOpen, setAlivePoolOpen] = useState(false);
+  /** 待定池折叠（与可用池同风格） */
+  const [pendingPoolOpen, setPendingPoolOpen] = useState(true);
   const [fetchingProxies, setFetchingProxies] = useState(false);
   /** 拉列表时是否走当前 HTTP 代理（被墙时） */
   const [fetchViaProxy, setFetchViaProxy] = useState(false);
   /** hide.mn 翻页数（每页约 64 条） */
   const [fetchPages, setFetchPages] = useState(1);
+  /** 网页拉取结果条（持久展示，避免 toast 一闪而过看不清） */
+  const [fetchResult, setFetchResult] = useState<{
+    tone: 'ok' | 'warn' | 'danger' | 'info';
+    title: string;
+    detail: string;
+  } | null>(null);
+  const pendingPoolRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
     if (data && !draft) setDraft(data);
   }, [data, draft]);
 
-  // 外部 reload 后同步（保存成功后）
+  // 外部 data 更新时同步 draft（仅引用变化时）。
+  // 注意：网页导入会先 setDraft 再 store.set，此处需能吃到最新 data。
   useEffect(() => {
     if (data) setDraft(data);
   }, [data]);
@@ -336,18 +347,23 @@ export function SettingsForm() {
       draft.proxyFetchUrl || 'https://hide.mn/en/proxy-list/'
     ).trim();
     if (!/^https?:\/\//i.test(url)) {
-      push({ tone: 'warn', title: 'URL 须以 http(s):// 开头' });
+      const msg = 'URL 须以 http(s):// 开头';
+      setFetchResult({ tone: 'danger', title: '拉取失败', detail: msg });
+      push({ tone: 'warn', title: '拉取失败', description: msg });
       return;
     }
     if (fetchViaProxy && !String(draft.proxy || '').trim()) {
-      push({
-        tone: 'warn',
-        title: '未配置 HTTP 代理',
-        description: '已勾选「经代理拉取」，请先填写上方 HTTP 代理，或关闭该开关直连'
-      });
+      const msg = '已勾选「经代理拉取」，请先填写上方 HTTP 代理，或关闭该开关直连';
+      setFetchResult({ tone: 'warn', title: '未配置 HTTP 代理', detail: msg });
+      push({ tone: 'warn', title: '未配置 HTTP 代理', description: msg });
       return;
     }
     setFetchingProxies(true);
+    setFetchResult({
+      tone: 'info',
+      title: '正在拉取…',
+      detail: `${url}${fetchPages > 1 ? ` · ${fetchPages} 页` : ''}${fetchViaProxy ? ' · 经代理' : ''}`
+    });
     try {
       const r = await window.api.fetchProxiesFromUrl({
         url,
@@ -355,39 +371,112 @@ export function SettingsForm() {
         pages: fetchPages
       });
       if (!r.ok || !r.lines?.length) {
+        const detail =
+          (r.message || '未解析到代理') +
+          (fetchViaProxy ? '' : ' · 若本机打不开 hide.mn，可开「经 HTTP 代理拉取」');
+        setFetchResult({ tone: 'danger', title: '拉取失败 · 未写入池', detail });
         push({
           tone: 'danger',
-          title: '拉取失败',
-          description:
-            (r.message || '未解析到代理') +
-            (fetchViaProxy ? '' : ' · 若本机打不开 hide.mn，可开「经 HTTP 代理拉取」')
+          title: '拉取失败 · 未写入池',
+          description: detail,
+          duration: 10000
         });
         return;
       }
-      const before = parseProxyPoolEntries(draft.proxyPool).length;
-      // 第三参用 lines 原文，保留国家/协议标签
-      const nextPool = appendProxiesToPoolText(
+
+      const beforeEntries = parseProxyPoolEntries(draft.proxyPool).length;
+      const append = appendProxiesToPoolTextDetailed(
         draft.proxyPool || '',
         r.lines,
         r.lines.join('\n')
       );
-      const after = parseProxyPoolEntries(nextPool).length;
-      const added = Math.max(0, after - before);
-      setDraft({ ...draft, proxyPool: nextPool, proxyFetchUrl: url });
+      const afterEntries = parseProxyPoolEntries(append.text).length;
+      // 以实际解析条数为准（比 added 更直观）
+      const delta = Math.max(0, afterEntries - beforeEntries);
+      const added = Math.max(append.added, delta);
+
+      if (added <= 0) {
+        const detail =
+          `解析到 ${r.count} 条，但待测池无新增` +
+          (append.skipped > 0 ? `（已存在跳过 ${append.skipped}` : '（') +
+          (append.invalid > 0 ? ` · 无效 ${append.invalid}` : '') +
+          (append.skipped > 0 || append.invalid > 0 ? '）' : '）') +
+          ` · 当前待测 ${afterEntries} 条` +
+          (r.sample?.length ? ` · 例 ${r.sample[0]}` : '');
+        setFetchResult({
+          tone: 'warn',
+          title: '拉取完成 · 无新条目写入',
+          detail
+        });
+        push({
+          tone: 'warn',
+          title: '拉取完成 · 无新条目',
+          description: detail,
+          duration: 9000
+        });
+        // 仍更新 URL 记忆
+        setDraft({ ...draft, proxyFetchUrl: url });
+        return;
+      }
+
+      const nextDraft = {
+        ...draft,
+        proxyPool: append.text,
+        proxyFetchUrl: url
+      };
+      setDraft(nextDraft);
+
+      // 立即落盘，避免「看起来入了 / 一刷新就没了」
+      let saved = false;
+      try {
+        await window.api.saveSettings(nextDraft);
+        // 用 store.set 同步 data，避免 reload 竞态把 draft 打回旧值
+        useSettingsStore.getState().set(nextDraft);
+        saved = true;
+      } catch {
+        saved = false;
+      }
+
+      const detail =
+        `新增 ${added} 条 → 待定池现 ${afterEntries} 条` +
+        (append.skipped > 0 ? ` · 跳过重复 ${append.skipped}` : '') +
+        (r.pagesFetched && r.pagesFetched > 1 ? ` · 抓取 ${r.pagesFetched} 页` : '') +
+        (r.sample?.length ? ` · 例 ${r.sample.slice(0, 2).join(' | ')}` : '') +
+        (saved
+          ? ' · 已自动保存 · 请在「待定池」点全部测活（三绿进可用池）'
+          : ' · 自动保存失败，请手动点右下角「保存」');
+
+      setFetchResult({
+        tone: saved ? 'ok' : 'warn',
+        title: saved
+          ? `网页导入成功 · 已写入待定池并保存 +${added}`
+          : `已写入待定池 +${added}（未保存）`,
+        detail
+      });
       push({
-        tone: added > 0 ? 'ok' : 'warn',
-        title: added > 0 ? '已写入待测池' : '无新增（可能已存在）',
-        description:
-          `${r.message} · 新增 ${added} · 池内 ${after}` +
-          (r.pagesFetched && r.pagesFetched > 1 ? ` · 抓取 ${r.pagesFetched} 页` : '') +
-          (r.sample?.length ? ` · 例 ${r.sample.slice(0, 2).join(' | ')}` : '') +
-          ' · 请测活后点保存'
+        tone: saved ? 'ok' : 'warn',
+        title: saved ? `已入待定池并保存 +${added}` : `已入待定池 +${added}（请手动保存）`,
+        description: detail,
+        duration: 12000
+      });
+      setPendingPoolOpen(true);
+
+      // 滚到待测池文本框，让用户立刻看到内容
+      requestAnimationFrame(() => {
+        const el = pendingPoolRef.current;
+        if (!el) return;
+        el.focus();
+        el.scrollTop = el.scrollHeight;
+        el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
       });
     } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      setFetchResult({ tone: 'danger', title: '拉取异常 · 未写入池', detail });
       push({
         tone: 'danger',
-        title: '拉取异常',
-        description: err instanceof Error ? err.message : String(err)
+        title: '拉取异常 · 未写入池',
+        description: detail,
+        duration: 10000
       });
     } finally {
       setFetchingProxies(false);
@@ -427,10 +516,17 @@ export function SettingsForm() {
       const r = await window.api.testProxy(proxy);
       if (r.ok) {
         const next = promoteOkProxies([proxy]);
+        // 去掉 HTML 碎片（旧版把错误页正文拼进 message）
+        const cleanMsg = String(r.message || '')
+          .replace(/<[^>]+>/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim()
+          .slice(0, 160);
         push({
           tone: 'ok',
           title: '测活成功 → 已移入可用池',
-          description: r.message || proxy.slice(0, 48)
+          description: cleanMsg || proxy.slice(0, 48),
+          duration: 6000
         });
         // 自动保存在 probe 结束后由外层可选触发（见 proxyAutoSaveOnRemoveFailed）
         if (next && draft.proxyAutoSaveOnRemoveFailed) {
@@ -513,8 +609,10 @@ export function SettingsForm() {
             const promoted = promoteOkProxies(chunkOk, workingDraft);
             if (promoted) workingDraft = promoted;
           }
-          totalOk += batch.ok || chunkOk.length;
-          totalFail += batch.fail || Math.max(0, chunk.length - chunkOk.length);
+          // 以本块实际 ok/fail 计数，避免 batch.ok/fail 与 results 不一致时双计
+          const chunkFail = Math.max(0, chunk.length - chunkOk.length);
+          totalOk += chunkOk.length;
+          totalFail += chunkFail;
           // 进度 toast 每 3 块或最后一块
           if (chunkNo === chunkTotal || chunkNo % 3 === 0) {
             push({
@@ -550,11 +648,26 @@ export function SettingsForm() {
           /* ignore */
         }
       }
+      const aliveNow = parseProxyPoolEntries(workingDraft?.proxyPoolAlive || '').length;
+      const pendingNow = parseProxyPoolEntries(workingDraft?.proxyPool || '').length;
       push({
         tone: totalFail > 0 ? 'warn' : 'ok',
         title: '代理池测活完成',
-        description: `共 ${proxies.length} · 成功 ${totalOk}（已入可用池）· 失败 ${totalFail}（分块 ${CHUNK} · 并发 ${conc}${hardError ? ' · 含块错误' : ''}）`
+        description:
+          `共测 ${proxies.length} · 成功 ${totalOk}（已迁入「可用池」）· 失败 ${totalFail}` +
+          ` · 可用池 ${aliveNow} · 待定剩 ${pendingNow}` +
+          `（分块 ${CHUNK} · 并发 ${conc}${hardError ? ' · 含块错误' : ''}）` +
+          (totalOk > 0 ? ' · 待定变少是迁入可用，正常' : ''),
+        duration: 12000
       });
+      if (totalOk > 0) {
+        setFetchResult({
+          tone: 'ok',
+          title: `测活完成 · ${totalOk} 条已进可用池`,
+          detail: `失败 ${totalFail} 仍在待测 · 可用池现 ${aliveNow} 条 · 请确认已保存`
+        });
+        setAlivePoolOpen(true);
+      }
     } catch (err) {
       setProxyProbes((prev) => {
         const next = { ...prev };
@@ -998,37 +1111,137 @@ export function SettingsForm() {
                       onChange={setFetchViaProxy}
                       className="bg-card/70"
                     />
-                  </div>
-
-                  <div className="lg:col-span-2">
-                    <Field
-                      label="代理池（待测）"
-                      hint="可为空。支持 URL、#备注、括号备注、CSV；可用上方「网页拉取」填入"
-                    >
-                      <textarea
-                        className={TEXTAREA_CLASS}
-                        value={draft.proxyPool}
-                        onChange={(e) => update('proxyPool', e.target.value)}
-                        placeholder={
-                          '18,172.64.149.71:80,美国,HTTP,平均\n19,45.131.5.33:80,荷兰,HTTP,平均\n8.216.35.12:8888（日本，elite，HTTPS）\nhttp://user:pass@1.2.3.4:8080#香港-02'
-                        }
-                      />
-                    </Field>
-                    {proxyPoolEntries.length > 0 && (
-                      <ProxyPoolPreview
-                        entries={proxyPoolEntries}
-                        probes={proxyProbes}
-                        probingKey={probingKey}
-                        failCount={failedProxies.length}
-                        onProbeOne={probeOne}
-                        onProbeAll={probeAll}
-                        onRemoveFailed={() => void removeFailed('pending')}
-                        onRemoveOne={(p) => void removeOne(p, 'pending')}
-                      />
+                    {fetchResult && (
+                      <div
+                        className={cn(
+                          'relative rounded-xl border px-3.5 py-2.5 text-[12px] leading-5',
+                          fetchResult.tone === 'ok' &&
+                            'border-emerald-500/35 bg-emerald-500/10 text-emerald-800 dark:text-emerald-300',
+                          fetchResult.tone === 'warn' &&
+                            'border-amber-500/35 bg-amber-500/10 text-amber-900 dark:text-amber-200',
+                          fetchResult.tone === 'danger' &&
+                            'border-destructive/40 bg-destructive/10 text-destructive',
+                          fetchResult.tone === 'info' &&
+                            'border-primary/30 bg-primary/10 text-foreground'
+                        )}
+                        role="status"
+                      >
+                        <button
+                          type="button"
+                          className="absolute right-2 top-2 rounded-md p-0.5 text-current/60 hover:bg-black/5 hover:text-current"
+                          onClick={() => setFetchResult(null)}
+                          title="关闭"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                        <div className="pr-6 font-semibold tracking-tight">
+                          {fetchResult.title}
+                        </div>
+                        <p className="mt-0.5 break-all opacity-90">{fetchResult.detail}</p>
+                        {fetchResult.tone === 'ok' && (
+                          <p className="mt-1 text-[11px] opacity-80">
+                            写入「待定池」。三条件测活全过才进「可用池」；注册失败会从可用降回待定。
+                          </p>
+                        )}
+                      </div>
                     )}
                   </div>
 
-                  {/* 可用池：默认折叠；测活成功自动迁入 */}
+                  {/* 待定池：与可用池同风格折叠条 */}
+                  <div className="lg:col-span-2">
+                    <div className="rounded-xl border border-border/60 bg-muted/30">
+                      <div className="flex flex-wrap items-center justify-between gap-2 px-3.5 py-2.5">
+                        <button
+                          type="button"
+                          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                          onClick={() => setPendingPoolOpen((v) => !v)}
+                        >
+                          {pendingPoolOpen ? (
+                            <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+                          ) : (
+                            <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+                          )}
+                          <span className="text-[13px] font-medium">待定池</span>
+                          <span className="chip tabular-nums bg-amber-500/15 text-amber-800 dark:text-amber-300">
+                            {proxyPoolEntries.length}
+                          </span>
+                          <span className="truncate text-[12px] text-muted-foreground">
+                            导入 / 测活未过 / 注册失败降级 · 不参与注册
+                          </span>
+                        </button>
+                        <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+                          {failedProxies.length > 0 && (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="danger"
+                              className="h-7"
+                              disabled={probingKey !== null}
+                              onClick={() => void removeFailed('pending')}
+                              title="删除待定池中测活失败的项"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                              删除失败 ({failedProxies.length})
+                            </Button>
+                          )}
+                          {proxyPoolEntries.length > 0 && (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="secondary"
+                              className="h-7"
+                              disabled={probingKey !== null}
+                              onClick={() => void probeAll()}
+                              title="对待定池全部测活（三绿进可用池）"
+                            >
+                              {probingKey === '__all__' ? (
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              ) : (
+                                <Activity className="h-3.5 w-3.5" />
+                              )}
+                              全部测活
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+                      {pendingPoolOpen && (
+                        <div className="space-y-2 border-t border-border/50 px-3.5 pb-3.5 pt-3">
+                          <p className="text-[12px] text-muted-foreground">
+                            网页导入、测活失败、注册时出口失败会落在此池。
+                            <strong className="font-medium text-foreground">
+                              仅「可用池」参与注册
+                            </strong>
+                            ；三条件（代理连通 + xAI + CF）全过才迁入可用。
+                          </p>
+                          <textarea
+                            ref={pendingPoolRef}
+                            className={cn(TEXTAREA_CLASS, 'min-h-[120px] font-mono text-[13px]')}
+                            value={draft.proxyPool}
+                            onChange={(e) => update('proxyPool', e.target.value)}
+                            placeholder={
+                              '拉取 / 注册失败降级后出现在此…\n18,172.64.149.71:80,美国,HTTP,平均\n8.216.35.12:8888（日本，elite，HTTPS）'
+                            }
+                            spellCheck={false}
+                            rows={5}
+                          />
+                          {proxyPoolEntries.length > 0 && (
+                            <ProxyPoolPreview
+                              entries={proxyPoolEntries}
+                              probes={proxyProbes}
+                              probingKey={probingKey}
+                              failCount={failedProxies.length}
+                              onProbeOne={probeOne}
+                              onProbeAll={probeAll}
+                              onRemoveFailed={() => void removeFailed('pending')}
+                              onRemoveOne={(p) => void removeOne(p, 'pending')}
+                            />
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* 可用池：注册专用；测活成功迁入，注册失败可降回待定 */}
                   <div className="lg:col-span-2">
                     <div className="rounded-xl border border-border/60 bg-muted/30">
                       <div className="flex flex-wrap items-center justify-between gap-2 px-3.5 py-2.5">
@@ -1047,7 +1260,7 @@ export function SettingsForm() {
                             {alivePoolEntries.length}
                           </span>
                           <span className="truncate text-[12px] text-muted-foreground">
-                            注册优先 · 可复测
+                            仅此池参与注册 · 可复测
                           </span>
                         </button>
                         <div className="flex shrink-0 flex-wrap items-center gap-1.5">
@@ -1102,7 +1315,8 @@ export function SettingsForm() {
                       {alivePoolOpen && (
                         <div className="space-y-2 border-t border-border/50 px-3.5 pb-3.5 pt-3">
                           <p className="text-[12px] text-muted-foreground">
-                            可手改/粘贴；与待测池合并写入注册（可用在前）。失败项可删，不必清空整池。
+                            注册机<strong className="font-medium text-foreground">只用本池</strong>
+                            。出口 IP / 注册页不可达时会自动降回「待定池」。可手改/粘贴/复测。
                           </p>
                           <textarea
                             className={TEXTAREA_CLASS}
@@ -1369,17 +1583,16 @@ export function SettingsForm() {
           />
           <ToggleRow
             label="测活死号自动删除"
-            hint="Auth 页/补 Auth 测活遇 401/402/403 时删除文件；开启后测活前会弹窗确认；关闭则仅标记死号"
-            checked={draft.cpaProbeDeleteOnDead !== false}
+            hint="默认关。开启后 Auth 测活遇 401/402/403 才删除本地 Auth 文件；关闭则仅标记死号"
+            checked={draft.cpaProbeDeleteOnDead === true}
             onChange={(v) => update('cpaProbeDeleteOnDead', v)}
           />
-          <Field label="Auth 目录" hint="空则 DATA_DIR/auth（容器内多为 /data/auth）">
-            <Input
-              value={draft.authDir}
-              onChange={(e) => update('authDir', e.target.value)}
-              placeholder="/data/auth"
-            />
-          </Field>
+          <ToggleRow
+            label="测活死号同步删除 SSO"
+            hint="默认关。Auth 测活死号且已删 Auth 时，同步删除号池同邮箱账号（仅 accounts.json）"
+            checked={draft.cpaProbeDeleteSsoOnDead === true}
+            onChange={(v) => update('cpaProbeDeleteSsoOnDead', v)}
+          />
           <Field
             label="远程 CPA 地址"
             hint="可选。Management API 根地址，如 http://host:8317（不要带 /v1）"

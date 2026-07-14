@@ -18,16 +18,20 @@ function isFlag1(flag: number | string | null | undefined, is1?: boolean): boole
   if (flag === 1 || flag === '1') return true;
   if (typeof flag === 'string' && flag.trim() === '1') return true;
   if (typeof flag === 'number' && Number.isFinite(flag) && flag === 1) return true;
-  // 避免把 "10" 当成 1
-  if (flag !== '' && flag != null && Number(flag) === 1 && String(flag).trim() === '1') {
-    return true;
-  }
   return false;
 }
 
 function isFlag0(flag: number | string | null | undefined): boolean {
+  // 0 是合法 claim（None），不能用 !flag / Boolean(flag)
   if (flag === 0 || flag === '0') return true;
   if (typeof flag === 'string' && flag.trim() === '0') return true;
+  if (typeof flag === 'number' && Number.isFinite(flag) && flag === 0) return true;
+  if (typeof flag === 'bigint' && flag === 0n) return true;
+  // 兼容文案 / 数字字符串
+  if (typeof flag === 'string' && /^none$/i.test(flag.trim())) return true;
+  if (flag != null && flag !== '' && Number(flag) === 0 && !Number.isNaN(Number(flag))) {
+    return true;
+  }
   return false;
 }
 
@@ -47,23 +51,19 @@ export function BotFlagBadge({
   missing = 'dash',
   className
 }: BotFlagBadgeProps) {
-  if (flag === undefined || flag === null || flag === '') {
-    if (missing === 'muted') {
-      return (
-        <span
-          className={cn(pillBase, 'bg-muted text-muted-foreground', className)}
-          title={
-            'flag—：无法解析 bot_flag_source。' +
-            '常见原因：无 SSO / 不是标准 JWT / JWT 无该 claim。' +
-            '与「未验」（是否请求过 grok 验活）无关。'
-          }
-        >
-          flag—
-        </span>
-      );
-    }
+  // 先判 0/1，避免把数字 0 当成「缺失」
+  if (isFlag0(flag)) {
     return (
-      <span className={cn('text-[11px] text-muted-foreground', className)}>—</span>
+      <span
+        className={cn(
+          pillBase,
+          'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400',
+          className
+        )}
+        title="bot_flag_source=0（None）"
+      >
+        None
+      </span>
     );
   }
 
@@ -82,18 +82,23 @@ export function BotFlagBadge({
     );
   }
 
-  if (isFlag0(flag)) {
+  if (flag === undefined || flag === null || flag === '') {
+    if (missing === 'muted') {
+      return (
+        <span
+          className={cn(pillBase, 'bg-muted text-muted-foreground', className)}
+          title={
+            'flag—：无法解析 bot_flag_source。' +
+            '常见原因：无 SSO / 不是标准 JWT / JWT 无该 claim。' +
+            '与「未验」（是否请求过 grok 验活）无关。'
+          }
+        >
+          flag—
+        </span>
+      );
+    }
     return (
-      <span
-        className={cn(
-          pillBase,
-          'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400',
-          className
-        )}
-        title="bot_flag_source=0（None）"
-      >
-        None
-      </span>
+      <span className={cn('text-[11px] text-muted-foreground', className)}>—</span>
     );
   }
 

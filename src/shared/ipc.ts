@@ -164,6 +164,8 @@ export interface CpaAuthBatchResultItem {
   probeAction?: string;
   probeHttp?: number;
   probeDeleted?: boolean;
+  /** 401/403 密码重登二次测活时，首次触发恢复的 HTTP 状态码 */
+  recoverHttp?: number;
   /** Management API 推送：true/false；null/undefined=未配置或未尝试 */
   remoteOk?: boolean | null;
   remoteError?: string;
@@ -189,6 +191,8 @@ export interface CpaAuthBatchResult {
   dead?: number;
   deleted?: number;
   keep?: number;
+  /** 测活死号同步删除的号池 SSO 数 */
+  ssoDeleted?: number;
   results: CpaAuthBatchResultItem[];
 }
 

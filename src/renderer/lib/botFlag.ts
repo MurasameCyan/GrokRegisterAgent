@@ -23,11 +23,22 @@ export function readBotFlagFromSso(sso: string | undefined | null): {
 } {
   const pl = decodeJwtPayload(String(sso || ''));
   if (!pl) return { botFlagSource: null, isBotFlag1: false };
-  const raw = pl.bot_flag_source;
+  // 兼容 claim 名变体
+  const raw =
+    pl.bot_flag_source !== undefined
+      ? pl.bot_flag_source
+      : pl.botFlagSource !== undefined
+        ? pl.botFlagSource
+        : pl.bot_flag;
   if (raw === undefined || raw === null) {
     return { botFlagSource: null, isBotFlag1: false };
   }
-  const isBotFlag1 = raw === 1 || raw === '1' || Number(raw) === 1;
+  // 0 是合法 None，不可用 !raw / || 吞掉
+  const n = typeof raw === 'number' ? raw : Number(String(raw).trim());
+  const isBotFlag1 = raw === 1 || raw === '1' || (!Number.isNaN(n) && n === 1);
+  if (raw === 0 || raw === '0' || (!Number.isNaN(n) && n === 0)) {
+    return { botFlagSource: 0, isBotFlag1: false };
+  }
   return {
     botFlagSource: typeof raw === 'number' || typeof raw === 'string' ? raw : String(raw),
     isBotFlag1

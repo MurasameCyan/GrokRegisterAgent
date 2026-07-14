@@ -48,13 +48,14 @@ export interface AppSettings {
   /** Python 进程使用的 HTTP 代理（单代理；proxyPoolEnabled 关时使用） */
   proxy: string;
   /**
-   * 代理池（多行或逗号分隔）。粘贴/待测区；测活成功后移入 proxyPoolAlive。
+   * 待定池（多行或逗号分隔）：网页导入 / 测活未过 / 注册使用失败降级。
+   * 测活三条件全过才移入 proxyPoolAlive。
    * 支持行尾 #备注：`http://user:pass@ip:port#香港-01`
    */
   proxyPool: string;
   /**
-   * 可用池：测活成功的代理（多行）。注册时优先写入 Python proxy_pool。
-   * 与 proxyPool 去重后合并（可用在前）。
+   * 可用池：测活成功的代理（多行）。注册时 **只写入** 本池（不再合并待定池）。
+   * 注册中出口 IP / 页面不可达失败时会降级回 proxyPool。
    */
   proxyPoolAlive: string;
   /** 是否使用代理池（开=池；关=单代理） */
@@ -84,8 +85,8 @@ export interface AppSettings {
   /** 注册成功后自动 SSO→CPA auth 导出 */
   autoAuthExport: boolean;
   /**
-   * CPA auth 文件目录。空则 DATA_DIR/auth（容器内多为 /data/auth）。
-   * 写入 Python config：auth_dir / cpa_auth_dir
+   * @deprecated 已移除自定义 Auth 目录 UI；始终使用 DATA_DIR/auth。
+   * 字段保留兼容旧 settings.json，读写时忽略。
    */
   authDir: string;
   /**
@@ -100,9 +101,14 @@ export interface AppSettings {
   cpaManagementKey: string;
   /**
    * CPA 测活遇 401/402/403 时是否自动删除 auth 文件。
-   * 默认 true；关则死号仅标记、保留文件。
+   * 默认 false（仅标记死号）；开则删文件。
    */
   cpaProbeDeleteOnDead: boolean;
+  /**
+   * Auth 测活死号且已删 auth 时，是否同步删除号池（SSO 列表）中同邮箱账号。
+   * 默认 false。不删 SSO 历史 txt 文件，仅 accounts.json。
+   */
+  cpaProbeDeleteSsoOnDead: boolean;
   /**
    * 同一代理 IP 两次用于注册的最小间隔（秒）。
    * 0=不限制；未到时间时队列暂停等待（优先换其它已冷却 IP）。
@@ -163,7 +169,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   authDir: '',
   cpaRemoteUrl: '',
   cpaManagementKey: '',
-  cpaProbeDeleteOnDead: true,
+  cpaProbeDeleteOnDead: false,
+  cpaProbeDeleteSsoOnDead: false,
   proxyIpIntervalSec: 0,
   skipBotFlag1OnMint: true,
   /** 号池验活默认走代理（若总开关与 proxy 已配） */
@@ -419,82 +426,219 @@ export function removeProxiesFromPoolText(raw: string, proxiesToRemove: string[]
     .replace(/\n+$/, '');
 }
 
+/** 规范化池内去重键：优先 host:port，避免 http://ip:port 与 ip:port 各算一条 */
+export function proxyDedupeKey(raw: string): string {
+  const entry = parseProxyLine(raw);
+  const proxy = entry?.proxy || stripProxyComment(raw) || String(raw || '').trim();
+  if (!proxy) return '';
+  // 去掉 scheme，统一成 host:port（含 user@）
+  try {
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(proxy)) {
+      const u = new URL(proxy);
+      const auth =
+        u.username || u.password
+          ? `${decodeURIComponent(u.username)}${u.password ? `:${decodeURIComponent(u.password)}` : ''}@`
+          : '';
+      return `${auth}${u.hostname}${u.port ? `:${u.port}` : ''}`;
+    }
+  } catch {
+    /* fallthrough */
+  }
+  return proxy.replace(/^(?:https?|socks5?h?):\/\//i, '');
+}
+
+export type AppendProxiesResult = {
+  text: string;
+  /** 本次新写入行数 */
+  added: number;
+  /** 因已存在而跳过 */
+  skipped: number;
+  /** 无法解析而跳过 */
+  invalid: number;
+};
+
 /**
- * 把代理行追加到池文本（按 URL 去重；保留标签行原文若能从 source 找回）。
+ * 把代理行追加到池文本（按 host:port 去重；尽量保留带标签的原文行）。
  */
 export function appendProxiesToPoolText(
   targetRaw: string,
   proxiesToAdd: string[],
   sourceRaw?: string
 ): string {
-  const existing = new Set(parseProxyPool(targetRaw));
-  const sourceLines = new Map<string, string>();
-  if (sourceRaw) {
-    for (const line of String(sourceRaw).replace(/\r\n/g, '\n').split('\n')) {
-      const entry = parseProxyLine(line);
-      if (entry && !sourceLines.has(entry.proxy)) {
-        sourceLines.set(entry.proxy, line.trim());
-      }
-    }
-  }
-  const addLines: string[] = [];
-  for (const p of proxiesToAdd) {
-    const key = stripProxyComment(p) || String(p || '').trim();
-    if (!key || existing.has(key)) continue;
-    existing.add(key);
-    addLines.push(sourceLines.get(key) || key);
-  }
-  if (addLines.length === 0) return String(targetRaw || '').trim();
-  const base = String(targetRaw || '').trim();
-  return base ? `${base}\n${addLines.join('\n')}` : addLines.join('\n');
+  return appendProxiesToPoolTextDetailed(targetRaw, proxiesToAdd, sourceRaw).text;
 }
 
-/**
- * 测活成功：从「待测池」移到「可用池」（保留标签行）。
- */
-export function moveProxiesToAlivePool(
-  poolRaw: string,
-  aliveRaw: string,
-  okProxies: string[]
-): { proxyPool: string; proxyPoolAlive: string; moved: number } {
-  const keys = okProxies
-    .map((p) => stripProxyComment(p) || String(p || '').trim())
-    .filter(Boolean);
-  if (keys.length === 0) {
+/** 同 appendProxiesToPoolText，额外返回 added/skipped/invalid 便于 UI 反馈 */
+export function appendProxiesToPoolTextDetailed(
+  targetRaw: string,
+  proxiesToAdd: string[],
+  sourceRaw?: string
+): AppendProxiesResult {
+  const existing = new Set(
+    parseProxyPoolEntries(targetRaw).map((e) => proxyDedupeKey(e.proxy) || e.proxy)
+  );
+  // 原文行：dedupeKey → 带标签的整行
+  const sourceLines = new Map<string, string>();
+  const feed = (line: string) => {
+    const entry = parseProxyLine(line);
+    if (!entry) return;
+    const k = proxyDedupeKey(entry.proxy) || entry.proxy;
+    if (k && !sourceLines.has(k)) sourceLines.set(k, line.trim());
+  };
+  if (sourceRaw) {
+    for (const line of String(sourceRaw).replace(/\r\n/g, '\n').split('\n')) {
+      feed(line);
+    }
+  }
+  for (const p of proxiesToAdd) feed(String(p || ''));
+
+  const addLines: string[] = [];
+  let skipped = 0;
+  let invalid = 0;
+  const seenAdd = new Set<string>();
+
+  for (const p of proxiesToAdd) {
+    const entry = parseProxyLine(String(p || ''));
+    const key = entry
+      ? proxyDedupeKey(entry.proxy) || entry.proxy
+      : proxyDedupeKey(p) || stripProxyComment(p) || String(p || '').trim();
+    if (!key) {
+      invalid += 1;
+      continue;
+    }
+    // 必须能解析成代理行，否则写入后 textarea 预览也会丢
+    if (!entry && !parseProxyLine(sourceLines.get(key) || key)) {
+      invalid += 1;
+      continue;
+    }
+    if (existing.has(key) || seenAdd.has(key)) {
+      skipped += 1;
+      continue;
+    }
+    existing.add(key);
+    seenAdd.add(key);
+    // 优先：source 原文（含国家/协议标签）→ entry.raw → key
+    const line =
+      sourceLines.get(key) ||
+      entry?.raw?.trim() ||
+      String(p || '').trim() ||
+      key;
+    addLines.push(line);
+  }
+
+  if (addLines.length === 0) {
     return {
-      proxyPool: poolRaw,
-      proxyPoolAlive: aliveRaw,
-      moved: 0
+      text: String(targetRaw || '').trim(),
+      added: 0,
+      skipped,
+      invalid
     };
   }
-  const beforeAlive = parseProxyPool(aliveRaw).length;
-  const nextAlive = appendProxiesToPoolText(aliveRaw, keys, poolRaw);
-  const nextPool = removeProxiesFromPoolText(poolRaw, keys);
-  const afterAlive = parseProxyPool(nextAlive).length;
+  const base = String(targetRaw || '').trim();
+  const stamp = `# 网页导入 ${new Date().toISOString().slice(0, 19).replace('T', ' ')} +${addLines.length}`;
+  const block = `${stamp}\n${addLines.join('\n')}`;
   return {
-    proxyPool: nextPool,
-    proxyPoolAlive: nextAlive,
-    moved: Math.max(0, afterAlive - beforeAlive)
+    text: base ? `${base}\n${block}` : block,
+    added: addLines.length,
+    skipped,
+    invalid
   };
 }
 
 /**
- * 注册用代理列表：可用池在前，待测池在后，按 URL 去重。
+ * 把代理从「待定」移到「可用」：alive 末尾追加（去重），pending 删除。
+ * 返回更新后的两段文本与实际迁移条数。
+ */
+export function moveProxiesToAlivePool(
+  pendingRaw: string,
+  aliveRaw: string,
+  proxies: string[]
+): { proxyPool: string; proxyPoolAlive: string; moved: number } {
+  if (!proxies.length) {
+    return { proxyPool: pendingRaw, proxyPoolAlive: aliveRaw, moved: 0 };
+  }
+  const nextAlive = appendProxiesToPoolText(aliveRaw, proxies, pendingRaw);
+  const nextPending = removeProxiesFromPoolText(pendingRaw, proxies);
+  // 统计真正新增到 alive 的条数（按 URL 集合差）
+  const before = new Set(parseProxyPool(aliveRaw));
+  const after = new Set(parseProxyPool(nextAlive));
+  let moved = 0;
+  for (const p of after) {
+    if (!before.has(p)) moved += 1;
+  }
+  return { proxyPool: nextPending, proxyPoolAlive: nextAlive, moved };
+}
+
+/**
+ * 把代理从「可用」降级到「待定」（注册失败 / 出口 IP 不通）。
+ * pending 追加（带 #注册失败 备注若无标签），alive 删除。
+ */
+export function moveProxiesFromAliveToPending(
+  pendingRaw: string,
+  aliveRaw: string,
+  proxies: string[],
+  reasonTag = '注册失败'
+): { proxyPool: string; proxyPoolAlive: string; moved: number } {
+  if (!proxies.length) {
+    return { proxyPool: pendingRaw, proxyPoolAlive: aliveRaw, moved: 0 };
+  }
+  // 尽量保留可用池原文行（含国家标签）
+  const aliveLines = String(aliveRaw || '')
+    .replace(/\r\n/g, '\n')
+    .split('\n');
+  const lineByKey = new Map<string, string>();
+  for (const line of aliveLines) {
+    const entry = parseProxyLine(line);
+    if (!entry) continue;
+    const k = proxyDedupeKey(entry.proxy) || entry.proxy;
+    if (k && !lineByKey.has(k)) lineByKey.set(k, line.trim());
+  }
+
+  const toAdd: string[] = [];
+  for (const p of proxies) {
+    const entry = parseProxyLine(p) || parseProxyLine(stripProxyComment(p));
+    const key = entry
+      ? proxyDedupeKey(entry.proxy) || entry.proxy
+      : proxyDedupeKey(p) || stripProxyComment(p) || String(p || '').trim();
+    if (!key) continue;
+    let line = lineByKey.get(key) || entry?.raw?.trim() || String(p || '').trim();
+    // 无备注时补降级原因，便于 UI 识别
+    if (line && !/#|（|\(/.test(line) && reasonTag) {
+      line = `${line}#${reasonTag}`;
+    } else if (line && reasonTag && !line.includes(reasonTag)) {
+      // 已有标签：行尾追加简短原因（不破坏括号备注）
+      if (!line.includes('#')) line = `${line}#${reasonTag}`;
+    }
+    toAdd.push(line);
+  }
+
+  const nextPending = appendProxiesToPoolText(pendingRaw, toAdd, toAdd.join('\n'));
+  const nextAlive = removeProxiesFromPoolText(aliveRaw, proxies);
+  const before = new Set(
+    parseProxyPoolEntries(aliveRaw).map((e) => proxyDedupeKey(e.proxy) || e.proxy)
+  );
+  const after = new Set(
+    parseProxyPoolEntries(nextAlive).map((e) => proxyDedupeKey(e.proxy) || e.proxy)
+  );
+  let moved = 0;
+  for (const k of before) {
+    if (!after.has(k)) moved += 1;
+  }
+  return { proxyPool: nextPending, proxyPoolAlive: nextAlive, moved };
+}
+
+/**
+ * 注册用代理列表：
+ * - 可用池非空 → **只**用可用池（待定池不参与注册）
+ * - 可用池为空 → 回退待定池（兼容旧配置/尚未测活）
  */
 export function resolveProxyPoolForRuntime(settings: {
   proxyPool?: string;
   proxyPoolAlive?: string;
 }): string[] {
   const alive = parseProxyPool(settings.proxyPoolAlive);
-  const pending = parseProxyPool(settings.proxyPool);
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const p of [...alive, ...pending]) {
-    if (seen.has(p)) continue;
-    seen.add(p);
-    out.push(p);
-  }
-  return out;
+  if (alive.length > 0) return alive;
+  return parseProxyPool(settings.proxyPool);
 }
 
 /** 解析通用多行/逗号列表（域名等） */

@@ -414,15 +414,14 @@ try {
             pass
 
 
-def _probe_browser_version() -> str:
-    """读取已配置/正在使用的 chrome 路径版本号。"""
+def _resolve_browser_binary_path() -> str:
+    """解析当前/常见 Chromium 可执行路径。"""
     path = ""
     try:
         path = str(getattr(co, "browser_path", "") or "")
     except Exception:
         path = ""
     if not path:
-        # DrissionPage 不同版本字段名可能不同
         for attr in ("_browser_path", "browser_path"):
             try:
                 path = str(getattr(co, attr, "") or "")
@@ -430,16 +429,62 @@ def _probe_browser_version() -> str:
                 continue
             if path:
                 break
-    if not path or not os.path.isfile(path):
-        for cand in (
-            "/usr/bin/google-chrome-stable",
-            "/usr/bin/google-chrome",
-            "/usr/bin/chromium",
-            "/usr/bin/chromium-browser",
-        ):
-            if os.path.isfile(cand):
-                path = cand
-                break
+    if path and os.path.isfile(path):
+        return path
+    for cand in (
+        "/usr/bin/google-chrome-stable",
+        "/usr/bin/google-chrome",
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+        "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+    ):
+        if os.path.isfile(cand):
+            return cand
+    return ""
+
+
+def _real_chrome_major() -> int | None:
+    """
+    读取本机 Chromium 大版本号，供 UA 对齐（避免 150 二进制 + 137 UA）。
+    失败返回 None，由 build_fingerprint 走默认版本表。
+    """
+    path = _resolve_browser_binary_path()
+    ver_text = ""
+    if path:
+        try:
+            import subprocess
+
+            out = subprocess.check_output(
+                [path, "--version"], stderr=subprocess.STDOUT, timeout=8
+            )
+            ver_text = out.decode("utf-8", "replace").strip()
+        except Exception:
+            ver_text = ""
+    if not ver_text:
+        # 兜底：环境变量（Docker 可注入）
+        ver_text = str(os.environ.get("CHROME_VERSION") or os.environ.get("CHROMIUM_VERSION") or "")
+    # 例: "Chromium 150.0.7871.114 built on Debian..." / "Google Chrome 150.0.7339.127"
+    import re
+
+    m = re.search(r"(?:Chromium|Chrome)[\s/]+(\d{2,3})\.", ver_text, re.I)
+    if not m:
+        m = re.search(r"\b(\d{2,3})\.\d+\.\d+", ver_text)
+    if not m:
+        return None
+    try:
+        major = int(m.group(1))
+    except Exception:
+        return None
+    if 80 <= major <= 200:
+        return major
+    return None
+
+
+def _probe_browser_version() -> str:
+    """读取已配置/正在使用的 chrome 路径版本号。"""
+    path = _resolve_browser_binary_path()
     if not path:
         return "unknown"
     try:
@@ -585,9 +630,12 @@ def log_runtime_fingerprint(tab=None, force: bool = False):
     _fingerprint_logged = True
 
 
-def start_browser():
+def _start_browser_once():
+    """单次拉起浏览器 + 应用一个代理 + 出口 IP 探测（不含换 IP 重试）。
+
+    返回 dict: browser, page, exit_ip_ok, exit_ip_err, proxy, used_proxy
+    """
     # 每轮从全新浏览器开始，使用独立临时 profile 目录避免 Cookie/Session 复用。
-    # 每轮轮换代理 + 随机浏览器特征。
     # 注意：带 user:pass 的代理必须用扩展注入，co.set_proxy 会静默忽略（DrissionPage 限制）。
     global browser, page, _chrome_temp_dir, _current_fingerprint, _browser_proxy, co
     if _IS_LINUX:
@@ -775,19 +823,22 @@ def start_browser():
             pass
 
     # 出口 IP：确认代理是否真正生效（浏览器视角）
+    exit_ip_ok = False
+    exit_ip_err = ""
     try:
         from proxy_local_forward import (
             verify_exit_ip_via_browser,
             verify_exit_ip,
-            start_local_forward,
             stop_local_forward,
         )
 
         ip_info = verify_exit_ip_via_browser(page, timeout=12.0)
         if ip_info.get("ok") and ip_info.get("ip"):
             print(f"[*] 浏览器出口 IP: {ip_info['ip']}（api.ipify.org）")
+            exit_ip_ok = True
         else:
             err = ip_info.get("error") or ip_info.get("raw") or "unknown"
+            exit_ip_err = str(err)
             print(f"[Warn] 浏览器出口 IP 探测失败: {err}")
             # 认证扩展可能未生效：尝试本地转发并重建浏览器
             can_fb = bool(
@@ -837,11 +888,13 @@ def start_browser():
                     ip2 = verify_exit_ip_via_browser(page, timeout=12.0)
                     if ip2.get("ok") and ip2.get("ip"):
                         print(f"[*] 浏览器出口 IP(本地转发): {ip2['ip']}")
+                        exit_ip_ok = True
+                        exit_ip_err = ""
                     else:
+                        exit_ip_err = str(ip2.get("error") or ip2.get("raw") or exit_ip_err)
                         print(
                             f"[Warn] 本地转发后出口 IP 仍失败: {ip2.get('error') or ip2.get('raw')}"
                         )
-                        # 进程侧再测一次上游，便于对照
                         try:
                             py_ip = verify_exit_ip(up, timeout=10.0)
                             if py_ip.get("ok"):
@@ -853,10 +906,80 @@ def start_browser():
                 else:
                     print(f"[Warn] 本地转发兜底失败: {fb.get('error')}")
     except Exception as e:
+        exit_ip_err = str(e)
         print(f"[Warn] 出口 IP 检测跳过: {e}")
 
     # 进程内首次启动时打印架构/版本/WebGL，确认 ARM 无 GUI 环境
     log_runtime_fingerprint(page, force=False)
+    # 无代理时不强制出口 IP；有代理则由 start_browser 外层按失败换 IP
+    return {
+        "browser": browser,
+        "page": page,
+        "exit_ip_ok": exit_ip_ok,
+        "exit_ip_err": exit_ip_err,
+        "proxy": _browser_proxy or "",
+        "used_proxy": bool(str(_browser_proxy or "").strip()),
+    }
+
+
+# 出口 IP 失败时本轮换代理次数（含首次）
+_EXIT_IP_PROXY_TRIES = 3
+
+
+def start_browser(*, max_proxy_tries: int | None = None):
+    """拉起浏览器；若配置了代理且出口 IP 探测失败，则换代理重试（默认最多 3 次）。"""
+    tries = int(max_proxy_tries if max_proxy_tries is not None else _EXIT_IP_PROXY_TRIES)
+    tries = max(1, min(tries, 10))
+    last_err = ""
+    last_proxy = ""
+    for attempt in range(1, tries + 1):
+        if attempt > 1:
+            print(
+                f"[*] 出口 IP 失败，换代理重试 {attempt}/{tries}"
+                + (f" | 上一条: {last_proxy}" if last_proxy else "")
+            )
+            try:
+                stop_browser()
+            except Exception:
+                pass
+            time.sleep(0.4 + secrets.randbelow(40) / 100.0)
+
+        info = _start_browser_once()
+        # 兼容旧调用：若内部异常路径仍返回 tuple
+        if isinstance(info, tuple):
+            return info
+        last_proxy = str(info.get("proxy") or "")[:80]
+        if info.get("exit_ip_ok"):
+            return info["browser"], info["page"]
+        # 未使用代理（直连）：不因出口探测失败整轮重来
+        if not info.get("used_proxy"):
+            if not info.get("exit_ip_ok") and info.get("exit_ip_err"):
+                print(f"[Warn] 直连出口 IP 探测失败（继续）: {info.get('exit_ip_err')}")
+            return info["browser"], info["page"]
+
+        last_err = str(info.get("exit_ip_err") or "exit-ip-failed")
+        fail_proxy = str(info.get("proxy") or last_proxy or "").strip()
+        print(
+            f"[Warn] 本轮代理出口不可用 ({attempt}/{tries}): {last_err[:180]}"
+        )
+        # 出口 IP 失败 → 从可用池降到待定池，避免下轮再抽到
+        if fail_proxy:
+            try:
+                from pools import demote_proxy_to_pending
+
+                reason = "出口IP失败"
+                if "TUNNEL" in last_err.upper() or "tunnel" in last_err.lower():
+                    reason = "出口IP失败·隧道"
+                elif "timeout" in last_err.lower() or "timed out" in last_err.lower():
+                    reason = "出口IP失败·超时"
+                demote_proxy_to_pending(fail_proxy, reason=reason)
+            except Exception as de:
+                print(f"[Warn] 降级回调异常: {de}")
+
+    # 全部失败：仍返回最后一次浏览器，避免 main 空指针；注册页大概率也会失败
+    print(
+        f"[Warn] 出口 IP 连续失败 {tries} 次仍继续本轮（最后错误: {last_err[:120]}）"
+    )
     return browser, page
 
 
@@ -905,18 +1028,66 @@ def refresh_active_page():
     return page
 
 
-def open_signup_page():
+# 注册页「使用邮箱注册」：本轮最多找/点几次（刷新重试，不换代理）
+_EMAIL_SIGNUP_FIND_TRIES = 5
+
+
+def open_signup_page(*, find_tries: int | None = None):
     # 每轮开始时打开注册页，并切到“使用邮箱注册”流程。
+    # 找不到按钮时刷新/重开页面重试，最多 5 次。
     global page
-    refresh_active_page()
-    _apply_stealth_patches(page)
-    try:
-        page.get(SIGNUP_URL)
-    except Exception:
+    tries = int(find_tries if find_tries is not None else _EMAIL_SIGNUP_FIND_TRIES)
+    tries = max(1, min(tries, 10))
+    last_err: Exception | None = None
+
+    for attempt in range(1, tries + 1):
         refresh_active_page()
-        page = browser.new_tab(SIGNUP_URL)
-    _apply_stealth_patches(page)
-    click_email_signup_button()
+        _apply_stealth_patches(page)
+        try:
+            page.get(SIGNUP_URL)
+        except Exception:
+            refresh_active_page()
+            page = browser.new_tab(SIGNUP_URL)
+        _apply_stealth_patches(page)
+        # 等待首屏渲染
+        time.sleep(0.8 + secrets.randbelow(50) / 100.0)
+
+        try:
+            click_email_signup_button(timeout=12 if attempt == 1 else 10)
+            if attempt > 1:
+                print(f"[*] 「使用邮箱注册」第 {attempt}/{tries} 次找到并点击")
+            return
+        except Exception as e:
+            last_err = e
+            print(
+                f"[Warn] 未找到「使用邮箱注册」({attempt}/{tries}): {e}"
+            )
+            if attempt < tries:
+                # 硬刷新再试；第 3 次起额外新开标签
+                try:
+                    if attempt >= 3:
+                        page = browser.new_tab(SIGNUP_URL)
+                    else:
+                        page.refresh()
+                except Exception:
+                    try:
+                        page = browser.new_tab(SIGNUP_URL)
+                    except Exception:
+                        pass
+                time.sleep(0.6 + secrets.randbelow(40) / 100.0)
+
+    # 多次找不到按钮：常见原因是代理只能通 ipify 测活、实际访问 x.ai 失败
+    try:
+        from pools import demote_proxy_to_pending
+
+        if _browser_proxy:
+            demote_proxy_to_pending(_browser_proxy, reason="未找到邮箱注册按钮")
+    except Exception:
+        pass
+    raise Exception(
+        f'未找到“使用邮箱注册”按钮（本轮已重试 {tries} 次）'
+        + (f": {last_err}" if last_err else "")
+    )
 
 
 def close_current_page():
@@ -956,26 +1127,69 @@ def click_email_signup_button(timeout=10):
     _step_pause(200, 700)
     deadline = time.time() + timeout
     while time.time() < deadline:
+        try:
+            refresh_active_page()
+        except Exception:
+            pass
         clicked = page.run_js(r"""
-const candidates = Array.from(document.querySelectorAll('button, a, [role="button"]'));
+function isVisible(n) {
+  if (!n) return false;
+  const s = window.getComputedStyle(n);
+  if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
+  const r = n.getBoundingClientRect();
+  return r.width > 0 && r.height > 0;
+}
+const candidates = Array.from(document.querySelectorAll(
+  'button, a, [role="button"], div[role="button"], span[role="button"]'
+)).filter(isVisible);
 const target = candidates.find((node) => {
-    const text = (node.innerText || node.textContent || '').replace(/\s+/g, '').toLowerCase();
-    return text.includes('使用邮箱注册') || text.includes('signupwithemail') || text.includes('signupemail') || text.includes('continuewith email') || text.includes('email');
+  const text = (node.innerText || node.textContent || '').replace(/\s+/g, '').toLowerCase();
+  // 注意：toLowerCase 后中文不变；英文去空格后匹配
+  if (text.includes('使用邮箱注册') || text.includes('用邮箱注册') || text.includes('邮箱注册')) return true;
+  if (text.includes('signupwithemail') || text.includes('signupemail') || text.includes('emailsignup')) return true;
+  if (text.includes('continuewithemail') || text.includes('continuewithmail')) return true;
+  // 避免误点「登录邮箱」类；要求含 email 且含 sign/注册/continue 之一
+  if (text.includes('email') && (text.includes('sign') || text.includes('注册') || text.includes('continue') || text.includes('create'))) {
+    return true;
+  }
+  return false;
 });
 
 if (!target) {
-    return false;
+  // 诊断：页面是否还在加载 / 被墙空白
+  const body = (document.body && (document.body.innerText || '')) || '';
+  const title = document.title || '';
+  if (!body.trim() && !title.trim()) return 'empty';
+  if (/err_|this site can.?t be reached|tunnel|proxy|blocked|access denied/i.test(body + title)) {
+    return 'blocked';
+  }
+  return false;
 }
 
+try { target.scrollIntoView({ block: 'center', inline: 'center' }); } catch (e) {}
+target.focus();
 target.click();
 return true;
         """)
 
-        if clicked:
+        if clicked is True or clicked == "true" or clicked == 1:
             _step_pause(150, 500)
             return True
+        if clicked == "blocked":
+            # 页面被墙/隧道错误：降级当前代理
+            try:
+                from pools import demote_proxy_to_pending
 
-        time.sleep(0.4 + secrets.randbelow(30) / 100.0)
+                if _browser_proxy:
+                    demote_proxy_to_pending(_browser_proxy, reason="注册页不可达")
+            except Exception:
+                pass
+            raise Exception('注册页无法访问（代理/隧道错误，未找到邮箱注册按钮）')
+        if clicked == "empty":
+            # 空白页：多等一会儿
+            time.sleep(0.8)
+        else:
+            time.sleep(0.4 + secrets.randbelow(30) / 100.0)
 
     raise Exception('未找到“使用邮箱注册”按钮')
 
@@ -2634,6 +2848,17 @@ def fill_age_gate_and_submit(birth_year: int | None = None, timeout: float = 25)
     year_s = str(year)
     deadline = time.time() + timeout
     print(f"[*] 年龄门：尝试填写出生年 {year_s}")
+    # 节流日志：同类状态最多打 3 次，避免「文案在但未找到年份输入框」刷屏
+    _log_counts: dict[str, int] = {}
+
+    def _log_throttled(key: str, msg: str, limit: int = 3) -> None:
+        n = _log_counts.get(key, 0)
+        if n >= limit:
+            return
+        _log_counts[key] = n + 1
+        print(msg)
+        if n + 1 == limit:
+            print(f"[Debug] 年龄门：后续同类日志已省略（{key}）")
 
     while time.time() < deadline:
         try:
@@ -2651,6 +2876,19 @@ function isVisible(n) {
 }
 
 function setNativeValue(input, value) {
+    const isCe = input.isContentEditable || input.getAttribute('contenteditable') === 'true';
+    if (isCe) {
+        input.focus();
+        try {
+            document.execCommand('selectAll', false, null);
+            document.execCommand('insertText', false, value);
+        } catch (e) {
+            input.textContent = value;
+        }
+        input.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, data: value, inputType: 'insertText' }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        return;
+    }
     const proto = input.tagName === 'TEXTAREA'
         ? window.HTMLTextAreaElement.prototype
         : window.HTMLInputElement.prototype;
@@ -2670,20 +2908,42 @@ function setNativeValue(input, value) {
     input.dispatchEvent(new Event('blur', { bubbles: true }));
 }
 
+// 含 open shadow root 的查询（年龄门常在 portal/shadow 里）
+function deepQueryAll(selector, root) {
+    const out = [];
+    const walk = (node) => {
+        if (!node) return;
+        try {
+            if (node.querySelectorAll) {
+                node.querySelectorAll(selector).forEach((el) => out.push(el));
+            }
+        } catch (e) {}
+        const children = node.children || node.childNodes || [];
+        for (const c of children) {
+            if (c && c.shadowRoot) walk(c.shadowRoot);
+            if (c && c.nodeType === 1) walk(c);
+        }
+    };
+    walk(root || document);
+    return out;
+}
+
 const body = (document.body && (document.body.innerText || document.body.textContent) || '');
 const ageCtx = /请确认你的年龄|请确认您的年龄|Confirm your age|选择你的出生年份|选择你的出生年|Select your birth year|birth year|年龄/i.test(body);
 
-const inputs = Array.from(document.querySelectorAll('input, textarea')).filter((n) => {
+const allFields = deepQueryAll('input, textarea, [contenteditable="true"], [role="spinbutton"]');
+const inputs = allFields.filter((n) => {
     if (!isVisible(n) || n.disabled || n.readOnly) return false;
     const meta = [
-        n.placeholder, n.name, n.id, n.getAttribute('aria-label'), n.getAttribute('data-testid'), n.type
+        n.placeholder, n.name, n.id, n.getAttribute('aria-label'), n.getAttribute('data-testid'), n.type,
+        n.getAttribute('inputmode'), n.getAttribute('autocomplete')
     ].map((x) => String(x || '')).join(' ');
-    if (/year|birth|年龄|出生|age/i.test(meta)) return true;
+    if (/year|birth|年龄|出生|age|bday/i.test(meta)) return true;
     const t = String(n.type || '').toLowerCase();
     if ((t === 'number' || t === 'text' || t === 'tel') && Number(n.maxLength || 0) === 4) return true;
-    // 弹窗内已有 4 位年或空的数字框
-    if (ageCtx && (t === 'number' || t === 'text' || t === 'tel')) {
-        const v = String(n.value || '').trim();
+    if (n.getAttribute('inputmode') === 'numeric' && ageCtx) return true;
+    if (ageCtx && (t === 'number' || t === 'text' || t === 'tel' || n.isContentEditable)) {
+        const v = String(n.value || n.textContent || '').trim();
         if (!v || /^(19|20)\d{0,2}$/.test(v)) return true;
     }
     return false;
@@ -2691,33 +2951,49 @@ const inputs = Array.from(document.querySelectorAll('input, textarea')).filter((
 
 // 优先选看起来像年份的 input
 let yearInput = inputs.find((n) => {
-    const meta = [n.placeholder, n.name, n.id, n.getAttribute('aria-label')].join(' ');
-    return /year|birth|出生|年龄/i.test(meta);
+    const meta = [n.placeholder, n.name, n.id, n.getAttribute('aria-label'), n.getAttribute('autocomplete')].join(' ');
+    return /year|birth|出生|年龄|bday/i.test(meta);
 }) || inputs.find((n) => Number(n.maxLength || 0) === 4)
   || inputs.find((n) => String(n.type || '').toLowerCase() === 'number')
+  || inputs.find((n) => n.getAttribute('inputmode') === 'numeric')
   || inputs[0] || null;
 
 if (!yearInput) {
+    // 下拉/列表式年份（button/listbox）
+    const listOpts = deepQueryAll('[role="option"], [role="listbox"] button, select option').filter(isVisible);
+    const hit = listOpts.find((n) => String(n.innerText || n.textContent || n.value || '').trim() === year);
+    if (hit) {
+        hit.click();
+        const buttons = deepQueryAll('button, [role="button"], a').filter((n) => {
+            return isVisible(n) && !n.disabled && n.getAttribute('aria-disabled') !== 'true';
+        });
+        const cont = buttons.find((n) => {
+            const text = (n.innerText || n.textContent || '').replace(/\s+/g, '');
+            const t = text.toLowerCase();
+            return text.includes('继续') || t.includes('continue') || text.includes('确认') || t.includes('confirm')
+                || text.includes('下一步') || t.includes('next') || t.includes('submit');
+        });
+        if (cont) cont.click();
+        return cont ? 'submitted' : 'filled-no-button';
+    }
     return ageCtx ? 'no-input' : 'not-present';
 }
 
 yearInput.focus();
 yearInput.click();
-// 全选后覆盖
-try {
-    yearInput.select();
-} catch (e) {}
+try { yearInput.select(); } catch (e) {}
 setNativeValue(yearInput, year);
-if (String(yearInput.value || '').trim() !== year) {
-    // 再试键盘式写入
+const cur = String(yearInput.value || yearInput.textContent || '').trim();
+if (cur !== year) {
     setNativeValue(yearInput, '');
     setNativeValue(yearInput, year);
 }
-if (String(yearInput.value || '').trim() !== year) {
-    return 'fill-failed:' + String(yearInput.value || '');
+const cur2 = String(yearInput.value || yearInput.textContent || '').trim();
+if (cur2 !== year) {
+    return 'fill-failed:' + cur2;
 }
 
-const buttons = Array.from(document.querySelectorAll('button, [role="button"], a')).filter((n) => {
+const buttons = deepQueryAll('button, [role="button"], a').filter((n) => {
     return isVisible(n) && !n.disabled && n.getAttribute('aria-disabled') !== 'true';
 });
 const cont = buttons.find((n) => {
@@ -2747,7 +3023,6 @@ return 'submitted';
         if result == "submitted":
             print(f"[*] 年龄门：已提交出生年 {year_s}")
             time.sleep(1.2)
-            # 弹窗是否消失
             if not detect_age_gate():
                 print("[*] 年龄门：弹窗已关闭")
                 return True
@@ -2755,18 +3030,17 @@ return 'submitted';
             time.sleep(1.0)
             if not detect_age_gate():
                 return True
-            # 可能点了但未生效，循环重试
             continue
         if result == "filled-no-button":
-            print("[Debug] 年龄门：年份已填，未找到继续按钮")
+            _log_throttled("no-btn", "[Debug] 年龄门：年份已填，未找到继续按钮")
         elif result == "no-input":
-            print("[Debug] 年龄门：文案在但未找到年份输入框")
+            _log_throttled("no-input", "[Debug] 年龄门：文案在但未找到年份输入框")
         elif isinstance(result, str) and result.startswith("fill-failed"):
-            print(f"[Debug] 年龄门：年份写入失败 {result}")
+            _log_throttled("fill-failed", f"[Debug] 年龄门：年份写入失败 {result}")
         elif result == "disconnected":
             pass
         else:
-            print(f"[Debug] 年龄门：状态 {result}")
+            _log_throttled(f"st:{result}", f"[Debug] 年龄门：状态 {result}")
 
         time.sleep(0.6)
 
