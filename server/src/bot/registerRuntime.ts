@@ -194,6 +194,23 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
     delete config.cpa_auth_dir;
   }
 
+  // CPA 远程推送（Management API）；与本地 auth 目录可同时开
+  const cpaRemoteUrl = String(settings.cpaRemoteUrl || '').trim();
+  const cpaManagementKey = String(settings.cpaManagementKey || '').trim();
+  if (cpaRemoteUrl) {
+    config.cpa_remote_url = cpaRemoteUrl;
+  } else {
+    delete config.cpa_remote_url;
+  }
+  if (cpaManagementKey) {
+    config.cpa_management_key = cpaManagementKey;
+  } else {
+    delete config.cpa_management_key;
+  }
+  // 与 grokRegister-cpa-main 的 cpa_auto_add 对齐：开自动导出即视为可入库
+  config.cpa_auto_add =
+    settings.autoAuthExport === undefined ? true : !!settings.autoAuthExport;
+
   if (typeof count === 'number') {
     config.run = { ...(config.run || {}), count };
   }

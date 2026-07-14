@@ -79,6 +79,16 @@ export interface AppSettings {
    * 写入 Python config：auth_dir / cpa_auth_dir
    */
   authDir: string;
+  /**
+   * 远程 CPA 根地址（Management API），如 http://host:8317。
+   * 写入 Python config：cpa_remote_url
+   */
+  cpaRemoteUrl: string;
+  /**
+   * 远程 CPA 管理密钥（remote-management.secret-key 明文）。
+   * 写入 Python config：cpa_management_key
+   */
+  cpaManagementKey: string;
   /** 主题模式 */
   theme: ThemeMode;
 }
@@ -110,6 +120,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   randomFingerprint: true,
   autoAuthExport: true,
   authDir: '',
+  cpaRemoteUrl: '',
+  cpaManagementKey: '',
   theme: 'system'
 };
 

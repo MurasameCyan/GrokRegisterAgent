@@ -48,6 +48,8 @@ function applyEnvOverrides(s: AppSettings, source: Partial<AppSettings>): AppSet
     browserProxy: pick(s.browserProxy, env.BROWSER_PROXY),
     browserPath: pick(s.browserPath, env.BROWSER_PATH),
     authDir: pick(s.authDir, env.AUTH_DIR || env.CPA_AUTH_DIR),
+    cpaRemoteUrl: pick(s.cpaRemoteUrl, env.CPA_REMOTE_URL),
+    cpaManagementKey: pick(s.cpaManagementKey, env.CPA_MANAGEMENT_KEY),
     mail: {
       ...s.mail,
       apiBase: pick(s.mail.apiBase, env.MAIL_API_BASE),
@@ -111,7 +113,15 @@ function merge(partial: unknown): AppSettings {
         : DEFAULT_SETTINGS.randomFingerprint,
     autoAuthExport:
       typeof p.autoAuthExport === 'boolean' ? p.autoAuthExport : DEFAULT_SETTINGS.autoAuthExport,
-    authDir: typeof p.authDir === 'string' ? p.authDir : DEFAULT_SETTINGS.authDir
+    authDir: typeof p.authDir === 'string' ? p.authDir : DEFAULT_SETTINGS.authDir,
+    cpaRemoteUrl:
+      typeof (p as AppSettings).cpaRemoteUrl === 'string'
+        ? (p as AppSettings).cpaRemoteUrl
+        : DEFAULT_SETTINGS.cpaRemoteUrl,
+    cpaManagementKey:
+      typeof (p as AppSettings).cpaManagementKey === 'string'
+        ? (p as AppSettings).cpaManagementKey
+        : DEFAULT_SETTINGS.cpaManagementKey
   };
   // 旧配置无此字段时回落到默认 60
   if (

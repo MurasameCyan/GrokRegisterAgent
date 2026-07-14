@@ -1,30 +1,34 @@
-"""SSO → CPA auth 文件 + refresh 重签。
+"""SSO → CPA auth 文件 + refresh 重签 + 可选远程 Management API 推送。
 
 默认写出目录：DATA_DIR/auth 或 config cpa_auth_dir，默认 /data/auth。
+
+对齐 grokRegister-cpa-main：
+- 换 token 走 Authorization Code + PKCE（referrer=grok-build）
+- 扁平 xai-*.json + cli-chat-proxy + grok-pager headers（含 x-authenticateresponse）
+- 最新 CPA 关闭「使用官方 API（using_api）」即可用，无需手改 headers
 """
 from __future__ import annotations
 
 import json
 import os
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 from cpa_schema import (
     DEFAULT_BASE_URL,
     DEFAULT_CLIENT_HEADERS,
     DEFAULT_TOKEN_ENDPOINT,
     build_cpa_xai_auth,
-    credential_file_name,
     random_client_headers,
 )
 from sso_to_auth import (
     access_token_referrer,
     sso_to_token,
     token_to_cpa_record,
+    upload_cpa_auth_remote,
     write_cpa_auth,
 )
 from cpa_probe import probe_and_cleanup
@@ -39,12 +43,11 @@ def _noop(msg: str) -> None:
 def _normalize_grok_pager_headers(headers: dict | None) -> dict[str, str]:
     """将旧 grok-shell 头升级为 grok-pager，保留 x-grok-agent-id。
 
-    对齐 cred2cpa：免费 Build 必须以 grok-pager 身份访问 cli-chat-proxy。
+    对齐 grokRegister-cpa-main：必须含 x-authenticateresponse。
     """
     base = dict(DEFAULT_CLIENT_HEADERS)
     if not isinstance(headers, dict):
         return base
-    # 保留已有 agent-id / 平台相关 UA 仅当已是 pager；否则用默认 pager 头
     agent = str(headers.get("x-grok-agent-id") or headers.get("X-Grok-Agent-Id") or "").strip()
     ua = str(headers.get("User-Agent") or headers.get("user-agent") or "")
     ident = str(
@@ -53,15 +56,12 @@ def _normalize_grok_pager_headers(headers: dict | None) -> dict[str, str]:
         or ""
     ).strip()
     if ident == "grok-pager" or "grok-pager/" in ua:
-        # 已是 pager：保留完整自定义（含随机平台 UA + agent-id）
         out = {str(k): str(v) for k, v in headers.items() if v is not None}
-        # 确保关键身份字段存在
         for k, v in DEFAULT_CLIENT_HEADERS.items():
             out.setdefault(k, v)
         if agent:
             out["x-grok-agent-id"] = agent
         return out
-    # 旧 shell 或其它：升级为 pager 默认，仅保留 agent-id
     if agent:
         base["x-grok-agent-id"] = agent
     return base
@@ -71,7 +71,6 @@ def default_auth_dir() -> Path:
     env = (os.environ.get("AUTH_DIR") or os.environ.get("CPA_AUTH_DIR") or "").strip()
     if env:
         return Path(env).expanduser().resolve()
-    # config.json
     conf_path = Path(__file__).resolve().parent / "config.json"
     try:
         conf = json.loads(conf_path.read_text(encoding="utf-8"))
@@ -86,6 +85,30 @@ def default_auth_dir() -> Path:
     return Path("/data/auth")
 
 
+def _read_cpa_remote_config() -> tuple[str, str]:
+    """从环境变量 / config.json 读取远程 CPA 推送配置。"""
+    url = (
+        os.environ.get("CPA_REMOTE_URL")
+        or os.environ.get("cpa_remote_url")
+        or ""
+    ).strip()
+    key = (
+        os.environ.get("CPA_MANAGEMENT_KEY")
+        or os.environ.get("cpa_management_key")
+        or ""
+    ).strip()
+    conf_path = Path(__file__).resolve().parent / "config.json"
+    try:
+        conf = json.loads(conf_path.read_text(encoding="utf-8"))
+        if not url:
+            url = str(conf.get("cpa_remote_url") or "").strip()
+        if not key:
+            key = str(conf.get("cpa_management_key") or "").strip()
+    except Exception:
+        pass
+    return url, key
+
+
 def sso_to_cpa_auth(
     *,
     sso: str,
@@ -93,21 +116,33 @@ def sso_to_cpa_auth(
     proxy: str = "",
     auth_dir: str | Path | None = None,
     random_fingerprint: bool = True,
+    remote_url: str = "",
+    management_key: str = "",
+    skip_remote: bool = False,
     log: LogFn | None = None,
 ) -> dict[str, Any]:
-    """SSO cookie → device-flow → data/auth/xai-<email>.json"""
+    """SSO cookie → Auth Code+PKCE → data/auth/xai-<email>.json [+ 远程推送]
+
+    产出文件可在最新 CPA 中手动登录使用：关闭认证文件设置中的
+    「使用官方 API（using_api）」即可，无需手改 headers。
+    """
     log = log or _noop
     sso = (sso or "").strip()
     if not sso:
         return {"ok": False, "error": "empty sso"}
     out_dir = Path(auth_dir) if auth_dir else default_auth_dir()
-    log(f"[auth] SSO→CPA mint email={email or '-'} dir={out_dir}")
+    log(f"[auth] SSO→CPA mint (Auth Code+PKCE) email={email or '-'} dir={out_dir}")
     token = sso_to_token(sso, proxy=proxy or "", log=log)
     if not token:
         return {"ok": False, "error": "sso_to_token failed", "email": email}
 
+    ref = access_token_referrer(token.get("access_token") or "")
+    if ref:
+        log(f"[auth] access_token referrer={ref}")
+    else:
+        log("[auth] ⚠ access_token 无 referrer claim（cli-chat-proxy 可能 403）")
+
     headers = random_client_headers(email or sso[:16]) if random_fingerprint else None
-    # 用 schema 构建（含随机 fingerprint headers）
     try:
         payload = build_cpa_xai_auth(
             email=email,
@@ -117,17 +152,38 @@ def sso_to_cpa_auth(
             expires_in=token.get("expires_in"),
             base_url=DEFAULT_BASE_URL,
             headers=headers,
+            extra={"sso": sso} if sso else None,
         )
-        # 兼容 token_to_cpa_record 字段
         if not payload.get("email") and email:
             payload["email"] = email
+        if sso and "sso" not in payload:
+            payload["sso"] = sso
     except Exception:
-        payload = token_to_cpa_record(token, email=email)
+        payload = token_to_cpa_record(token, email=email, headers=headers, sso=sso)
         if headers:
             payload["headers"] = headers
 
     path = write_cpa_auth(out_dir, payload)
     log(f"[auth] wrote {path}")
+
+    remote_result: dict[str, Any] | None = None
+    if not skip_remote:
+        r_url = (remote_url or "").strip()
+        r_key = (management_key or "").strip()
+        if not r_url or not r_key:
+            cfg_url, cfg_key = _read_cpa_remote_config()
+            r_url = r_url or cfg_url
+            r_key = r_key or cfg_key
+        if r_url and r_key:
+            try:
+                name = upload_cpa_auth_remote(r_url, r_key, payload)
+                log(f"[auth] CPA 远程推送 OK → {r_url.rstrip('/')}/.../{name}")
+                remote_result = {"ok": True, "url": r_url, "name": name}
+            except Exception as e:
+                log(f"[auth] CPA 远程推送失败: {e}")
+                remote_result = {"ok": False, "error": str(e), "url": r_url}
+        elif r_url and not r_key:
+            log("[auth] 已配置 cpa_remote_url 但无 management_key，跳过远程推送")
 
     # mint 后 cehuo 风格 /responses 测活；401/402/403 删文件
     probe = probe_and_cleanup(path, proxy=proxy or "", delete_on_dead=True)
@@ -144,9 +200,10 @@ def sso_to_cpa_auth(
             "filename": path.name,
             "probe": probe,
             "deleted": bool(probe.get("deleted")),
+            "referrer": ref,
+            "remote": remote_result,
         }
     if probe.get("action") == "error":
-        # 网络错误保留文件，但标记 probe 失败（不强制 ok=false，避免误删）
         return {
             "ok": True,
             "email": payload.get("email") or email,
@@ -156,6 +213,8 @@ def sso_to_cpa_auth(
             "agent_id": (headers or {}).get("x-grok-agent-id", ""),
             "probe": probe,
             "probe_warn": probe.get("error") or "probe error",
+            "referrer": ref,
+            "remote": remote_result,
         }
 
     return {
@@ -166,6 +225,8 @@ def sso_to_cpa_auth(
         "sub": payload.get("sub") or "",
         "agent_id": (headers or {}).get("x-grok-agent-id", ""),
         "probe": probe,
+        "referrer": ref,
+        "remote": remote_result,
     }
 
 
@@ -177,9 +238,7 @@ def refresh_access_token(
 ) -> dict[str, Any] | None:
     """用 refresh_token 换新 access/refresh（CPA 重签）。
 
-    对齐 cred2cpa / 7sso2auth：refresh 请求必须带 grok-pager 身份头，
-    服务端才会把 referrer=grok-build 签进新的 access_token，
-    cli-chat-proxy.grok.com 才接受（旧 UA / 无 referrer 会 403）。
+    对齐 grok-pager 身份头；refresh 后应仍带 referrer=grok-build（若 mint 时正确）。
     """
     refresh_token = (refresh_token or "").strip()
     if not refresh_token:
@@ -238,7 +297,6 @@ def resign_auth_file(
     email = str(payload.get("email") or "").strip()
     refresh = str(payload.get("refresh_token") or "").strip()
     raw_headers = payload.get("headers") if isinstance(payload.get("headers"), dict) else None
-    # 重签时统一升级为 grok-pager（旧 grok-shell 文件也会修好）
     headers = _normalize_grok_pager_headers(raw_headers)
 
     # 1) refresh
@@ -247,8 +305,10 @@ def resign_auth_file(
         token = refresh_access_token(refresh, proxy=proxy)
         if token and token.get("access_token"):
             new_refresh = token.get("refresh_token") or refresh
-            # 部分实现不回传新 refresh_token，沿用旧的（对齐 7sso2auth）
             try:
+                extra = {}
+                if payload.get("sso"):
+                    extra["sso"] = payload.get("sso")
                 new_payload = build_cpa_xai_auth(
                     email=email,
                     access_token=token["access_token"],
@@ -258,10 +318,10 @@ def resign_auth_file(
                     base_url=str(payload.get("base_url") or DEFAULT_BASE_URL),
                     headers=headers,
                     sub=str(payload.get("sub") or "") or None,
+                    extra=extra or None,
                 )
             except Exception as e:
                 return {"ok": False, "error": f"build payload failed: {e}", "email": email}
-            # 原地原子写
             tmp = p.with_suffix(p.suffix + ".tmp")
             tmp.write_text(json.dumps(new_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             os.replace(tmp, p)
@@ -271,7 +331,6 @@ def resign_auth_file(
                 log(f"[auth] resign access_token referrer={ref}")
             else:
                 log("[auth] ⚠ resign 后 access_token 无 referrer claim（cli-chat-proxy 可能 403）")
-            # refresh 成功后 cehuo 风格测活；dead 删文件并 ok=false
             probe = probe_and_cleanup(p, proxy=proxy or "", delete_on_dead=True)
             log(
                 f"[auth] resign probe action={probe.get('action')} http={probe.get('http_status')} "
@@ -307,13 +366,14 @@ def resign_auth_file(
     # 2) sso re-mint
     sso_v = (sso or str(payload.get("sso") or "")).strip()
     if sso_v:
-        log(f"[auth] resign via sso: {p.name}")
+        log(f"[auth] resign via sso (Auth Code+PKCE): {p.name}")
         r = sso_to_cpa_auth(
             sso=sso_v,
             email=email,
             proxy=proxy,
             auth_dir=p.parent,
             random_fingerprint=bool(raw_headers is None),
+            skip_remote=True,
             log=log,
         )
         if r.get("ok"):

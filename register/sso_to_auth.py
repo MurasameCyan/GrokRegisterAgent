@@ -1,21 +1,22 @@
 #!/usr/bin/env python3
 """
-SSO cookie → ~/.grok/auth.json 格式（纯 HTTP Device Flow）
+SSO cookie → CPA / grok auth.json（Authorization Code + PKCE）
+
+对齐 grokRegister-cpa-main/sso_to_auth_json.py：
+- authorize 注入 referrer=grok-build + plan=generic
+- consent 提交带 referrer=grok-build
+- 写出 CLIProxyAPI 扁平 xai-*.json（base_url=cli-chat-proxy.grok.com）
+- headers 含 x-authenticateresponse，最新 CPA 关闭 using_api 即可用
 
 用法:
-  # 单个 / 批量 SSO，写出多个独立 auth 文件（每个可直接 cp 到 ~/.grok/auth.json）
-  python3 sso_to_auth_json.py --sso sso_list.txt --out-dir ./auth_out
-
-  # 合并到一个 json（key 带 user_id 后缀，避免覆盖）
-  python3 sso_to_auth_json.py --sso sso_list.txt --out auth_merged.json --merge
-
-  # 单行 sso
-  python3 sso_to_auth_json.py --sso-cookie 'eyJ...' --out ~/.grok/auth.json
+  python3 sso_to_auth.py --sso sso_list.txt --cpa-auth-dir ./auth_out
+  python3 sso_to_auth.py --sso-cookie 'eyJ...' --cpa-remote-url http://host:8317 --cpa-management-key KEY
 """
 from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import json
 import os
 import secrets
@@ -29,33 +30,34 @@ from pathlib import Path
 
 from curl_cffi import requests
 
-CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828"
-OIDC_ISSUER = "https://auth.x.ai"
+from cpa_schema import (
+    CLIENT_ID,
+    DEFAULT_BASE_URL as CPA_GROK_BASE_URL,
+    DEFAULT_CLIENT_HEADERS,
+    DEFAULT_REDIRECT_URI as REDIRECT_URI,
+    DEFAULT_TOKEN_ENDPOINT as CPA_TOKEN_ENDPOINT,
+    GROK_CLIENT_VERSION as GROK_VERSION,
+    GROK_PLAN,
+    GROK_REFERRER,
+    ISSUER as OIDC_ISSUER,
+)
+
 AUTH_KEY = f"{OIDC_ISSUER}::{CLIENT_ID}"
+# 与当前可用号 JWT scope 对齐（含 conversations:*）
 SCOPES = (
     "openid profile email offline_access grok-cli:access "
     "api:access conversations:read conversations:write"
 )
 
-# --- CLIProxyAPI (CPA) 扁平格式常量 ------------------------------------------
-# CPA 的 internal/auth/xai/token.go TokenStorage 读的是扁平字段。
-# Build/CLI token（scope 含 grok-cli:access）必须走 cli-chat-proxy.grok.com，
-# 不能用默认 api.x.ai/v1（那是计费通道，会 402）。
-#
-# 对齐 cred2cpa.py / 7sso2auth.py：
-# 免费 Grok Build 必须以 grok-pager 身份 + approve 阶段 referrer=grok-build，
-# 服务端才会把 referrer=grok-build 签进 access_token，cli-chat-proxy 才接受。
-# 旧的 grok-shell 身份 / 未带 referrer 的 token 会 403。
-from cpa_schema import (
-    DEFAULT_BASE_URL as CPA_GROK_BASE_URL,
-    DEFAULT_CLIENT_HEADERS,
-    DEFAULT_REDIRECT_URI,
-    DEFAULT_TOKEN_ENDPOINT as CPA_TOKEN_ENDPOINT,
-    GROK_CLIENT_VERSION,
+GROK_TOKEN_UA = (
+    f"grok-pager/{GROK_VERSION} grok-shell/{GROK_VERSION} (linux; x86_64)"
 )
+# consent 提交用的 Next.js Server Action ID（grokRegister-cpa-main）
+NEXT_ACTION_ID = "4005315a1d7e426de592990bb54bb37471f39dd6d2"
 
 CPA_GROK_HEADERS = dict(DEFAULT_CLIENT_HEADERS)
-GROK_BUILD_REFERRER = "grok-build"
+CPA_PROBE_MODEL = "grok-4.5"
+CPA_PROBE_URL = f"{CPA_GROK_BASE_URL}/responses"
 
 
 def b64url_decode(seg: str) -> bytes:
@@ -88,69 +90,57 @@ def _urlopen(req, proxy: str = "", timeout: int = 15):
     return urllib.request.urlopen(req, timeout=timeout)
 
 
-def request_device_code(proxy: str = "", log=print) -> dict | None:
-    data = urllib.parse.urlencode({"client_id": CLIENT_ID, "scope": SCOPES}).encode()
-    req = urllib.request.Request(
-        f"{OIDC_ISSUER}/oauth2/device/code",
-        data=data,
-        method="POST",
-        headers={
-            "Content-Type": "application/x-www-form-urlencoded",
-            **DEFAULT_CLIENT_HEADERS,
-        },
-    )
-    try:
-        with _urlopen(req, proxy=proxy, timeout=15) as resp:
-            return json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        log(f"  ❌ device/code HTTP {e.code}: {e.read().decode()[:200]}")
-        return None
+def _gen_pkce() -> tuple[str, str, str, str]:
+    """生成 (code_verifier, code_challenge, state, nonce)。"""
+    verifier = base64.urlsafe_b64encode(os.urandom(32)).rstrip(b"=").decode()
+    challenge = base64.urlsafe_b64encode(
+        hashlib.sha256(verifier.encode()).digest()
+    ).rstrip(b"=").decode()
+    state = base64.urlsafe_b64encode(os.urandom(16)).rstrip(b"=").decode()
+    nonce = base64.urlsafe_b64encode(os.urandom(16)).rstrip(b"=").decode()
+    return verifier, challenge, state, nonce
 
 
-def poll_token(device_code: str, interval: int, expires_in: int, timeout: int = 60, proxy: str = "", log=print) -> dict | None:
-    deadline = time.time() + min(expires_in, timeout)
-    while time.time() < deadline:
-        time.sleep(interval)
-        data = urllib.parse.urlencode(
-            {
-                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-                "client_id": CLIENT_ID,
-                "device_code": device_code,
-            }
-        ).encode()
-        req = urllib.request.Request(
-            f"{OIDC_ISSUER}/oauth2/token",
-            data=data,
-            method="POST",
-            headers={
-                "Content-Type": "application/x-www-form-urlencoded",
-                **DEFAULT_CLIENT_HEADERS,
-            },
-        )
+def _parse_consent_code(body: str) -> str | None:
+    """从 consent 提交的 text/x-component 响应里解析出 authorization code。"""
+    for line in body.split("\n"):
+        start = line.find("{")
+        if start < 0:
+            continue
         try:
-            with _urlopen(req, proxy=proxy, timeout=15) as resp:
-                return json.loads(resp.read())
-        except urllib.error.HTTPError as e:
-            err = json.loads(e.read())
-            error = err.get("error", "")
-            if error == "authorization_pending":
-                continue
-            if error == "slow_down":
-                interval += 5
-                continue
-            log(f"  ❌ token: {error}")
-            return None
-    log("  ❌ 轮询超时")
+            data = json.loads(line[start:])
+        except Exception:
+            continue
+        if isinstance(data, dict) and data.get("code"):
+            if data.get("success") is False:
+                return None
+            return data.get("code")
     return None
 
 
+def access_token_referrer(access_token: str) -> str:
+    """返回 access_token JWT 里的 referrer claim（没有则空串）。"""
+    return (decode_jwt_payload(access_token).get("referrer") or "").strip()
+
+
 def sso_to_token(sso_cookie: str, proxy: str = "", log=print) -> dict | None:
-    """SSO cookie → token dict (access/refresh/expires_in)。proxy 非空时全程走代理。"""
+    """SSO cookie → token dict (access/refresh/expires_in)。
+
+    使用授权码流程（Authorization Code + PKCE）：
+    authorize 注入 referrer=grok-build + plan=generic，
+    consent 提交同样带 referrer=grok-build。proxy 非空时全程走代理。
+
+    为何不用 Device Flow：早期 device flow 换的 token 常无 referrer claim，
+    cli-chat-proxy 会 permission-denied；authorize/consent 注入是稳定路径。
+    """
     proxies = {"http": proxy, "https": proxy} if proxy else None
     s = requests.Session()
     if proxies:
         s.proxies = proxies
-    s.cookies.set("sso", sso_cookie, domain=".x.ai")
+    # accounts.x.ai / auth.x.ai 都要带 sso（与 grok-build 授权码流程一致）
+    for domain in (".x.ai", "accounts.x.ai", "auth.x.ai"):
+        s.cookies.set("sso", sso_cookie, domain=domain)
+        s.cookies.set("sso-rw", sso_cookie, domain=domain)
 
     try:
         r = s.get("https://accounts.x.ai/", impersonate="chrome", timeout=15)
@@ -162,72 +152,138 @@ def sso_to_token(sso_cookie: str, proxy: str = "", log=print) -> dict | None:
         return None
     log("  ✅ sso 有效")
 
-    log("  🔑 Device Flow...")
-    dc = request_device_code(proxy=proxy, log=log)
-    if not dc:
-        return None
-    log(f"  📋 user_code: {dc.get('user_code')}")
+    verifier, challenge, state, nonce = _gen_pkce()
 
+    # 1) 打开 authorize 页，跟随重定向进入 consent
+    log(f"  🔑 Authorization Code Flow (referrer={GROK_REFERRER}, plan={GROK_PLAN})...")
+    authorize_params = urllib.parse.urlencode(
+        {
+            "client_id": CLIENT_ID,
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "nonce": nonce,
+            "plan": GROK_PLAN,
+            "redirect_uri": REDIRECT_URI,
+            "referrer": GROK_REFERRER,
+            "response_type": "code",
+            "scope": SCOPES,
+            "state": state,
+        }
+    )
     try:
-        s.get(dc["verification_uri_complete"], impersonate="chrome", timeout=15)
-        r = s.post(
-            f"{OIDC_ISSUER}/oauth2/device/verify",
-            data={"user_code": dc["user_code"]},
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        r = s.get(
+            f"{OIDC_ISSUER}/oauth2/authorize?{authorize_params}",
             impersonate="chrome",
             timeout=15,
             allow_redirects=True,
         )
-        if "consent" not in r.url:
-            log(f"  ❌ verify 失败: {r.url}")
-            return None
     except Exception as e:
-        log(f"  ❌ verify 异常: {e}")
+        log(f"  ❌ authorize 异常: {e}")
+        return None
+    final_url = str(r.url)
+    if "sign-in" in final_url or "sign-up" in final_url:
+        log("  ❌ sso 无效")
+        return None
+    if "/oauth2/consent" not in final_url:
+        log(f"  ❌ authorize 未进入 consent: {final_url}")
         return None
 
-    try:
-        # 关键（cred2cpa / 7sso2auth）：approve 阶段必须带 referrer=grok-build，
-        # 服务端才会把 referrer=grok-build 签进 access_token。
-        # 实测仅此阶段有效（device/code 与 token 交换阶段注入均无效）。
-        r = s.post(
-            f"{OIDC_ISSUER}/oauth2/device/approve",
-            data={
-                "user_code": dc["user_code"],
+    # 2) 提交 consent（allow），拿 authorization code
+    consent_payload = json.dumps(
+        [
+            {
                 "action": "allow",
-                "principal_type": "User",
-                "principal_id": "",
-                "referrer": GROK_BUILD_REFERRER,
+                "clientId": CLIENT_ID,
+                "redirectUri": REDIRECT_URI,
+                "scope": SCOPES,
+                "state": state,
+                "codeChallenge": challenge,
+                "codeChallengeMethod": "S256",
+                "nonce": nonce,
+                "principalType": "User",
+                "principalId": "",
+                "referrer": GROK_REFERRER,
+            }
+        ]
+    )
+    try:
+        r = s.post(
+            final_url,
+            data=consent_payload,
+            headers={
+                "Content-Type": "text/plain;charset=UTF-8",
+                "Accept": "text/x-component",
+                "Origin": "https://accounts.x.ai",
+                "Referer": final_url,
+                "Next-Action": NEXT_ACTION_ID,
             },
+            impersonate="chrome",
+            timeout=15,
+            allow_redirects=True,
+        )
+    except Exception as e:
+        log(f"  ❌ consent 异常: {e}")
+        return None
+    if r.status_code < 200 or r.status_code >= 300:
+        log(f"  ❌ consent HTTP {r.status_code}: {str(r.text)[:200]}")
+        return None
+    code = _parse_consent_code(str(r.text))
+    if not code:
+        log(f"  ❌ consent 未返回 code: {str(r.text)[:200]}")
+        return None
+    log("  ✅ 授权确认")
+
+    # 3) 用 authorization code 换 token
+    token_data = urllib.parse.urlencode(
+        {
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": REDIRECT_URI,
+            "client_id": CLIENT_ID,
+            "code_verifier": verifier,
+        }
+    )
+    try:
+        r = s.post(
+            f"{OIDC_ISSUER}/oauth2/token",
+            data=token_data,
             headers={
                 "Content-Type": "application/x-www-form-urlencoded",
-                **DEFAULT_CLIENT_HEADERS,
+                "User-Agent": GROK_TOKEN_UA,
+                "X-Grok-Client-Version": GROK_VERSION,
+                "Accept": "*/*",
             },
             impersonate="chrome",
             timeout=15,
-            allow_redirects=True,
         )
-        if "done" not in r.url:
-            log(f"  ❌ approve 失败: {r.url}")
-            return None
-        log("  ✅ 授权确认 (referrer=grok-build)")
     except Exception as e:
-        log(f"  ❌ approve 异常: {e}")
+        log(f"  ❌ token 异常: {e}")
         return None
+    if r.status_code < 200 or r.status_code >= 300:
+        log(f"  ❌ token HTTP {r.status_code}: {str(r.text)[:200]}")
+        return None
+    try:
+        token = r.json()
+    except Exception:
+        log(f"  ❌ token 返回非 JSON: {str(r.text)[:200]}")
+        return None
+    if not token.get("access_token"):
+        log(f"  ❌ token 缺少 access_token: {token}")
+        return None
+    if not token.get("expires_in"):
+        token["expires_in"] = 21600
+    if not token.get("token_type"):
+        token["token_type"] = "Bearer"
 
-    token = poll_token(
-        dc["device_code"],
-        dc.get("interval", 5),
-        dc.get("expires_in", 1800),
-        proxy=proxy,
-        log=log,
-    )
-    if not token:
-        return None
-    ref = access_token_referrer(token.get("access_token") or "")
+    # 校验 referrer claim
+    ap = decode_jwt_payload(token["access_token"])
+    ref = ap.get("referrer")
+    if ref not in (GROK_REFERRER, "grok-build", "cli-proxy-api"):
+        log(f"  ⚠️ access_token referrer={ref!r}（预期 {GROK_REFERRER!r} 或 grok-build）")
+    else:
+        log(f"  ✅ access_token referrer={ref!r}")
     log(
-        f"  ✅ access_token (expires_in={token.get('expires_in')}s"
-        + (f", referrer={ref}" if ref else ", ⚠无 referrer")
-        + ")"
+        f"  ✅ access_token (expires_in={token.get('expires_in')}s)"
         + (" + refresh_token" if token.get("refresh_token") else "")
     )
     return token
@@ -247,7 +303,6 @@ def token_to_auth_entry(token: dict, email: str = "") -> tuple[str, dict]:
     principal_type = payload.get("principal_type") or "User"
 
     expires_in = int(token.get("expires_in") or 21600)
-    # 优先用 JWT exp
     if "exp" in payload:
         expires_at = rfc3339_ns(float(payload["exp"]))
     else:
@@ -285,16 +340,15 @@ def _safe_email_for_filename(email: str) -> str:
     return safe or "unknown"
 
 
-def access_token_referrer(access_token: str) -> str:
-    """返回 access_token JWT 里的 referrer claim（没有则空串）。对齐 7sso2auth。"""
-    return (decode_jwt_payload(access_token).get("referrer") or "").strip()
-
-
-def token_to_cpa_record(token: dict, email: str = "", headers: dict | None = None) -> dict:
+def token_to_cpa_record(
+    token: dict,
+    email: str = "",
+    headers: dict | None = None,
+    sso: str = "",
+) -> dict:
     """token dict → CLIProxyAPI 扁平 xai auth 记录。
 
-    对齐 CPA internal/auth/xai/token.go、cred2cpa.py / 7sso2auth.token_to_cpa_entry。
-    headers 默认 grok-pager（非旧 grok-shell）。
+    对齐 CPA TokenStorage + grokRegister-cpa-main token_to_cpa_record。
     """
     access = token.get("access_token") or token.get("key") or ""
     refresh = token.get("refresh_token") or ""
@@ -306,7 +360,6 @@ def token_to_cpa_record(token: dict, email: str = "", headers: dict | None = Non
         email = id_payload.get("email") or payload.get("email") or ""
     sub = payload.get("sub") or id_payload.get("sub") or ""
 
-    # expired: 优先 access token 的 exp，其次 expires_in 推算
     expired = ""
     expires_in = token.get("expires_in", None)
     if "exp" in payload:
@@ -323,6 +376,11 @@ def token_to_cpa_record(token: dict, email: str = "", headers: dict | None = Non
         except Exception:
             expired = ""
 
+    hdrs = dict(headers) if headers else dict(CPA_GROK_HEADERS)
+    # 确保最新 CPA 关键头存在
+    for k, v in DEFAULT_CLIENT_HEADERS.items():
+        hdrs.setdefault(k, v)
+
     entry = {
         "type": "xai",
         "auth_kind": "oauth",
@@ -334,14 +392,17 @@ def token_to_cpa_record(token: dict, email: str = "", headers: dict | None = Non
         "expires_in": expires_in,
         "expired": expired,
         "last_refresh": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "redirect_uri": DEFAULT_REDIRECT_URI,
+        "redirect_uri": REDIRECT_URI,
         "token_endpoint": CPA_TOKEN_ENDPOINT,
         "base_url": CPA_GROK_BASE_URL,
         "disabled": False,
-        "headers": dict(headers) if headers else dict(CPA_GROK_HEADERS),
+        "headers": hdrs,
     }
     if id_token:
         entry["id_token"] = id_token.strip()
+    sso_val = str(sso or "").strip()
+    if sso_val:
+        entry["sso"] = sso_val
     return entry
 
 
@@ -349,17 +410,12 @@ def cpa_auth_filename(record: dict) -> str:
     """生成 CPA auth 文件名：xai-<email>.json。"""
     ident = str(record.get("email") or "").strip() or str(record.get("sub") or "").strip()
     safe = _safe_email_for_filename(ident)
-    # 避免 email 本地部分已是 xai 时出现 "xai-xai..."
     fname = safe if safe.lower().startswith("xai") else f"xai-{safe}"
     return f"{fname}.json"
 
 
 def write_cpa_auth(auth_dir: Path, record: dict) -> Path:
-    """写出 CPA 可热加载的 xai-<email>.json（原子替换）。
-
-    无 email 时用 sub(user_id) 命名，避免多个无 email 账号写成同一个
-    xai-unknown.json 互相覆盖。
-    """
+    """写出 CPA 可热加载的 xai-<email>.json（原子替换）。"""
     auth_dir.mkdir(parents=True, exist_ok=True)
     path = auth_dir / cpa_auth_filename(record)
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -380,7 +436,7 @@ def upload_cpa_auth_remote(
     Header: Authorization: Bearer <management_key>
     Body: raw JSON auth record
     """
-    import requests
+    import requests as _requests
 
     base = str(base_url or "").strip().rstrip("/")
     key = str(management_key or "").strip()
@@ -388,10 +444,13 @@ def upload_cpa_auth_remote(
         raise ValueError("cpa_remote_url 为空")
     if not key:
         raise ValueError("cpa_management_key 为空")
+    # 去掉误带的 /v1
+    if base.endswith("/v1"):
+        base = base[:-3].rstrip("/")
 
     name = cpa_auth_filename(record)
     url = f"{base}/v0/management/auth-files"
-    resp = requests.post(
+    resp = _requests.post(
         url,
         params={"name": name},
         headers={
@@ -418,9 +477,7 @@ def write_auth_json(path: Path, auth_key: str, entry: dict) -> None:
 
 
 def merge_auth_json(path: Path, auth_key: str, entry: dict, unique: bool = True) -> None:
-    """
-    合并写入。unique=True 时 key 变成 issuer::client_id::user_id，避免多账号互相覆盖。
-    """
+    """合并写入。unique=True 时 key 变成 issuer::client_id::user_id。"""
     path.parent.mkdir(parents=True, exist_ok=True)
     existing: dict = {}
     if path.exists():
@@ -447,7 +504,6 @@ def load_sso_list(path: str | None, single: str | None) -> list[str]:
         line = line.strip()
         if not line or line.startswith("#"):
             continue
-        # 兼容 邮箱----密码----sso
         if "----" in line:
             parts = line.split("----")
             line = parts[-1].strip()
@@ -456,38 +512,36 @@ def load_sso_list(path: str | None, single: str | None) -> list[str]:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="SSO cookie → grok auth.json (纯 HTTP)")
-    ap.add_argument("--sso", metavar="FILE", help="sso 列表文件（一行一个 JWT，或 邮箱----密码----sso）")
+    ap = argparse.ArgumentParser(
+        description="SSO cookie → CPA xai auth (Authorization Code + PKCE)"
+    )
+    ap.add_argument("--sso", metavar="FILE", help="sso 列表文件")
     ap.add_argument("--sso-cookie", metavar="JWT", help="单个 sso cookie")
     ap.add_argument("--out", default=None, help="输出 auth.json 路径（单账号或 --merge）")
     ap.add_argument(
         "--out-dir",
         default=None,
-        help="批量时每个账号写一个 {user_id}.json（可直接 cp 到 ~/.grok/auth.json）",
+        help="批量时每个账号写一个 {user_id}.json",
     )
-    ap.add_argument(
-        "--merge",
-        action="store_true",
-        help="合并到 --out，key 用 issuer::client_id::user_id",
-    )
+    ap.add_argument("--merge", action="store_true", help="合并到 --out")
     ap.add_argument("--delay", type=int, default=0, help="每个间隔秒数")
     ap.add_argument("--email", default="", help="写入 entry.email（可选）")
     ap.add_argument(
         "--cpa-auth-dir",
         default=None,
-        help="额外写出 CLIProxyAPI 扁平格式 xai-<email>.json 到该目录（CPA 热加载）",
+        help="写出 CLIProxyAPI 扁平格式 xai-<email>.json 到该目录",
     )
     ap.add_argument(
         "--cpa-remote-url",
         default=None,
-        help="远程 CPA 地址，如 http://你的CPA地址:8317；配合 --cpa-management-key 通过 Management API 上传",
+        help="远程 CPA 地址，如 http://host:8317",
     )
     ap.add_argument(
         "--cpa-management-key",
         default=None,
         help="远程 CPA 管理密钥（remote-management.secret-key 明文）",
     )
-    ap.add_argument("--proxy", default="", help="device-flow 走代理，如 http://127.0.0.1:7890")
+    ap.add_argument("--proxy", default="", help="授权码流程走代理")
     args = ap.parse_args()
 
     cookies = load_sso_list(args.sso, args.sso_cookie)
@@ -500,11 +554,9 @@ def main() -> int:
         ap.error("使用 --cpa-management-key 时必须同时提供 --cpa-remote-url")
 
     if len(cookies) > 1 and not args.out_dir and not args.merge:
-        # 默认批量写目录
         args.out_dir = args.out_dir or "./auth_out"
         print(f"批量模式默认 --out-dir {args.out_dir}")
 
-    # 只指定 CPA 目标时不再默认写官方 ~/.grok/auth.json
     if (
         args.out is None
         and args.out_dir is None
@@ -514,7 +566,7 @@ def main() -> int:
     ):
         args.out = str(Path.home() / ".grok" / "auth.json")
 
-    print(f"🚀 SSO → auth.json: {len(cookies)} 个, delay={args.delay}s")
+    print(f"🚀 SSO → CPA auth (Auth Code+PKCE): {len(cookies)} 个, delay={args.delay}s")
     ok = 0
     fail = 0
 
@@ -542,7 +594,7 @@ def main() -> int:
                     print(f"  💾 {args.out}")
 
             if args.cpa_auth_dir or args.cpa_remote_url:
-                record = token_to_cpa_record(token, email=args.email)
+                record = token_to_cpa_record(token, email=args.email, sso=sso)
                 if args.cpa_auth_dir:
                     cp = write_cpa_auth(Path(args.cpa_auth_dir), record)
                     print(f"  💾 CPA 本地 → {cp}")

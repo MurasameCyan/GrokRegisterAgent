@@ -728,7 +728,7 @@ export function SettingsForm() {
           />
           <ToggleRow
             label="自动导出 CPA Auth"
-            hint="注册成功后 SSO 转换并写入 auth 目录"
+            hint="注册成功后走授权码流程换 token，写出 xai-*.json；最新 CPA 关闭 using_api 即可用"
             checked={draft.autoAuthExport}
             onChange={(v) => update('autoAuthExport', v)}
           />
@@ -737,6 +737,28 @@ export function SettingsForm() {
               value={draft.authDir}
               onChange={(e) => update('authDir', e.target.value)}
               placeholder="/data/auth"
+            />
+          </Field>
+          <Field
+            label="远程 CPA 地址"
+            hint="可选。Management API 根地址，如 http://host:8317（不要带 /v1）"
+          >
+            <Input
+              value={draft.cpaRemoteUrl || ''}
+              onChange={(e) => update('cpaRemoteUrl', e.target.value)}
+              placeholder="http://127.0.0.1:8317"
+            />
+          </Field>
+          <Field
+            label="远程 CPA 管理密钥"
+            hint="remote-management.secret-key 明文；与远程地址同时配置才上传"
+          >
+            <Input
+              type="password"
+              value={draft.cpaManagementKey || ''}
+              onChange={(e) => update('cpaManagementKey', e.target.value)}
+              placeholder="管理密钥明文"
+              autoComplete="off"
             />
           </Field>
         </CardBody>

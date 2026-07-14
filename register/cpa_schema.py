@@ -1,4 +1,10 @@
-"""CPA xAI auth JSON schema aligned with CLIProxyAPI internal/auth/xai."""
+"""CPA xAI auth JSON schema aligned with CLIProxyAPI internal/auth/xai.
+
+对齐 grokRegister-cpa-main / grok-build-auth：
+- base_url = cli-chat-proxy.grok.com/v1（免费 Build 通道，非 api.x.ai）
+- headers 含 grok-pager 身份 + x-authenticateresponse
+- 最新 CPA 关闭 using_api 后可直接使用，无需手改 headers
+"""
 
 from __future__ import annotations
 
@@ -18,15 +24,21 @@ DEFAULT_REDIRECT_URI = "http://127.0.0.1:56121/callback"
 # Free Build promo path (NOT api.x.ai)
 DEFAULT_BASE_URL = "https://cli-chat-proxy.grok.com/v1"
 
-# Current Grok Build CLI client version (keep in sync with real grok-shell).
+# Current Grok Build CLI client version (keep in sync with real grok-pager / grok-shell).
 GROK_CLIENT_VERSION = "0.2.93"
 
-# grok-pager / grok-shell identity captured from a working Grok Build request.
-# The chat endpoint requires these to match a real Grok Build client, not the
-# older grok-shell defaults.
+# authorize / consent 必须注入；缺 referrer=grok-build 时 cli-chat-proxy 403
+GROK_REFERRER = "grok-build"
+GROK_PLAN = "generic"
+
+# grok-pager 身份 + x-authenticateresponse（对齐 grokRegister-cpa-main CPA_GROK_HEADERS）
 DEFAULT_CLIENT_HEADERS: dict[str, str] = {
-    "User-Agent": f"grok-pager/{GROK_CLIENT_VERSION} grok-shell/{GROK_CLIENT_VERSION} (linux; x86_64)",
+    "User-Agent": (
+        f"grok-pager/{GROK_CLIENT_VERSION} grok-shell/{GROK_CLIENT_VERSION} "
+        f"(linux; x86_64)"
+    ),
     "X-XAI-Token-Auth": "xai-grok-cli",
+    "x-authenticateresponse": "authenticate-response",
     "x-grok-client-identifier": "grok-pager",
     "x-grok-client-version": GROK_CLIENT_VERSION,
 }
@@ -60,17 +72,21 @@ def random_agent_id(seed: str = "") -> str:
 def random_client_headers(seed: str = "", *, agent_id: str | None = None) -> dict[str, str]:
     """Build grok-pager client headers with a randomized device fingerprint.
 
-    Adds ``x-grok-agent-id`` (the real Grok Build device id header) plus a
-    platform-randomized User-Agent so each account looks like a distinct
-    machine (mitigates same-machine-code ban propagation).
+    Adds ``x-grok-agent-id`` plus platform-randomized User-Agent so each account
+    looks like a distinct machine. Always includes x-authenticateresponse for
+    latest CPA (no manual header patch / using_api off).
     """
     seed = (seed or "").strip()
     rnd = random.Random(seed) if seed else random.Random()
     plat, arch = rnd.choice(_PLATFORMS)
     aid = (agent_id or "").strip() or random_agent_id(seed)
     return {
-        "User-Agent": f"grok-pager/{GROK_CLIENT_VERSION} grok-shell/{GROK_CLIENT_VERSION} ({plat}; {arch})",
+        "User-Agent": (
+            f"grok-pager/{GROK_CLIENT_VERSION} grok-shell/{GROK_CLIENT_VERSION} "
+            f"({plat}; {arch})"
+        ),
         "X-XAI-Token-Auth": "xai-grok-cli",
+        "x-authenticateresponse": "authenticate-response",
         "x-grok-client-identifier": "grok-pager",
         "x-grok-client-version": GROK_CLIENT_VERSION,
         "x-grok-agent-id": aid,
@@ -172,6 +188,27 @@ def build_cpa_xai_auth(
         if base_url.endswith("cli-chat-proxy.grok.com"):
             base_url = base_url + "/v1"
 
+    # headers：合并默认关键字段，保证 x-authenticateresponse / grok-pager 始终存在
+    hdrs = dict(DEFAULT_CLIENT_HEADERS)
+    if headers:
+        for k, v in headers.items():
+            if v is not None:
+                hdrs[str(k)] = str(v)
+    # 旧 grok-shell 头强制升级标识字段
+    if "grok-shell" in str(hdrs.get("x-grok-client-identifier", "")) or (
+        "grok-pager/" not in str(hdrs.get("User-Agent", ""))
+        and "grok-shell/" in str(hdrs.get("User-Agent", ""))
+    ):
+        for k, v in DEFAULT_CLIENT_HEADERS.items():
+            if k.startswith("x-grok-") or k in ("User-Agent", "X-XAI-Token-Auth", "x-authenticateresponse"):
+                if k == "User-Agent" and "grok-pager/" not in str(hdrs.get("User-Agent", "")):
+                    hdrs[k] = v
+                elif k != "User-Agent":
+                    hdrs.setdefault(k, v)
+    hdrs.setdefault("x-authenticateresponse", "authenticate-response")
+    hdrs.setdefault("x-grok-client-identifier", "grok-pager")
+    hdrs.setdefault("X-XAI-Token-Auth", "xai-grok-cli")
+
     payload: dict[str, Any] = {
         "type": "xai",
         "auth_kind": "oauth",
@@ -187,7 +224,7 @@ def build_cpa_xai_auth(
         "token_endpoint": token_endpoint,
         "redirect_uri": redirect_uri,
         "disabled": bool(disabled),
-        "headers": dict(headers or DEFAULT_CLIENT_HEADERS),
+        "headers": hdrs,
     }
     if id_token:
         payload["id_token"] = id_token.strip()
