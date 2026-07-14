@@ -4,11 +4,8 @@ import {
   Clock3,
   Database,
   HeartPulse,
-  RefreshCcw,
-  Server,
-  ShieldCheck
+  RefreshCcw
 } from 'lucide-react';
-import { ThemeToggle } from '@renderer/components/ui/ThemeToggle';
 import { useAccountsStore } from '@renderer/store/accountsStore';
 import { useSettingsStore } from '@renderer/store/settingsStore';
 import { useRunStore } from '@renderer/store/runStore';
@@ -47,8 +44,6 @@ export function DashboardPage({ username }: { username: string }) {
     hour: '2-digit',
     minute: '2-digit'
   });
-  const origin =
-    typeof window === 'undefined' ? 'http://127.0.0.1:8098' : window.location.origin;
 
   return (
     <div className="space-y-4">
@@ -107,29 +102,6 @@ export function DashboardPage({ username }: { username: string }) {
           </div>
         </section>
       </div>
-
-      {/* WebUI 信息（从配置页迁入） */}
-      <section className="ios-group">
-        <div className="flex flex-col gap-3 border-b border-border/70 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <p className="page-kicker">WebUI</p>
-            <h3 className="mt-0.5 text-[16px] font-semibold tracking-[-0.02em]">
-              访问与外观
-            </h3>
-            <p className="mt-0.5 text-[12px] text-muted-foreground">
-              账号密码 + HttpOnly Cookie 登录
-            </p>
-          </div>
-          <div className="w-full sm:w-auto sm:min-w-[220px]">
-            <ThemeToggle />
-          </div>
-        </div>
-        <div className="grid gap-3 p-3 sm:grid-cols-3">
-          <InfoTile Icon={Server} label="访问地址" value={origin} />
-          <InfoTile Icon={ShieldCheck} label="登录方式" value="Cookie Session" />
-          <InfoTile Icon={ShieldCheck} label="反向代理" value="未启用" />
-        </div>
-      </section>
     </div>
   );
 }
@@ -167,26 +139,6 @@ function InfoRow({ label, value }: { label: string; value: string }) {
       >
         {value}
       </span>
-    </div>
-  );
-}
-
-function InfoTile({
-  Icon,
-  label,
-  value
-}: {
-  Icon: typeof Server;
-  label: string;
-  value: string;
-}) {
-  return (
-    <div className="rounded-[14px] bg-muted/60 p-3.5">
-      <div className="flex items-center gap-2 text-muted-foreground">
-        <Icon className="h-4 w-4 shrink-0" aria-hidden />
-        <span className="field-label">{label}</span>
-      </div>
-      <div className="mt-2 break-all text-[13px] font-medium tracking-tight">{value}</div>
     </div>
   );
 }

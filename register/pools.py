@@ -44,6 +44,34 @@ def _config_path() -> Path:
     return Path(__file__).resolve().parent / "config.json"
 
 
+_HOST_PORT_RE = re.compile(
+    r"^(?:([^@\s/]+)@)?((?:\d{1,3}(?:\.\d{1,3}){3}|\[?[0-9a-fA-F:]+\]?|[\w.-]+):(\d{1,5}))$",
+    re.I,
+)
+
+
+def _extract_csv_proxy_addr(line: str) -> str:
+    """从 `18,172.64.149.71:80,美国,HTTP,平均` 取出代理地址，否则空串。"""
+    s = (line or "").strip()
+    if not s or "://" in s or "," not in s:
+        return ""
+    parts = [p.strip() for p in s.split(",") if p.strip()]
+    if len(parts) < 2:
+        return ""
+    if parts[0].isdigit() and _HOST_PORT_RE.match(parts[1]):
+        return parts[1]
+    if _HOST_PORT_RE.match(parts[0]):
+        return parts[0]
+    for p in parts:
+        if _HOST_PORT_RE.match(p):
+            return p
+    return ""
+
+
+def _is_csv_proxy_line(line: str) -> bool:
+    return bool(_extract_csv_proxy_addr(line))
+
+
 def _strip_proxy_comment(line: str) -> str:
     """去掉代理行尾备注，只保留可连地址。
 
@@ -51,10 +79,14 @@ def _strip_proxy_comment(line: str) -> str:
     - `http://u:p@ip:port#香港-01` / `#%E9%A6%99%E6%B8%AF-02`
     - `8.216.35.12:8888（日本，elite，HTTPS）`
     - `ip:port(Japan, elite, HTTPS)`
+    - `18,172.64.149.71:80,美国,HTTP,平均`
     """
     s = (line or "").strip()
     if not s or s.startswith("#"):
         return ""
+    csv_addr = _extract_csv_proxy_addr(s)
+    if csv_addr:
+        return csv_addr
     # 尾部全角/半角括号备注
     for _ in range(3):
         ns = re.sub(r"[（(][^）)]*[）)]\s*$", "", s).strip()
@@ -70,10 +102,17 @@ def _strip_proxy_comment(line: str) -> str:
 
 
 def _split_proxy_pool_text(text: str) -> List[str]:
-    """按换行/半角逗号拆分；括号内逗号不拆。"""
+    """按换行/半角逗号拆分；括号内逗号不拆；CSV 供应商行整行保留。"""
     text = (text or "").replace("\r\n", "\n")
     items: List[str] = []
     for line in text.split("\n"):
+        trimmed = line.strip()
+        if not trimmed:
+            continue
+        if _is_csv_proxy_line(trimmed):
+            items.append(trimmed)
+            continue
+
         # 保护括号内半角逗号
         def _protect(m: re.Match) -> str:
             return m.group(0).replace(",", "\0")

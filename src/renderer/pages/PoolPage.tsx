@@ -927,12 +927,13 @@ function AccountCard({
       )}
     >
       <div className="flex items-start gap-3">
-        <input
-          type="checkbox"
+        <Switch
+          className="mt-0.5"
+          size="sm"
           checked={checked}
-          onChange={onToggle}
+          onChange={() => onToggle()}
           onClick={stop}
-          className="mt-1 h-4 w-4 shrink-0 accent-[hsl(var(--primary))]"
+          aria-label={`选择 ${account.email || account.id}`}
         />
         <div className="min-w-0 flex-1">
           <div

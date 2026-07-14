@@ -190,16 +190,77 @@ function proxyHostPort(proxyUrl: string): string {
   }
 }
 
+/** host:port 或 user:pass@host:port（无 scheme） */
+const HOST_PORT_RE =
+  /^(?:([^@\s/]+)@)?((?:\d{1,3}(?:\.\d{1,3}){3}|\[?[0-9a-fA-F:]+\]?|[\w.-]+):(\d{1,5}))$/i;
+
+/**
+ * 供应商 CSV 行（整行一条，逗号不当分隔符）：
+ * - `18,172.64.149.71:80,美国,HTTP,平均`
+ * - `172.64.149.71:80,荷兰,HTTP,平均`
+ * - `19,user:pass@45.131.5.33:80,荷兰,HTTP`
+ * 字段：可选序号, 代理地址, 地区, 协议, 质量…
+ */
+function parseCsvProxyLine(rawLine: string): { proxy: string; label: string } | null {
+  const s = String(rawLine || '').trim();
+  if (!s || s.includes('://')) return null;
+  // 至少 3 段（地址 + 2 个元数据）或「序号 + 地址 + 元数据」
+  if (!s.includes(',')) return null;
+  const parts = s.split(',').map((p) => p.trim()).filter((p) => p.length > 0);
+  if (parts.length < 2) return null;
+
+  let addrIdx = -1;
+  // 优先：首段是纯数字序号 → 第二段为地址
+  if (/^\d+$/.test(parts[0]) && parts.length >= 2 && HOST_PORT_RE.test(parts[1])) {
+    addrIdx = 1;
+  } else if (HOST_PORT_RE.test(parts[0])) {
+    addrIdx = 0;
+  } else {
+    // 兜底：找第一个像 host:port 的字段
+    for (let i = 0; i < parts.length; i++) {
+      if (HOST_PORT_RE.test(parts[i])) {
+        addrIdx = i;
+        break;
+      }
+    }
+  }
+  if (addrIdx < 0) return null;
+
+  // 需要至少一段标签元数据，避免把 `a,b` 误判（地址后还有字段）
+  if (addrIdx >= parts.length - 1 && parts.length < 3) {
+    // `18,ip:port` 仅两段也接受
+    if (!(addrIdx === 1 && /^\d+$/.test(parts[0]))) return null;
+  }
+
+  const addr = parts[addrIdx];
+  const meta = parts.filter((_, i) => i !== addrIdx && !(i < addrIdx && /^\d+$/.test(parts[i])));
+  // 去掉序号后的标签：地区 · 协议 · 质量
+  const label = meta.join(' · ');
+  return { proxy: addr, label };
+}
+
+/**
+ * 是否为「序号,ip:port,地区,…」类 CSV 代理行（整行勿按逗号拆成多条）
+ */
+export function isCsvStyleProxyLine(line: string): boolean {
+  return parseCsvProxyLine(line) != null;
+}
+
 /**
  * 剥离行尾备注/元数据，转为 proxy + label。
  * 支持：
  * - `http://u:p@ip:port#香港-02`
  * - `8.216.35.12:8888（日本，elite，HTTPS）` / 半角 `(日本, elite, HTTPS)`
+ * - `18,172.64.149.71:80,美国,HTTP,平均`
  * - 混写：`ip:port（日本）#备用`
  */
 function splitProxyAnnotation(rawLine: string): { proxy: string; label: string } {
   let s = String(rawLine || '').trim();
   if (!s) return { proxy: '', label: '' };
+
+  // 0) 供应商 CSV：序号,ip:port,地区,协议,质量
+  const csv = parseCsvProxyLine(s);
+  if (csv) return csv;
 
   const labels: string[] = [];
 
@@ -236,7 +297,7 @@ function splitProxyAnnotation(rawLine: string): { proxy: string; label: string }
   };
 }
 
-/** 解析单行代理：URL + 可选 #标签 / （地区，类型，协议） */
+/** 解析单行代理：URL + 可选 #标签 / （地区） / CSV 序号,ip:port,地区,协议 */
 export function parseProxyLine(line: string): ProxyPoolEntry | null {
   const raw = String(line || '').trim();
   if (!raw || raw.startsWith('#')) return null;
@@ -258,13 +319,21 @@ export function stripProxyComment(line: string): string {
 /**
  * 拆分代理池文本为行。
  * - 换行分隔
- * - 半角逗号也可分隔多条（兼容旧粘贴）
- * - 括号内的逗号/全角逗号不拆（如 `ip:port（日本，elite，HTTPS）`）
+ * - 半角逗号也可分隔多条（兼容旧粘贴 `a,b,c` 多 URL）
+ * - 括号内逗号不拆
+ * - CSV 供应商行 `18,ip:port,美国,HTTP,平均` 整行保留，不拆
  */
 function splitProxyPoolText(raw: string): string[] {
   const text = String(raw || '').replace(/\r\n/g, '\n');
   const out: string[] = [];
   for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    // CSV 代理行：整行一条
+    if (isCsvStyleProxyLine(trimmed)) {
+      out.push(trimmed);
+      continue;
+    }
     // 保护括号内逗号，避免被当成条目分隔符
     const protectedLine = line.replace(/[（(][^）)]*[）)]/g, (m) =>
       m.replace(/,/g, '\u0000')
@@ -466,16 +535,14 @@ export function validateSettings(s: AppSettings): Record<string, string> {
   ) {
     errors.proxyProbeConcurrency = '测活并发须在 1 到 20 之间';
   }
-  if (s.proxyEnabled) {
-    if (s.proxyPoolEnabled) {
-      const n =
-        parseProxyPool(s.proxyPool).length + parseProxyPool(s.proxyPoolAlive).length;
-      if (n === 0) {
-        errors.proxyPool = '代理池已开启，请在待测池或可用池至少填一条代理';
-      }
-    } else if (!s.proxy.trim() && !s.browserProxy.trim()) {
+  // 代理池（待测/可用）允许为空：测活删失败、暂清空后再粘贴都常见；注册启动时再检查
+  // 仅「未开池、只开单代理」且单代理也空时提示
+  if (s.proxyEnabled && !s.proxyPoolEnabled) {
+    if (!s.proxy.trim() && !s.browserProxy.trim()) {
       errors.proxy = '已开启代理，请填写 HTTP 代理或浏览器代理';
     }
   }
+  // 确保历史逻辑不会再写入 proxyPool 必填错误
+  delete errors.proxyPool;
   return errors;
 }

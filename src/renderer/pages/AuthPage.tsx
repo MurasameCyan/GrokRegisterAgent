@@ -13,6 +13,7 @@ import {
   Trash2
 } from 'lucide-react';
 import { Button } from '@renderer/components/ui/Button';
+import { Switch } from '@renderer/components/ui/Switch';
 import { useToastStore } from '@renderer/store/toastStore';
 import { useSettingsStore } from '@renderer/store/settingsStore';
 import type { CpaAuthItem } from '@shared/ipc';
@@ -22,15 +23,6 @@ import {
   maskEmail,
   saveEmailPrivacyMask
 } from '@renderer/lib/maskEmail';
-
-function fmtTime(ms: number): string {
-  if (!ms) return '—';
-  try {
-    return new Date(ms).toLocaleString('zh-CN', { hour12: false });
-  } catch {
-    return '—';
-  }
-}
 
 function stamp(): string {
   const d = new Date();
@@ -862,9 +854,8 @@ export function AuthPage() {
                 <th className="px-3 py-2.5 font-medium">文件</th>
                 <th className="px-3 py-2.5 font-medium">xai</th>
                 <th className="px-3 py-2.5 font-medium">bot_flag</th>
+                <th className="whitespace-nowrap px-3 py-2.5 font-medium">测活</th>
                 <th className="px-3 py-2.5 font-medium">过期</th>
-                <th className="px-3 py-2.5 font-medium">测活</th>
-                <th className="px-3 py-2.5 font-medium">修改</th>
                 <th className="px-3 py-2.5 font-medium">操作</th>
               </tr>
             </thead>
@@ -882,12 +873,12 @@ export function AuthPage() {
                     )}
                   >
                     <td className="px-3 py-2.5">
-                      <input
-                        type="checkbox"
+                      <Switch
+                        size="sm"
                         checked={selected.has(item.filename)}
                         onChange={() => toggle(item.filename)}
                         disabled={busy}
-                        className="h-4 w-4 accent-[hsl(var(--primary))]"
+                        aria-label={`选择 ${item.email || item.filename}`}
                       />
                     </td>
                     <td
@@ -921,20 +912,13 @@ export function AuthPage() {
                         is1={item.isBotFlag1}
                       />
                     </td>
-                    <td className="px-3 py-2.5 text-[12px] text-muted-foreground">
-                      {item.expired || '—'}
-                    </td>
-                    <td className="px-3 py-2.5">
-                      <ProbeBadge action={probe} />
-                    </td>
-                    <td className="whitespace-nowrap px-3 py-2.5 text-[12px] text-muted-foreground">
-                      {fmtTime(item.mtime)}
-                    </td>
-                    <td className="px-3 py-2.5">
-                      <div className="flex flex-wrap gap-1">
+                    <td className="whitespace-nowrap px-3 py-2.5">
+                      <div className="inline-flex flex-row items-center gap-2">
+                        <ProbeBadge action={probe} />
                         <Button
                           variant="secondary"
                           size="sm"
+                          className="h-7 shrink-0"
                           disabled={busy}
                           onClick={() => void probeOne(item)}
                           title="单条 CPA 测活"
@@ -944,9 +928,17 @@ export function AuthPage() {
                           />
                           {rowProbe ? '…' : '测活'}
                         </Button>
+                      </div>
+                    </td>
+                    <td className="whitespace-nowrap px-3 py-2.5 text-[12px] text-muted-foreground">
+                      {item.expired || '—'}
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <div className="inline-flex flex-row items-center gap-1">
                         <Button
                           variant="secondary"
                           size="sm"
+                          className="h-7 shrink-0"
                           disabled={busy}
                           onClick={() => void resign(item)}
                         >
@@ -1000,22 +992,26 @@ function BotFlagCell({
 
 function ProbeBadge({ action }: { action?: string }) {
   if (!action) {
-    return <span className="text-[11px] text-muted-foreground">—</span>;
+    return (
+      <span className="inline-flex h-5 min-w-[1.25rem] items-center justify-center text-[11px] text-muted-foreground">
+        —
+      </span>
+    );
   }
-  // 队列列表：绿 O / 红 X 闪烁提示（不拆单独卡片）
+  // 横向：绿 O / 红 X 与文字同一行，不竖排
   if (action === 'ok') {
     return (
       <span
-        className="inline-flex items-center gap-1.5"
+        className="inline-flex flex-row items-center gap-1"
         title="测活通过"
       >
         <span
-          className="inline-flex h-5 w-5 animate-probe-flash items-center justify-center rounded-full bg-emerald-500/20 text-[12px] font-bold leading-none text-emerald-600 dark:text-emerald-400"
+          className="inline-flex h-5 w-5 shrink-0 animate-probe-flash items-center justify-center rounded-full bg-emerald-500/20 text-[12px] font-bold leading-none text-emerald-600 dark:text-emerald-400"
           aria-label="OK"
         >
           O
         </span>
-        <span className="text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
+        <span className="whitespace-nowrap text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
           活
         </span>
       </span>
@@ -1023,26 +1019,28 @@ function ProbeBadge({ action }: { action?: string }) {
   }
   if (action === 'dead') {
     return (
-      <span className="inline-flex items-center gap-1.5" title="死号">
+      <span className="inline-flex flex-row items-center gap-1" title="死号">
         <span
-          className="inline-flex h-5 w-5 animate-probe-flash items-center justify-center rounded-full bg-destructive/20 text-[12px] font-bold leading-none text-destructive"
+          className="inline-flex h-5 w-5 shrink-0 animate-probe-flash items-center justify-center rounded-full bg-destructive/20 text-[12px] font-bold leading-none text-destructive"
           aria-label="死号"
         >
           X
         </span>
-        <span className="text-[10px] font-medium text-destructive">死</span>
+        <span className="whitespace-nowrap text-[10px] font-medium text-destructive">
+          死
+        </span>
       </span>
     );
   }
   if (action === 'keep') {
     return (
-      <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400">
+      <span className="inline-flex whitespace-nowrap rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400">
         保留
       </span>
     );
   }
   return (
-    <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
+    <span className="inline-flex whitespace-nowrap rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
       {action}
     </span>
   );

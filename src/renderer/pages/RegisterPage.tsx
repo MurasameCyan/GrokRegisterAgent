@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Layers,
   Play,
@@ -8,7 +8,6 @@ import {
   TriangleAlert
 } from 'lucide-react';
 import { Button } from '@renderer/components/ui/Button';
-import { Input } from '@renderer/components/ui/Input';
 import { Slider } from '@renderer/components/ui/Slider';
 import { StatusCard } from '@renderer/components/domain/StatusCard';
 import { LogPanel } from '@renderer/components/domain/LogPanel';
@@ -176,7 +175,7 @@ export function RegisterPage({ onOpenSettings }: { onOpenSettings(): void }) {
 
         <div className="space-y-4">
           <JobListPanel maxParallel={maxParallel} />
-          <RuntimeSettingsPanel onOpenSettings={onOpenSettings} />
+          <RuntimeSettingsPanel />
         </div>
       </div>
 
@@ -185,7 +184,7 @@ export function RegisterPage({ onOpenSettings }: { onOpenSettings(): void }) {
   );
 }
 
-function RuntimeSettingsPanel({ onOpenSettings }: { onOpenSettings(): void }) {
+function RuntimeSettingsPanel() {
   const data = useSettingsStore((s) => s.data);
   const reload = useSettingsStore((s) => s.reload);
   const push = useToastStore((s) => s.push);
@@ -211,7 +210,6 @@ function RuntimeSettingsPanel({ onOpenSettings }: { onOpenSettings(): void }) {
   const dirty =
     !!data &&
     (data.runCount !== draft.runCount ||
-      data.proxy !== draft.proxy ||
       data.maxParallelWorkers !== draft.maxParallelWorkers);
   const update = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) =>
     setDraft({ ...draft, [key]: value });
@@ -222,7 +220,6 @@ function RuntimeSettingsPanel({ onOpenSettings }: { onOpenSettings(): void }) {
       const next = {
         ...data!,
         runCount: draft.runCount,
-        proxy: draft.proxy,
         maxParallelWorkers: draft.maxParallelWorkers
       };
       await window.api.saveSettings(next);
@@ -285,22 +282,6 @@ function RuntimeSettingsPanel({ onOpenSettings }: { onOpenSettings(): void }) {
               />
             </div>
           </div>
-
-          <Field label="HTTP 代理（可选）" hint="例如 http://127.0.0.1:7890；代理池请在「配置」页设置">
-            <Input value={draft.proxy} onChange={(e) => update('proxy', e.target.value)} />
-          </Field>
-
-          <p className="text-[12px] leading-5 text-muted-foreground">
-            人机验证、域名池、代理池、指纹与 Auth 导出请在{' '}
-            <button
-              type="button"
-              className="font-medium text-primary underline-offset-2 hover:underline"
-              onClick={onOpenSettings}
-            >
-              配置
-            </button>{' '}
-            页修改。
-          </p>
         </div>
 
         <Button onClick={save} disabled={!dirty || saving} className="w-full">
@@ -309,18 +290,6 @@ function RuntimeSettingsPanel({ onOpenSettings }: { onOpenSettings(): void }) {
         </Button>
       </div>
     </section>
-  );
-}
-
-function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
-  return (
-    <div className="space-y-1.5">
-      <div>
-        <div className="field-label">{label}</div>
-        {hint && <div className="field-hint mt-0.5">{hint}</div>}
-      </div>
-      {children}
-    </div>
   );
 }
 
