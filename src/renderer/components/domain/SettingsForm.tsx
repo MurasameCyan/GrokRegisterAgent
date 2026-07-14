@@ -314,8 +314,19 @@ export function SettingsForm() {
 
   const alivePoolEntries = useMemo(() => {
     if (!draft?.proxyPoolAlive) return [] as ProxyPoolEntry[];
-    return parseProxyPoolEntries(draft.proxyPoolAlive);
+    const list = parseProxyPoolEntries(draft.proxyPoolAlive);
+    // 成功次数多的排前，便于扫「#成功N」
+    return list.slice().sort((a, b) => (b.successCount || 0) - (a.successCount || 0));
   }, [draft?.proxyPoolAlive]);
+
+  const aliveSuccessTotal = useMemo(
+    () =>
+      alivePoolEntries.reduce(
+        (sum, e) => sum + (typeof e.successCount === 'number' ? e.successCount : 0),
+        0
+      ),
+    [alivePoolEntries]
+  );
 
   const failedProxies = useMemo(() => {
     return proxyPoolEntries
@@ -339,6 +350,9 @@ export function SettingsForm() {
     setDraft({ ...draft, mail: { ...draft.mail, [key]: value } });
   const update = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) =>
     setDraft({ ...draft, [key]: value });
+  /** 一次改多个字段，避免连点 update 互相覆盖（推送目标开关必须用这个） */
+  const patch = (partial: Partial<AppSettings>) =>
+    setDraft((prev) => (prev ? { ...prev, ...partial } : prev));
 
   /** 从网页拉取代理并追加到待测池（默认 hide.mn） */
   const fetchProxiesFromWeb = async () => {
@@ -872,12 +886,31 @@ export function SettingsForm() {
     }
   };
 
+  const clearPendingPool = async () => {
+    if (proxyPoolEntries.length === 0) return;
+    if (!window.confirm(`清空待定池（${proxyPoolEntries.length} 条）？`)) return;
+    const nextDraft = { ...draft, proxyPool: '' };
+    setDraft(nextDraft);
+    setProxyProbes((prev) => {
+      const next = { ...prev };
+      for (const e of proxyPoolEntries) {
+        delete next[e.proxy];
+      }
+      return next;
+    });
+    if (draft.proxyAutoSaveOnRemoveFailed) {
+      await save(nextDraft, { okTitle: '待定池已清空并保存' });
+    } else {
+      push({ tone: 'ok', title: '待定池已清空', description: '未保存，请点保存' });
+    }
+  };
+
   return (
     <div className="space-y-5">
-      <Card>
+      <Card collapsible defaultCollapsed>
         <CardHeader
           title="邮件后端"
-          description="兼容 cloudflare_temp_email；域名可填单项或开启域名池"
+          description="请填写 Cloudflare 临时邮箱参数:"
           right={
             <div className="flex flex-wrap items-center gap-2">
               <RepoLink
@@ -966,7 +999,7 @@ export function SettingsForm() {
         </CardBody>
       </Card>
 
-      <Card>
+      <Card collapsible defaultCollapsed>
         <CardHeader
           title="代理"
           description="总开关关闭时直连；开启后可切换单代理或代理池"
@@ -1073,7 +1106,7 @@ export function SettingsForm() {
                         ) : (
                           <Download className="h-3.5 w-3.5" />
                         )}
-                        {fetchingProxies ? '拉取中…' : '一键拉取 hide.mn'}
+                        {fetchingProxies ? '拉取中…' : '一键拉取'}
                       </Button>
                     </div>
                     <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
@@ -1203,6 +1236,20 @@ export function SettingsForm() {
                               全部测活
                             </Button>
                           )}
+                          {proxyPoolEntries.length > 0 && (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 text-muted-foreground hover:text-danger"
+                              disabled={probingKey !== null}
+                              onClick={() => void clearPendingPool()}
+                              title="清空待定池全部条目"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                              清空
+                            </Button>
+                          )}
                         </div>
                       </div>
                       {pendingPoolOpen && (
@@ -1260,6 +1307,14 @@ export function SettingsForm() {
                           <span className="chip tabular-nums bg-emerald-500/15 text-emerald-700 dark:text-emerald-400">
                             {alivePoolEntries.length}
                           </span>
+                          {aliveSuccessTotal > 0 && (
+                            <span
+                              className="chip tabular-nums bg-emerald-500/20 font-semibold text-emerald-700 dark:text-emerald-400"
+                              title="可用池全部代理注册成功次数合计"
+                            >
+                              #成功{aliveSuccessTotal}
+                            </span>
+                          )}
                           <span className="truncate text-[12px] text-muted-foreground">
                             仅此池参与注册 · 可复测
                           </span>
@@ -1359,10 +1414,10 @@ export function SettingsForm() {
                                     {typeof e.successCount === 'number' &&
                                       e.successCount > 0 && (
                                         <span
-                                          className="shrink-0 text-[12px] font-semibold tabular-nums text-emerald-600 dark:text-emerald-400"
-                                          title={`注册成功 ${e.successCount} 次`}
+                                          className="shrink-0 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] font-semibold tabular-nums text-emerald-700 dark:text-emerald-400"
+                                          title={`注册成功 ${e.successCount} 次（行尾 #成功N）`}
                                         >
-                                          成功 {e.successCount}
+                                          #成功{e.successCount}
                                         </span>
                                       )}
                                     {probe.status === 'ok' && (
@@ -1536,7 +1591,7 @@ export function SettingsForm() {
         </CardBody>
       </Card>
 
-      <Card>
+      <Card collapsible defaultCollapsed>
         <CardHeader
           title="人机验证"
           description="Turnstile 自动通过等待上限；每次在 30～上限 内随机"
@@ -1572,10 +1627,9 @@ export function SettingsForm() {
         </CardBody>
       </Card>
 
-      <Card>
+      <Card collapsible defaultCollapsed>
         <CardHeader
           title="指纹与授权"
-          description="注册指纹随机化；本地写出 CPA Auth（xai-*.json）。远程推送目标在下方「推送授权」卡片配置：SSO 仅 grok2api，Auth 可 CPA 与 grok2api 同时开。"
           right={
             <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-muted text-muted-foreground">
               <KeyRound className="h-4 w-4" aria-hidden />
@@ -1590,7 +1644,7 @@ export function SettingsForm() {
             onChange={(v) => update('randomFingerprint', v)}
           />
           <ToggleRow
-            label="自动导出本地 Auth"
+            label="自动转换 Auth"
             hint="注册成功后授权码换 token，写出 xai-*.json 到 DATA_DIR/auth。远程 CPA/grok2api 见「推送授权」"
             checked={draft.autoAuthExport}
             onChange={(v) => update('autoAuthExport', v)}
@@ -1610,11 +1664,8 @@ export function SettingsForm() {
         </CardBody>
       </Card>
 
-      <Card>
-        <CardHeader
-          title="注册 Plan B 兜底"
-          description="优先 Plan A（本项目主流程）。失败后按 FlowPilot 思路再试一次：等人机成功证据、模拟点击、识别 CF 拦截。仍失败则跳过本账号进入下一轮。"
-        />
+      <Card collapsible defaultCollapsed>
+        <CardHeader title="注册兜底" />
         <CardBody className="space-y-3">
           <ToggleRow
             label="启用 Plan B 兜底"
@@ -1631,8 +1682,8 @@ export function SettingsForm() {
               </li>
               <li>
                 <span className="text-foreground">Plan B</span>
-                （仅 A 失败且本开关开启）：重启浏览器 → 更长拟人延迟 → 等
-                Turnstile 自然成功 → 模拟点击提交 → CF 拦截则立即放弃
+                ：重启浏览器 → 更长拟人延迟 → 等 Turnstile 自然成功 → 模拟点击提交 → CF
+                拦截则立即放弃
               </li>
               <li>A+B 都失败：记失败、可选降级代理、进入下一账号</li>
             </ol>
@@ -1640,7 +1691,7 @@ export function SettingsForm() {
         </CardBody>
       </Card>
 
-      <Card>
+      <Card collapsible defaultCollapsed>
         <CardHeader
           title="推送授权"
           description="按来源选择推送目标。SSO 只推 grok2api；Auth 可同时推 CPA 与 grok2api。目标按钮点亮=启用；需连接信息时展开填写。"
@@ -1659,23 +1710,22 @@ export function SettingsForm() {
             const pushAuthG2 = draft.pushAuthToGrok2api === true;
             const needG2Config = pushSsoG2 || pushAuthG2;
             const setPushSsoG2 = (on: boolean) => {
-              update('pushSsoToGrok2api', on);
-              // 兼容旧字段：任一 grok2api 目标开则为 true
-              update('grok2apiAutoUpload', on || draft.pushAuthToGrok2api === true);
+              patch({
+                pushSsoToGrok2api: on,
+                grok2apiAutoUpload: on || draft.pushAuthToGrok2api === true
+              });
             };
             const setPushAuthCpa = (on: boolean) => {
-              update('pushAuthToCpa', on);
-              update('cpaRemotePushEnabled', on);
+              patch({
+                pushAuthToCpa: on,
+                cpaRemotePushEnabled: on
+              });
             };
             const setPushAuthG2 = (on: boolean) => {
-              update('pushAuthToGrok2api', on);
-              update(
-                'grok2apiAutoUpload',
-                on ||
-                  draft.pushSsoToGrok2api === true ||
-                  // 关 Auth→g2 时若仅依赖旧 auto 且 SSO 未开，则关掉 auto
-                  false
-              );
+              patch({
+                pushAuthToGrok2api: on,
+                grok2apiAutoUpload: on || draft.pushSsoToGrok2api === true
+              });
             };
             const targetBtn = (
               active: boolean,
@@ -1686,7 +1736,11 @@ export function SettingsForm() {
               <button
                 type="button"
                 title={title}
-                onClick={onClick}
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onClick();
+                }}
                 className={
                   active
                     ? 'inline-flex h-8 items-center rounded-lg border border-emerald-500/40 bg-emerald-500/15 px-3 text-[12px] font-semibold text-emerald-700 dark:text-emerald-400'
@@ -1822,32 +1876,28 @@ export function SettingsForm() {
                         autoComplete="off"
                       />
                     </Field>
-                    <p className="text-[11px] leading-5 text-muted-foreground">
-                      上传固定为{' '}
-                      <span className="font-medium text-foreground">web_convert</span>
-                      ：SSO → Web import → convert-to-build（与 grok-register-web 一致）
-                    </p>
+                    <div className="flex flex-wrap items-center gap-3">
+                      <ConnectionTestButton
+                        label="检测远程连通性"
+                        disabled={
+                          !String(draft.grok2apiUrl || '').trim() ||
+                          !String(draft.grok2apiUsername || '').trim() ||
+                          !String(draft.grok2apiPassword || '').trim()
+                        }
+                        onTest={() =>
+                          window.api.testGrok2apiRemote({
+                            url: draft.grok2apiUrl,
+                            username: draft.grok2apiUsername,
+                            password: draft.grok2apiPassword
+                          })
+                        }
+                      />
+                      <span className="text-[12px] text-muted-foreground">
+                        不上传账号，仅测管理登录
+                      </span>
+                    </div>
                   </div>
                 )}
-
-                <div className="space-y-1 rounded-lg border border-border/50 bg-muted/40 p-2.5 text-[11px] leading-5 text-muted-foreground">
-                  <p className="font-medium text-foreground">推送规则</p>
-                  <ul className="list-disc space-y-0.5 pl-4">
-                    <li>
-                      <span className="text-foreground">SSO → grok2api</span>
-                      ：注册拿到 sso 后上传（固定 web_convert：Web import + convert）
-                    </li>
-                    <li>
-                      <span className="text-foreground">Auth → CPA</span>
-                      ：mint/导出 auth 后调 Management API 入库
-                    </li>
-                    <li>
-                      <span className="text-foreground">Auth → grok2api</span>
-                      ：与 SSO 可同时开；同轮注册通常合并一次 SSO 上传即可
-                    </li>
-                    <li>失败仅打日志，不阻断本轮 SSO 落盘与本地 Auth 写出</li>
-                  </ul>
-                </div>
               </>
             );
           })()}

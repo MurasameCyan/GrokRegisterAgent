@@ -74,18 +74,87 @@ def _gra_internal_headers() -> dict:
     return headers
 
 
+def remove_proxy_from_local_pool(proxy: str) -> int:
+    """从本进程内存代理池立即剔除（按 host:port 身份键）。
+
+    Node 降级只改 settings，本进程 config.json 与 _proxy_list 不会自动同步；
+    若不本地剔除，后续 acquire 仍会抽到已死代理。
+    """
+    p = str(proxy or "").strip()
+    if not p:
+        return 0
+    key = proxy_identity_key(p)
+    if not key:
+        return 0
+    removed = 0
+    with _lock:
+        global _proxy_list, _proxy_idx
+        before = list(_proxy_list)
+        nxt: List[str] = []
+        for u in before:
+            if proxy_identity_key(u) == key:
+                removed += 1
+                continue
+            nxt.append(u)
+        if removed:
+            _proxy_list = nxt
+            if _proxy_list:
+                _proxy_idx = _proxy_idx % len(_proxy_list)
+            else:
+                _proxy_idx = 0
+            try:
+                _proxy_last_used.pop(key, None)
+            except Exception:
+                pass
+    if removed:
+        # 同步改写 register/config.json 的 proxy_pool，避免 force reload 又读回死代理
+        try:
+            path = _config_path()
+            if path.is_file():
+                conf = json.loads(path.read_text(encoding="utf-8"))
+                pool = conf.get("proxy_pool") or conf.get("proxies")
+                if isinstance(pool, list):
+                    conf["proxy_pool"] = [
+                        x
+                        for x in pool
+                        if proxy_identity_key(str(x or "")) != key
+                    ]
+                    path.write_text(
+                        json.dumps(conf, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+                elif isinstance(pool, str) and pool.strip():
+                    lines = []
+                    for ln in pool.replace("\r\n", "\n").split("\n"):
+                        raw = ln.strip()
+                        if not raw or raw.startswith("#"):
+                            lines.append(ln)
+                            continue
+                        if proxy_identity_key(raw) == key:
+                            continue
+                        lines.append(ln)
+                    conf["proxy_pool"] = "\n".join(lines)
+                    path.write_text(
+                        json.dumps(conf, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
+        except Exception:
+            pass
+    return removed
+
+
 def demote_proxy_to_pending(proxy: str, reason: str = "注册失败") -> bool:
-    """注册使用失败：通知 Node 把该代理从可用池降到待定池。
+    """注册使用失败：本地立即剔除 + 通知 Node 把该代理从可用池降到待定池。
 
     端点：POST {GRA_API_BASE}/api/proxy/demote
-    环境变量：
-      GRA_API_BASE  默认 http://127.0.0.1:6657（Docker 同网可用 host.docker.internal 或服务名）
-      GRA_INTERNAL_KEY  与 Node 共享，避免 401
-    失败仅打日志，不抛异常（不影响注册主流程）。
+    已降级过（Node moved=0）仍视为成功：本进程本地已剔除即可换代理。
+    失败仅打日志，不抛异常。
     """
     p = str(proxy or "").strip()
     if not p:
         return False
+    # 先本地剔除：保证同轮/同进程立刻不会再抽到
+    local_n = remove_proxy_from_local_pool(p)
     url = f"{_gra_api_base()}/api/proxy/demote"
     body = json.dumps({"proxies": [p], "reason": str(reason or "注册失败")[:80]}, ensure_ascii=False)
     try:
@@ -108,9 +177,18 @@ def demote_proxy_to_pending(proxy: str, reason: str = "注册失败") -> bool:
         if moved > 0:
             print(f"[*] 代理已降级→待定池: {p[:64]}… · {msg}")
             return True
+        # Node 侧可能已降过：本地已剔除则算成功，避免刷「未生效」+ 继续用死代理
+        if local_n > 0:
+            print(f"[*] 代理已从本轮池剔除: {p[:64]}… · Node: {msg}")
+            return True
         print(f"[Warn] 代理降级未生效: {msg}")
         return False
     except Exception as e:
+        if local_n > 0:
+            print(
+                f"[*] 代理已从本轮池剔除（Node 回调失败仍可换代理）: {p[:64]}… · {e}"
+            )
+            return True
         print(f"[Warn] 代理降级回调失败（{url}）: {e}")
         return False
 

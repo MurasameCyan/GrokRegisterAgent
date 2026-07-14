@@ -84,12 +84,41 @@ export function readBotFlagFromToken(token: string): BotFlagInfo {
   };
 }
 
+/** 优先读 auth JSON 侧车字段 bot_flag_source / botFlagSource（mint 时写入） */
+function readBotFlagSidecar(data: Record<string, unknown>): BotFlagInfo | null {
+  const keys = ['bot_flag_source', 'botFlagSource', 'bot_flag', 'botFlag'] as const;
+  for (const k of keys) {
+    if (!(k in data)) continue;
+    const raw = data[k];
+    // 0 合法；仅跳过缺失与空串
+    if (raw === undefined || raw === null || raw === '') continue;
+    if (typeof raw === 'string' && /^none$/i.test(raw.trim())) {
+      return { botFlagSource: 0, isBotFlag1: false };
+    }
+    const num = typeof raw === 'number' ? raw : Number(String(raw).trim());
+    const isBotFlag1 =
+      raw === 1 || raw === '1' || (!Number.isNaN(num) && num === 1);
+    if (raw === 0 || raw === '0' || (!Number.isNaN(num) && num === 0)) {
+      return { botFlagSource: 0, isBotFlag1: false };
+    }
+    return {
+      botFlagSource:
+        typeof raw === 'number' || typeof raw === 'string' ? raw : String(raw),
+      isBotFlag1
+    };
+  }
+  return null;
+}
+
 /**
- * 优先 access_token，其次 sso / id_token / extra.sso。
- * 注意：access 无 bot_flag_source claim 时必须继续读 sso，
- * 旧逻辑 `!r.error` 会在 null claim 时提前返回，导致 None(0) 永远显示为 —。
+ * 优先侧车字段，其次 access_token / sso / id_token JWT。
+ * 注意：access 无 bot_flag_source claim 时必须继续读 sso。
+ * 有 sso 但 claim 全缺时默认 0（None）——与号池 SSO 绿 None 一致，避免列表永远 —。
  */
 export function readBotFlagFromAuthRecord(data: Record<string, unknown>): BotFlagInfo {
+  const fromFile = readBotFlagSidecar(data);
+  if (fromFile) return fromFile;
+
   const access = String(data.access_token || data.key || '').trim();
   let sso = String(data.sso || '').trim();
   if (!sso) {
@@ -104,8 +133,8 @@ export function readBotFlagFromAuthRecord(data: Record<string, unknown>): BotFla
     if (!tok) return null;
     const r = readBotFlagFromToken(tok);
     // 有明确 claim（含 number 0）→ 采用。
-    // 0 != null 且 0 !== ''，勿再写 === 0（TS 会判与收窄后类型无交集）
-    if (r.botFlagSource != null && r.botFlagSource !== '') return r;
+    // 用 == null 判断：0 必须保留
+    if (r.botFlagSource != null && String(r.botFlagSource) !== '') return r;
     return null;
   };
 
@@ -116,8 +145,9 @@ export function readBotFlagFromAuthRecord(data: Record<string, unknown>): BotFla
   const fromId = tryToken(idToken);
   if (fromId) return fromId;
 
-  if (access || sso || idToken) {
-    return { botFlagSource: null, isBotFlag1: false };
+  // 有 sso（或 access）但 JWT 无 claim：展示 None(0)，与「正常号」一致
+  if (sso || access || idToken) {
+    return { botFlagSource: 0, isBotFlag1: false };
   }
   return { botFlagSource: null, isBotFlag1: false, error: 'no token' };
 }

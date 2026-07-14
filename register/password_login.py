@@ -370,14 +370,26 @@ def recover_auth_on_dead(
         except Exception as e:
             log(f"[recover_auth] overwrite failed: {e}")
 
-    # 发任意英文消息（二次检测前 warm-up）
+    # 随机英文消息尝试激活（二次检测前 warm-up）
+    prompts = (
+        "Hello, please reply with a short greeting.",
+        "Hi there, say hello in one sentence.",
+        "Good day. Please respond with a brief hello.",
+        "Hey, can you reply with a short friendly message?",
+        "Please send a one-line English greeting.",
+        "Quick check: reply OK in plain English.",
+        "Test message — please acknowledge briefly.",
+        "Could you reply with any short English sentence?",
+    )
+    prompt = secrets.choice(prompts)
     msg_probe = probe_cpa_auth(
         target,
         proxy=proxy,
-        prompt="Hello, please reply with a short greeting.",
+        prompt=prompt,
         max_output_tokens=32,
     )
     out["message"] = {
+        "prompt": prompt,
         "action": msg_probe.get("action"),
         "http_status": msg_probe.get("http_status"),
         "summary": msg_probe.get("summary"),
@@ -400,6 +412,20 @@ def recover_auth_on_dead(
             or second.get("summary")
             or f"HTTP {second.get('http_status')}"
         )
+    # 重登/激活后也写回测活侧车（与 probe_and_cleanup 一致）
+    try:
+        from cpa_probe import persist_probe_result
+
+        if target.is_file():
+            persist_probe_result(
+                target,
+                {
+                    "action": second.get("action") or out.get("action") or "error",
+                    "http_status": second.get("http_status") or out.get("http_status") or 0,
+                },
+            )
+    except Exception as e:
+        log(f"[recover_auth] persist probe failed: {e}")
     return out
 
 

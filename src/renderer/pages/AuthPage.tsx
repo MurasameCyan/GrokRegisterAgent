@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
+  Ban,
   CheckSquare,
   CloudUpload,
   Database,
@@ -24,6 +25,7 @@ import { useToastStore } from '@renderer/store/toastStore';
 import { useSettingsStore } from '@renderer/store/settingsStore';
 import type { CpaAuthItem } from '@shared/ipc';
 import { cn } from '@renderer/lib/cn';
+import { setWebApiAbortSignal } from '@renderer/lib/webApi';
 import {
   loadEmailPrivacyMask,
   maskEmail,
@@ -48,7 +50,7 @@ function downloadBlob(filename: string, blob: Blob) {
 }
 
 type TaskProgress = {
-  kind: 'probe' | 'resign' | 'delete' | 'export' | 'push' | 'backfill';
+  kind: 'probe' | 'resign' | 'delete' | 'export' | 'push' | 'backfill' | 'relogin';
   total: number;
   done: number;
   ok: number;
@@ -86,9 +88,82 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
   const [loading, setLoading] = useState(true);
   const [rowBusy, setRowBusy] = useState<string | null>(null);
   const [batchBusy, setBatchBusy] = useState<
-    'resign' | 'probe' | 'delete' | 'export' | 'push' | 'backfill' | null
+    'resign' | 'probe' | 'relogin' | 'delete' | 'export' | 'push' | 'backfill' | null
+  >(null);
+  /** 当前批量任务 AbortController：各按钮独立取消对应 kind */
+  const batchAbortRef = useRef<AbortController | null>(null);
+  const batchKindRef = useRef<
+    'resign' | 'probe' | 'relogin' | 'delete' | 'export' | 'push' | 'backfill' | null
   >(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  type BatchKind =
+    | 'resign'
+    | 'probe'
+    | 'relogin'
+    | 'delete'
+    | 'export'
+    | 'push'
+    | 'backfill';
+
+  const isAbortError = (err: unknown) => {
+    if (!err) return false;
+    if (
+      typeof DOMException !== 'undefined' &&
+      err instanceof DOMException &&
+      err.name === 'AbortError'
+    ) {
+      return true;
+    }
+    const name = (err as { name?: string })?.name;
+    const msg = String((err as { message?: string })?.message || err || '');
+    return name === 'AbortError' || /aborted|AbortError|The user aborted/i.test(msg);
+  };
+
+  const beginBatch = (kind: BatchKind): AbortSignal => {
+    try {
+      batchAbortRef.current?.abort();
+    } catch {
+      /* ignore */
+    }
+    const ac = new AbortController();
+    batchAbortRef.current = ac;
+    batchKindRef.current = kind;
+    setWebApiAbortSignal(ac.signal);
+    setBatchBusy(kind);
+    return ac.signal;
+  };
+
+  const endBatch = (kind?: BatchKind) => {
+    if (kind && batchKindRef.current && batchKindRef.current !== kind) {
+      return;
+    }
+    setWebApiAbortSignal(null);
+    batchAbortRef.current = null;
+    batchKindRef.current = null;
+    setBatchBusy(null);
+  };
+
+  const cancelBatch = (kind: BatchKind) => {
+    if (batchKindRef.current !== kind) return;
+    try {
+      batchAbortRef.current?.abort();
+    } catch {
+      /* ignore */
+    }
+    push({
+      tone: 'warn',
+      title: '已请求取消',
+      description: `正在停止「${kind}」批量任务（当前请求结束后不再继续）`
+    });
+  };
+
+  const throwIfAborted = (signal: AbortSignal) => {
+    if (signal.aborted) {
+      throw new DOMException('批量任务已取消', 'AbortError');
+    }
+  };
+
   /** 最近一次测活结果：filename → action + http 状态码 */
   const [probeMap, setProbeMap] = useState<
     Record<string, { action: string; http?: number }>
@@ -119,30 +194,72 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
     });
   };
 
-  const reload = useCallback(async () => {
-    setLoading(true);
+  const reload = useCallback(async (opts?: { silent?: boolean }) => {
+    if (!opts?.silent) setLoading(true);
     try {
       const r = await window.api.listCpaAuth();
       setDir(r.dir);
       setItems(r.items);
+      // 从落盘字段恢复测活/状态列（刷新后仍显示上次结果）
+      setProbeMap((prev) => {
+        const next = { ...prev };
+        for (const it of r.items) {
+          const act = String(it.probeAction || '').trim();
+          if (!act) continue;
+          const http = Number(it.probeHttp || 0) || undefined;
+          next[it.filename] = { action: act, http };
+        }
+        return next;
+      });
       setSelected((prev) => {
         const names = new Set(r.items.map((i) => i.filename));
         return new Set([...prev].filter((n) => names.has(n)));
       });
     } catch (err) {
-      push({
-        tone: 'danger',
-        title: '加载 Auth 失败',
-        description: err instanceof Error ? err.message : String(err)
-      });
+      if (!opts?.silent) {
+        push({
+          tone: 'danger',
+          title: '加载 Auth 失败',
+          description: err instanceof Error ? err.message : String(err)
+        });
+      }
     } finally {
-      setLoading(false);
+      if (!opts?.silent) setLoading(false);
     }
   }, [push]);
 
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  // 页面可见时轻量轮询：注册/mint 写出新文件后自动刷新（隐藏标签页暂停；批量操作时跳过）
+  useEffect(() => {
+    let timer: number | null = null;
+    const tick = () => {
+      if (document.visibilityState !== 'visible') return;
+      if (batchBusy || rowBusy) return;
+      void reload({ silent: true });
+    };
+    const start = () => {
+      if (timer != null) window.clearInterval(timer);
+      timer = window.setInterval(tick, 12000);
+    };
+    const onVis = () => {
+      if (document.visibilityState === 'visible') {
+        tick();
+        start();
+      } else if (timer != null) {
+        window.clearInterval(timer);
+        timer = null;
+      }
+    };
+    start();
+    document.addEventListener('visibilitychange', onVis);
+    return () => {
+      if (timer != null) window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVis);
+    };
+  }, [reload, batchBusy, rowBusy]);
 
   const hasEmail = (i: CpaAuthItem) => Boolean(String(i.email || '').trim());
   const hasSso = (i: CpaAuthItem) => Boolean(i.hasSso);
@@ -353,6 +470,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
           description: `${item.email || item.filename}${one.probeDeleted ? ' · 已删 Auth' : ' · 已保留'}${ssoDel}`
         });
         if (one.probeDeleted) await reload();
+        else await reload({ silent: true });
       } else if (one?.ok || one?.probeAction === 'ok') {
         push({
           tone: 'ok',
@@ -361,13 +479,14 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
             : '测活 OK',
           description: item.email || item.filename
         });
-        if (recoveredAuth) await reload();
+        await reload({ silent: true });
       } else {
         push({
           tone: 'warn',
           title: '测活异常',
           description: String(one?.error || one?.probeAction || 'unknown')
         });
+        await reload({ silent: true });
       }
     } catch (err) {
       push({
@@ -381,13 +500,214 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
     }
   };
 
+  /** 重登：密码登录 → mint → 随机英文消息激活 → 结果写回测活/状态 */
+  const reloginOne = async (item: CpaAuthItem) => {
+    if (!String(item.email || '').trim()) {
+      push({
+        tone: 'warn',
+        title: '无法重登',
+        description: '该 Auth 无邮箱，无法从号池取密码'
+      });
+      return;
+    }
+    setRowBusy(`relogin:${item.filename}`);
+    setProg({
+      kind: 'relogin',
+      total: 1,
+      done: 0,
+      ok: 0,
+      failed: 0,
+      running: true,
+      current: item.email || item.filename
+    });
+    try {
+      const r = await window.api.reloginCpaAuth({ filename: item.filename });
+      const action = String(r.probeAction || (r.ok ? 'ok' : 'error'));
+      const http = Number(r.probeHttp || 0) || undefined;
+      setProbeMap((m) => ({
+        ...m,
+        [item.filename]: { action, http }
+      }));
+      setProg({
+        kind: 'relogin',
+        total: 1,
+        done: 1,
+        ok: r.ok ? 1 : 0,
+        failed: r.ok ? 0 : 1,
+        running: false,
+        current: item.email || item.filename
+      });
+      if (r.ok || action === 'ok') {
+        push({
+          tone: 'ok',
+          title: '重登激活成功',
+          description: `${item.email || item.filename}${http ? ` · HTTP ${http}` : ''}`
+        });
+      } else {
+        push({
+          tone: 'warn',
+          title: '重登完成但测活未通过',
+          description:
+            String(r.error || action || 'unknown') + (http ? ` · HTTP ${http}` : '')
+        });
+      }
+      await reload({ silent: true });
+    } catch (err) {
+      push({
+        tone: 'danger',
+        title: '重登失败',
+        description: err instanceof Error ? err.message : String(err)
+      });
+      setProg((p) => (p ? { ...p, running: false, failed: 1, done: 1 } : p));
+    } finally {
+      setRowBusy(null);
+      window.setTimeout(() => setProg(null), 3000);
+    }
+  };
+
+  /**
+   * 批量重登：串行 concurrency=1（浏览器密码登录较重，禁止并行）。
+   * 范围同其它批量：已选 > 筛选 > 全部；跳过无邮箱。
+   */
+  const reloginBatch = async () => {
+    const filenames = targetNames();
+    if (filenames.length === 0) {
+      push({ tone: 'warn', title: '没有可重登的文件' });
+      return;
+    }
+    const byName = new Map(items.map((it) => [it.filename, it]));
+    const targets = filenames.filter((fn) => {
+      const it = byName.get(fn);
+      return Boolean(it && String(it.email || '').trim());
+    });
+    const skippedNoEmail = filenames.length - targets.length;
+    if (targets.length === 0) {
+      push({
+        tone: 'warn',
+        title: '没有可重登的文件',
+        description: '选中项均无邮箱，无法从号池取密码'
+      });
+      return;
+    }
+    if (
+      !window.confirm(
+        `将串行重登 ${targets.length} 条（并发 1，浏览器登录较慢）` +
+          (skippedNoEmail > 0 ? `\n跳过无邮箱 ${skippedNoEmail} 条` : '') +
+          `\n\n每条：密码登录 → mint → 随机英文消息 → 二次测活。\n确定继续？`
+      )
+    ) {
+      return;
+    }
+    const signal = beginBatch('relogin');
+    setProg({
+      kind: 'relogin',
+      total: targets.length,
+      done: 0,
+      ok: 0,
+      failed: 0,
+      running: true,
+      current: targets[0]
+    });
+    let ok = 0;
+    let failed = 0;
+    let cancelled = false;
+    try {
+      for (let i = 0; i < targets.length; i++) {
+        throwIfAborted(signal);
+        const fn = targets[i];
+        const it = byName.get(fn);
+        setProg((p) =>
+          p
+            ? {
+                ...p,
+                current: it?.email || fn,
+                running: true,
+                done: i,
+                ok,
+                failed
+              }
+            : p
+        );
+        try {
+          const r = await window.api.reloginCpaAuth({ filename: fn });
+          const action = String(r.probeAction || (r.ok ? 'ok' : 'error'));
+          const http = Number(r.probeHttp || 0) || undefined;
+          const success = Boolean(r.ok) || action === 'ok';
+          if (success) ok += 1;
+          else failed += 1;
+          setProbeMap((m) => ({
+            ...m,
+            [fn]: { action, http }
+          }));
+        } catch (err) {
+          if (isAbortError(err) || signal.aborted) {
+            cancelled = true;
+            break;
+          }
+          failed += 1;
+          setProbeMap((m) => ({
+            ...m,
+            [fn]: { action: 'error' }
+          }));
+        }
+        if (signal.aborted) {
+          cancelled = true;
+          break;
+        }
+        setProg({
+          kind: 'relogin',
+          total: targets.length,
+          done: i + 1,
+          ok,
+          failed,
+          running: i + 1 < targets.length,
+          current: it?.email || fn
+        });
+      }
+      if (cancelled || signal.aborted) {
+        push({
+          tone: 'warn',
+          title: '批量重登已取消',
+          description: `已完成 ${ok + failed}/${targets.length} · 成功 ${ok} · 失败 ${failed}`
+        });
+      } else {
+        push({
+          tone: failed > 0 ? 'warn' : 'ok',
+          title: '批量重登完成',
+          description:
+            `成功 ${ok} · 失败 ${failed}` +
+            (skippedNoEmail > 0 ? ` · 跳过无邮箱 ${skippedNoEmail}` : '') +
+            ' · 并发 1'
+        });
+      }
+      await reload({ silent: true });
+    } catch (err) {
+      if (isAbortError(err) || signal.aborted) {
+        push({
+          tone: 'warn',
+          title: '批量重登已取消',
+          description: `已完成 ${ok + failed}/${targets.length}`
+        });
+      } else {
+        push({
+          tone: 'danger',
+          title: '批量重登失败',
+          description: err instanceof Error ? err.message : String(err)
+        });
+      }
+    } finally {
+      endBatch('relogin');
+      window.setTimeout(() => setProg(null), 3500);
+    }
+  };
+
   const resignBatch = async () => {
     const filenames = targetNames();
     if (filenames.length === 0) {
       push({ tone: 'warn', title: '没有可重签的文件' });
       return;
     }
-    setBatchBusy('resign');
+    const signal = beginBatch('resign');
     setProg({
       kind: 'resign',
       total: filenames.length,
@@ -406,23 +726,37 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
       let noXai = 0;
       let remoteOkN = 0;
       let remoteFailedN = 0;
+      let cancelled = false;
       for (let i = 0; i < filenames.length; i += CHUNK) {
+        throwIfAborted(signal);
         const chunk = filenames.slice(i, i + CHUNK);
         setProg((p) =>
           p
             ? { ...p, current: chunk[0], running: true }
             : p
         );
-        const r = await window.api.resignCpaAuthBatch({
-          filenames: chunk,
-          pushRemote: resignPushRemote
-        });
-        ok += r.ok || 0;
-        failed += r.failed || 0;
-        noXai += r.results.filter((x) => x.ok && x.xai === false).length;
-        remoteOkN += r.remoteOk ?? r.results.filter((x) => x.remoteOk === true).length;
-        remoteFailedN +=
-          r.remoteFailed ?? r.results.filter((x) => x.remoteOk === false).length;
+        try {
+          const r = await window.api.resignCpaAuthBatch({
+            filenames: chunk,
+            pushRemote: resignPushRemote
+          });
+          ok += r.ok || 0;
+          failed += r.failed || 0;
+          noXai += r.results.filter((x) => x.ok && x.xai === false).length;
+          remoteOkN += r.remoteOk ?? r.results.filter((x) => x.remoteOk === true).length;
+          remoteFailedN +=
+            r.remoteFailed ?? r.results.filter((x) => x.remoteOk === false).length;
+        } catch (err) {
+          if (isAbortError(err) || signal.aborted) {
+            cancelled = true;
+            break;
+          }
+          throw err;
+        }
+        if (signal.aborted) {
+          cancelled = true;
+          break;
+        }
         setProg({
           kind: 'resign',
           total: filenames.length,
@@ -435,23 +769,35 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
           current: chunk[chunk.length - 1]
         });
       }
-      const remotePart = resignPushRemote
-        ? ` · 远程OK ${remoteOkN}${remoteFailedN ? ` · 远程失败 ${remoteFailedN}` : ''}`
-        : '';
-      push({
-        tone: failed > 0 || remoteFailedN > 0 ? 'warn' : 'ok',
-        title: '批量重签完成',
-        description: `成功 ${ok} · 失败 ${failed}${noXai ? ` · 无 xai ${noXai}` : ''}${remotePart}`
-      });
+      if (cancelled || signal.aborted) {
+        push({
+          tone: 'warn',
+          title: '批量重签已取消',
+          description: `已处理约 ${ok + failed}/${filenames.length} · 成功 ${ok} · 失败 ${failed}`
+        });
+      } else {
+        const remotePart = resignPushRemote
+          ? ` · 远程OK ${remoteOkN}${remoteFailedN ? ` · 远程失败 ${remoteFailedN}` : ''}`
+          : '';
+        push({
+          tone: failed > 0 || remoteFailedN > 0 ? 'warn' : 'ok',
+          title: '批量重签完成',
+          description: `成功 ${ok} · 失败 ${failed}${noXai ? ` · 无 xai ${noXai}` : ''}${remotePart}`
+        });
+      }
       await reload();
     } catch (err) {
-      push({
-        tone: 'danger',
-        title: '批量重签失败',
-        description: err instanceof Error ? err.message : String(err)
-      });
+      if (isAbortError(err) || signal.aborted) {
+        push({ tone: 'warn', title: '批量重签已取消' });
+      } else {
+        push({
+          tone: 'danger',
+          title: '批量重签失败',
+          description: err instanceof Error ? err.message : String(err)
+        });
+      }
     } finally {
-      setBatchBusy(null);
+      endBatch('resign');
       window.setTimeout(() => setProg(null), 3000);
     }
   };
@@ -470,7 +816,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
       });
       return;
     }
-    setBatchBusy('push');
+    const signal = beginBatch('push');
     setProg({
       kind: 'push',
       total: filenames.length,
@@ -486,16 +832,30 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
       let ok = 0;
       let failed = 0;
       let remoteUrl = '';
+      let cancelled = false;
       for (let i = 0; i < filenames.length; i += CHUNK) {
+        throwIfAborted(signal);
         const chunk = filenames.slice(i, i + CHUNK);
         setProg((p) => (p ? { ...p, current: chunk[0], running: true } : p));
-        const r = await window.api.pushCpaAuthRemote({
-          filenames: chunk,
-          concurrency: Math.min(4, chunk.length)
-        });
-        ok += r.ok || 0;
-        failed += r.failed || 0;
-        if (r.remoteUrl) remoteUrl = r.remoteUrl;
+        try {
+          const r = await window.api.pushCpaAuthRemote({
+            filenames: chunk,
+            concurrency: Math.min(4, chunk.length)
+          });
+          ok += r.ok || 0;
+          failed += r.failed || 0;
+          if (r.remoteUrl) remoteUrl = r.remoteUrl;
+        } catch (err) {
+          if (isAbortError(err) || signal.aborted) {
+            cancelled = true;
+            break;
+          }
+          throw err;
+        }
+        if (signal.aborted) {
+          cancelled = true;
+          break;
+        }
         setProg({
           kind: 'push',
           total: filenames.length,
@@ -508,19 +868,31 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
           current: chunk[chunk.length - 1]
         });
       }
-      push({
-        tone: failed > 0 ? 'warn' : 'ok',
-        title: '远程推送完成',
-        description: `成功 ${ok} · 失败 ${failed}${remoteUrl ? ` · ${remoteUrl}` : ''}`
-      });
+      if (cancelled || signal.aborted) {
+        push({
+          tone: 'warn',
+          title: '远程推送已取消',
+          description: `已处理 ${ok + failed}/${filenames.length} · 成功 ${ok} · 失败 ${failed}`
+        });
+      } else {
+        push({
+          tone: failed > 0 ? 'warn' : 'ok',
+          title: '远程推送完成',
+          description: `成功 ${ok} · 失败 ${failed}${remoteUrl ? ` · ${remoteUrl}` : ''}`
+        });
+      }
     } catch (err) {
-      push({
-        tone: 'danger',
-        title: '远程推送失败',
-        description: err instanceof Error ? err.message : String(err)
-      });
+      if (isAbortError(err) || signal.aborted) {
+        push({ tone: 'warn', title: '远程推送已取消' });
+      } else {
+        push({
+          tone: 'danger',
+          title: '远程推送失败',
+          description: err instanceof Error ? err.message : String(err)
+        });
+      }
     } finally {
-      setBatchBusy(null);
+      endBatch('push');
       window.setTimeout(() => setProg(null), 3000);
     }
   };
@@ -531,7 +903,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
       push({ tone: 'warn', title: '没有可测活的文件' });
       return;
     }
-    setBatchBusy('probe');
+    const signal = beginBatch('probe');
     setProg({
       kind: 'probe',
       total: filenames.length,
@@ -550,29 +922,43 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
       let deleted = 0;
       let ssoDeleted = 0;
       const nextProbe: Record<string, { action: string; http?: number }> = {};
+      let cancelled = false;
       for (let i = 0; i < filenames.length; i += CHUNK) {
+        throwIfAborted(signal);
         const chunk = filenames.slice(i, i + CHUNK);
         setProg((p) => (p ? { ...p, current: chunk[0], running: true } : p));
-        const r = await window.api.probeCpaAuthBatch({
-          filenames: chunk,
-          concurrency: Math.min(6, chunk.length),
-          deleteOnDead
-        });
-        ok += r.ok || 0;
-        failed += r.failed || 0;
-        dead += r.dead || 0;
-        deleted += r.deleted || 0;
-        ssoDeleted += r.ssoDeleted || 0;
-        for (const x of r.results) {
-          if (x.filename) {
-            const http = Number(x.probeHttp || 0) || undefined;
-            nextProbe[x.filename] = {
-              action: x.probeAction || (x.ok ? 'ok' : 'error'),
-              http
-            };
+        try {
+          const r = await window.api.probeCpaAuthBatch({
+            filenames: chunk,
+            concurrency: Math.min(6, chunk.length),
+            deleteOnDead
+          });
+          ok += r.ok || 0;
+          failed += r.failed || 0;
+          dead += r.dead || 0;
+          deleted += r.deleted || 0;
+          ssoDeleted += r.ssoDeleted || 0;
+          for (const x of r.results) {
+            if (x.filename) {
+              const http = Number(x.probeHttp || 0) || undefined;
+              nextProbe[x.filename] = {
+                action: x.probeAction || (x.ok ? 'ok' : 'error'),
+                http
+              };
+            }
           }
+          setProbeMap((m) => ({ ...m, ...nextProbe }));
+        } catch (err) {
+          if (isAbortError(err) || signal.aborted) {
+            cancelled = true;
+            break;
+          }
+          throw err;
         }
-        setProbeMap((m) => ({ ...m, ...nextProbe }));
+        if (signal.aborted) {
+          cancelled = true;
+          break;
+        }
         setProg({
           kind: 'probe',
           total: filenames.length,
@@ -585,23 +971,36 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
           current: chunk[chunk.length - 1]
         });
       }
-      push({
-        tone: dead > 0 || failed > 0 ? 'warn' : 'ok',
-        title: '批量 CPA 测活完成',
-        description:
-          `OK ${ok} · 死号 ${dead} · 已删 Auth ${deleted}` +
-          (ssoDeleted > 0 ? ` · 同步删 SSO ${ssoDeleted}` : '') +
-          (deleteOnDead ? '' : ' · 死号不自动删')
-      });
-      if (deleted > 0) await reload();
+      if (cancelled || signal.aborted) {
+        push({
+          tone: 'warn',
+          title: '批量测活已取消',
+          description: `OK ${ok} · 死号 ${dead} · 已删 ${deleted}（部分完成）`
+        });
+      } else {
+        push({
+          tone: dead > 0 || failed > 0 ? 'warn' : 'ok',
+          title: '批量 CPA 测活完成',
+          description:
+            `OK ${ok} · 死号 ${dead} · 已删 Auth ${deleted}` +
+            (ssoDeleted > 0 ? ` · 同步删 SSO ${ssoDeleted}` : '') +
+            (deleteOnDead ? '' : ' · 死号不自动删')
+        });
+      }
+      // 测活结果已落盘，静默刷新以同步 probe 字段
+      await reload({ silent: true });
     } catch (err) {
-      push({
-        tone: 'danger',
-        title: '批量测活失败',
-        description: err instanceof Error ? err.message : String(err)
-      });
+      if (isAbortError(err) || signal.aborted) {
+        push({ tone: 'warn', title: '批量测活已取消' });
+      } else {
+        push({
+          tone: 'danger',
+          title: '批量测活失败',
+          description: err instanceof Error ? err.message : String(err)
+        });
+      }
     } finally {
-      setBatchBusy(null);
+      endBatch('probe');
       window.setTimeout(() => setProg(null), 3500);
     }
   };
@@ -619,7 +1018,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
     ) {
       return;
     }
-    setBatchBusy('delete');
+    const signal = beginBatch('delete');
     setProg({
       kind: 'delete',
       total: filenames.length,
@@ -629,7 +1028,12 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
       running: true
     });
     try {
+      throwIfAborted(signal);
       const r = await window.api.deleteCpaAuth({ filenames });
+      if (signal.aborted) {
+        push({ tone: 'warn', title: '删除请求已取消' });
+        return;
+      }
       setProg({
         kind: 'delete',
         total: r.total,
@@ -647,13 +1051,17 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
       });
       await reload();
     } catch (err) {
-      push({
-        tone: 'danger',
-        title: '删除失败',
-        description: err instanceof Error ? err.message : String(err)
-      });
+      if (isAbortError(err) || signal.aborted) {
+        push({ tone: 'warn', title: '删除已取消' });
+      } else {
+        push({
+          tone: 'danger',
+          title: '删除失败',
+          description: err instanceof Error ? err.message : String(err)
+        });
+      }
     } finally {
-      setBatchBusy(null);
+      endBatch('delete');
       window.setTimeout(() => setProg(null), 2500);
     }
   };
@@ -668,7 +1076,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
       push({ tone: 'warn', title: '单次最多导出 200 个' });
       return;
     }
-    setBatchBusy('export');
+    const signal = beginBatch('export');
     setProg({
       kind: 'export',
       total: filenames.length,
@@ -678,7 +1086,12 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
       running: true
     });
     try {
+      throwIfAborted(signal);
       const r = await window.api.exportCpaAuth({ filenames });
+      if (signal.aborted) {
+        push({ tone: 'warn', title: '导出已取消' });
+        return;
+      }
       if (!r.files.length) {
         push({ tone: 'warn', title: '没有读到文件' });
         return;
@@ -725,13 +1138,17 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
         description: `${r.files.length} 个文件${r.files.length > 1 ? '（汇总 txt' + (r.files.length <= 10 ? ' + 分文件' : '') + '）' : ''}`
       });
     } catch (err) {
-      push({
-        tone: 'danger',
-        title: '导出失败',
-        description: err instanceof Error ? err.message : String(err)
-      });
+      if (isAbortError(err) || signal.aborted) {
+        push({ tone: 'warn', title: '导出已取消' });
+      } else {
+        push({
+          tone: 'danger',
+          title: '导出失败',
+          description: err instanceof Error ? err.message : String(err)
+        });
+      }
     } finally {
-      setBatchBusy(null);
+      endBatch('export');
       window.setTimeout(() => setProg(null), 2500);
     }
   };
@@ -822,7 +1239,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
       if (!ok) return;
     }
 
-    setBatchBusy('backfill');
+    const signal = beginBatch('backfill');
     setProg({
       kind: 'backfill',
       total: targets.length,
@@ -833,10 +1250,15 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
       current: targets[0]?.email || targets[0]?.filename
     });
     try {
+      throwIfAborted(signal);
       const r = await window.api.backfillCpaAuthSso({
         filenames: targets.map((t) => t.filename),
         force
       });
+      if (signal.aborted) {
+        push({ tone: 'warn', title: '回填 SSO 已取消' });
+        return;
+      }
       setProg({
         kind: 'backfill',
         total: r.scanned,
@@ -858,14 +1280,18 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
       });
       await reload();
     } catch (err) {
-      push({
-        tone: 'danger',
-        title: '回填失败',
-        description: err instanceof Error ? err.message : String(err)
-      });
+      if (isAbortError(err) || signal.aborted) {
+        push({ tone: 'warn', title: '回填 SSO 已取消' });
+      } else {
+        push({
+          tone: 'danger',
+          title: '回填失败',
+          description: err instanceof Error ? err.message : String(err)
+        });
+      }
       setProg((p) => (p ? { ...p, running: false } : p));
     } finally {
-      setBatchBusy(null);
+      endBatch('backfill');
       window.setTimeout(() => setProg(null), 4000);
     }
   };
@@ -893,12 +1319,30 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
     clearBackfillHold();
   };
 
+  /** 批量按钮：运行中变红「取消」，仅取消自身 kind */
+  const batchBtnProps = (kind: BatchKind, start: () => void) => {
+    const active = batchBusy === kind;
+    return {
+      variant: (active ? 'danger' : 'secondary') as 'danger' | 'secondary',
+      disabled: Boolean(busy && !active),
+      onClick: () => {
+        if (active) cancelBatch(kind);
+        else start();
+      },
+      title: active ? `取消「${kind}」批量任务` : undefined as string | undefined
+    };
+  };
+
   const progTitle =
     prog?.kind === 'probe'
       ? prog.running
         ? 'CPA 测活进行中'
         : 'CPA 测活完成'
-      : prog?.kind === 'resign'
+      : prog?.kind === 'relogin'
+        ? prog.running
+          ? '重登激活进行中'
+          : '重登激活完成'
+        : prog?.kind === 'resign'
         ? prog.running
           ? '批量重签进行中'
           : '批量重签完成'
@@ -1089,73 +1533,126 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
               <Button
                 size="sm"
                 className="min-w-[5.75rem] justify-center tabular-nums"
-                onClick={() => void probeBatch()}
-                disabled={busy || filteredItems.length === 0}
+                {...batchBtnProps('probe', () => void probeBatch())}
+                variant={batchBusy === 'probe' ? 'danger' : 'primary'}
+                disabled={
+                  (Boolean(busy) && batchBusy !== 'probe') ||
+                  (batchBusy !== 'probe' && filteredItems.length === 0)
+                }
                 title={
-                  (selected.size > 0
-                    ? `测活已选 ${selected.size} 条`
-                    : hasActiveMetaFilter
-                      ? `测活筛选 ${filteredItems.length} 条`
-                      : '测活全部') +
-                  (deleteOnDead ? ' · 401/402/403 将删除' : ' · 死号仅标记不删')
+                  batchBusy === 'probe'
+                    ? '取消测活批量任务'
+                    : (selected.size > 0
+                        ? `测活已选 ${selected.size} 条`
+                        : hasActiveMetaFilter
+                          ? `测活筛选 ${filteredItems.length} 条`
+                          : '测活全部') +
+                      (deleteOnDead ? ' · 401/402/403 将删除' : ' · 死号仅标记不删')
                 }
               >
-                <Activity
-                  className={cn('h-3.5 w-3.5', batchBusy === 'probe' && 'animate-pulse')}
-                />
-                {batchBusy === 'probe' ? `${prog?.done ?? 0}/${prog?.total ?? 0}` : '测活'}
+                {batchBusy === 'probe' ? (
+                  <Ban className="h-3.5 w-3.5" />
+                ) : (
+                  <Activity className="h-3.5 w-3.5" />
+                )}
+                {batchBusy === 'probe' ? '取消' : '测活'}
               </Button>
               <Button
-                variant="secondary"
                 size="sm"
                 className="min-w-[5.75rem] justify-center tabular-nums"
-                onClick={() => void resignBatch()}
-                disabled={busy || filteredItems.length === 0}
+                {...batchBtnProps('relogin', () => void reloginBatch())}
+                disabled={
+                  (Boolean(busy) && batchBusy !== 'relogin') ||
+                  (batchBusy !== 'relogin' && filteredItems.length === 0)
+                }
                 title={
-                  (selected.size > 0
-                    ? `重签已选 ${selected.size} 条`
-                    : hasActiveMetaFilter
-                      ? `重签筛选 ${filteredItems.length} 条`
-                      : '批量重签') +
-                  (resignPushRemote ? ' · 成功后推远程' : ' · 仅本地')
+                  batchBusy === 'relogin'
+                    ? '取消重登批量任务'
+                    : (selected.size > 0
+                        ? `重登已选 ${selected.size} 条`
+                        : hasActiveMetaFilter
+                          ? `重登筛选 ${filteredItems.length} 条`
+                          : '批量重登') + ' · 串行并发 1（浏览器登录）'
                 }
               >
-                <RotateCcw
-                  className={cn('h-3.5 w-3.5', batchBusy === 'resign' && 'animate-spin')}
-                />
-                {batchBusy === 'resign' ? `${prog?.done ?? 0}/${prog?.total ?? 0}` : '重签'}
+                {batchBusy === 'relogin' ? (
+                  <Ban className="h-3.5 w-3.5" />
+                ) : (
+                  <KeyRound className="h-3.5 w-3.5" />
+                )}
+                {batchBusy === 'relogin' ? '取消' : '重登'}
               </Button>
               <Button
-                variant="secondary"
                 size="sm"
                 className="min-w-[5.75rem] justify-center tabular-nums"
-                onClick={() => void pushRemoteBatch()}
-                disabled={busy || filteredItems.length === 0}
+                {...batchBtnProps('resign', () => void resignBatch())}
+                disabled={
+                  (Boolean(busy) && batchBusy !== 'resign') ||
+                  (batchBusy !== 'resign' && filteredItems.length === 0)
+                }
                 title={
-                  remoteReady
-                    ? selected.size > 0
-                      ? `推送已选 ${selected.size} 条`
-                      : hasActiveMetaFilter
-                        ? `推送筛选 ${filteredItems.length} 条`
-                        : '推送远程'
-                    : '请先在设置中配置远程 CPA 地址与密钥'
+                  batchBusy === 'resign'
+                    ? '取消重签批量任务'
+                    : (selected.size > 0
+                        ? `重签已选 ${selected.size} 条`
+                        : hasActiveMetaFilter
+                          ? `重签筛选 ${filteredItems.length} 条`
+                          : '批量重签') +
+                      (resignPushRemote ? ' · 成功后推远程' : ' · 仅本地')
                 }
               >
-                <CloudUpload
-                  className={cn('h-3.5 w-3.5', batchBusy === 'push' && 'animate-pulse')}
-                />
-                {batchBusy === 'push' ? `${prog?.done ?? 0}/${prog?.total ?? 0}` : '推送'}
+                {batchBusy === 'resign' ? (
+                  <Ban className="h-3.5 w-3.5" />
+                ) : (
+                  <RotateCcw className="h-3.5 w-3.5" />
+                )}
+                {batchBusy === 'resign' ? '取消' : '重签'}
               </Button>
               <Button
-                variant="secondary"
+                size="sm"
+                className="min-w-[5.75rem] justify-center tabular-nums"
+                {...batchBtnProps('push', () => void pushRemoteBatch())}
+                disabled={
+                  (Boolean(busy) && batchBusy !== 'push') ||
+                  (batchBusy !== 'push' && filteredItems.length === 0)
+                }
+                title={
+                  batchBusy === 'push'
+                    ? '取消推送批量任务'
+                    : remoteReady
+                      ? selected.size > 0
+                        ? `推送已选 ${selected.size} 条`
+                        : hasActiveMetaFilter
+                          ? `推送筛选 ${filteredItems.length} 条`
+                          : '推送远程'
+                      : '请先在设置中配置远程 CPA 地址与密钥'
+                }
+              >
+                {batchBusy === 'push' ? (
+                  <Ban className="h-3.5 w-3.5" />
+                ) : (
+                  <CloudUpload className="h-3.5 w-3.5" />
+                )}
+                {batchBusy === 'push' ? '取消' : '推送'}
+              </Button>
+              <Button
+                variant={batchBusy === 'backfill' ? 'danger' : 'secondary'}
                 size="sm"
                 className="min-w-[6.25rem] justify-center"
-                disabled={busy || items.length === 0}
+                disabled={
+                  (Boolean(busy) && batchBusy !== 'backfill') ||
+                  (batchBusy !== 'backfill' && items.length === 0)
+                }
+                onClick={() => {
+                  if (batchBusy === 'backfill') cancelBatch('backfill');
+                }}
                 onPointerDown={(e) => {
+                  if (batchBusy === 'backfill') return;
                   if (e.button !== 0) return;
                   onBackfillPointerDown();
                 }}
                 onPointerUp={(e) => {
+                  if (batchBusy === 'backfill') return;
                   if (e.button !== 0) return;
                   onBackfillPointerUp();
                 }}
@@ -1163,20 +1660,24 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                 onPointerCancel={onBackfillPointerLeave}
                 onContextMenu={(e) => e.preventDefault()}
                 title={
-                  '单击：仅回填无 sso 的文件（已有跳过）\n' +
-                  '长按约 0.6s：强制覆盖已有 sso（二次确认）\n' +
-                  (selected.size > 0
-                    ? `当前范围：已选 ${selected.size} 条\n`
-                    : missingSsoCount > 0
-                      ? `当前无 sso：${missingSsoCount} 条\n`
-                      : '') +
-                  '无邮箱 auth 无法靠 email 回填，需重新 mint 或手工补 sso'
+                  batchBusy === 'backfill'
+                    ? '取消回填 SSO'
+                    : '单击：仅回填无 sso 的文件（已有跳过）\n' +
+                      '长按约 0.6s：强制覆盖已有 sso（二次确认）\n' +
+                      (selected.size > 0
+                        ? `当前范围：已选 ${selected.size} 条\n`
+                        : missingSsoCount > 0
+                          ? `当前无 sso：${missingSsoCount} 条\n`
+                          : '') +
+                      '无邮箱 auth 无法靠 email 回填，需重新 mint 或手工补 sso'
                 }
               >
-                <Link2
-                  className={cn('h-3.5 w-3.5', batchBusy === 'backfill' && 'animate-pulse')}
-                />
-                {batchBusy === 'backfill' ? '回填中…' : '回填SSO'}
+                {batchBusy === 'backfill' ? (
+                  <Ban className="h-3.5 w-3.5" />
+                ) : (
+                  <Link2 className="h-3.5 w-3.5" />
+                )}
+                {batchBusy === 'backfill' ? '取消' : '回填SSO'}
               </Button>
               <Button
                 variant="secondary"
@@ -1210,39 +1711,61 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                 导入导出
               </span>
               <Button
-                variant="secondary"
+                variant={batchBusy === 'export' ? 'danger' : 'secondary'}
                 size="sm"
                 className="min-w-[5.75rem] justify-center"
-                onClick={() => void exportBatch()}
-                disabled={busy || filteredItems.length === 0}
+                onClick={() => {
+                  if (batchBusy === 'export') cancelBatch('export');
+                  else void exportBatch();
+                }}
+                disabled={
+                  (Boolean(busy) && batchBusy !== 'export') ||
+                  (batchBusy !== 'export' && filteredItems.length === 0)
+                }
                 title={
-                  selected.size > 0
-                    ? `导出已选 ${selected.size} 条`
-                    : hasActiveMetaFilter
-                      ? `导出筛选 ${filteredItems.length} 条`
-                      : '导出全部 JSON'
+                  batchBusy === 'export'
+                    ? '取消导出'
+                    : selected.size > 0
+                      ? `导出已选 ${selected.size} 条`
+                      : hasActiveMetaFilter
+                        ? `导出筛选 ${filteredItems.length} 条`
+                        : '导出全部 JSON'
                 }
               >
-                <FileDown className="h-3.5 w-3.5" />
-                {batchBusy === 'export' ? '导出中…' : '导出'}
+                {batchBusy === 'export' ? (
+                  <Ban className="h-3.5 w-3.5" />
+                ) : (
+                  <FileDown className="h-3.5 w-3.5" />
+                )}
+                {batchBusy === 'export' ? '取消' : '导出'}
               </Button>
               <span className="mx-0.5 hidden h-4 w-px bg-border sm:inline-block" aria-hidden />
               <Button
-                variant="secondary"
+                variant={batchBusy === 'delete' ? 'danger' : 'secondary'}
                 size="sm"
                 className="min-w-[5.5rem] justify-center"
-                onClick={() => void deleteBatch()}
-                disabled={busy || selected.size === 0}
+                onClick={() => {
+                  if (batchBusy === 'delete') cancelBatch('delete');
+                  else void deleteBatch();
+                }}
+                disabled={
+                  (Boolean(busy) && batchBusy !== 'delete') ||
+                  (batchBusy !== 'delete' && selected.size === 0)
+                }
                 title={
-                  selected.size > 0
-                    ? `删除已选 ${selected.size} 个 Auth 文件`
-                    : '请先勾选要删除的条目'
+                  batchBusy === 'delete'
+                    ? '取消删除'
+                    : selected.size > 0
+                      ? `删除已选 ${selected.size} 个 Auth 文件`
+                      : '请先勾选要删除的条目'
                 }
               >
-                <Trash2
-                  className={cn('h-3.5 w-3.5', batchBusy === 'delete' && 'animate-pulse')}
-                />
-                {batchBusy === 'delete' ? '删除中…' : '删除'}
+                {batchBusy === 'delete' ? (
+                  <Ban className="h-3.5 w-3.5" />
+                ) : (
+                  <Trash2 className="h-3.5 w-3.5" />
+                )}
+                {batchBusy === 'delete' ? '取消' : '删除'}
               </Button>
             </div>
           </div>
@@ -1321,13 +1844,13 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
               <tr>
                 <th className="w-10 px-3 py-2.5" />
                 <th className="px-3 py-2.5 font-medium">邮箱</th>
-                <th className="w-[5.5rem] px-3 py-2.5 font-medium">标记</th>
+                <th className="w-[4.5rem] px-3 py-2.5 font-medium">SSO</th>
                 <th className="w-[7rem] max-w-[7rem] px-2 py-2.5 font-medium">
                   授权
                 </th>
                 <th className="w-[3.25rem] px-3 py-2.5 font-medium">xai</th>
                 <th className="w-[4.5rem] px-3 py-2.5 font-medium">bot_flag</th>
-                {/* 固定窄列仅放 O/X，避免测活后邻列（标记/sso）横向跳动 */}
+                {/* 固定窄列仅放 O/X，避免测活后邻列横向跳动 */}
                 <th className="w-10 whitespace-nowrap px-2 py-2.5 text-center font-medium">
                   测活
                 </th>
@@ -1341,10 +1864,15 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
             <tbody>
               {pageItems.map((item) => {
                 const probe = probeMap[item.filename];
-                const probeAction = probe?.action;
-                const probeHttp = probe?.http;
+                const probeAction = probe?.action || item.probeAction || undefined;
+                const probeHttp =
+                  probe?.http ??
+                  (item.probeHttp != null && item.probeHttp > 0
+                    ? item.probeHttp
+                    : undefined);
                 const rowResign = rowBusy === `resign:${item.filename}`;
                 const rowProbe = rowBusy === `probe:${item.filename}`;
+                const rowRelogin = rowBusy === `relogin:${item.filename}`;
                 const rowNoEmail = !hasEmail(item);
                 const rowNoSso = !hasSso(item);
                 return (
@@ -1380,32 +1908,26 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                         maskEmail(item.email, emailMasked)
                       )}
                     </td>
-                    <td className="w-[5.5rem] min-w-[5.5rem] max-w-[5.5rem] px-3 py-2.5">
-                      {/* 固定槽位，避免测活结果出现后「无sso」胶囊左右跳 */}
-                      <div className="flex h-5 w-[4.75rem] items-center gap-1 overflow-hidden">
-                        {rowNoEmail && (
-                          <span
-                            className="shrink-0 rounded-full bg-orange-500/15 px-2 py-0.5 text-[10px] font-medium text-orange-600 dark:text-orange-400"
-                            title="无邮箱：无法靠 SSO 列表 email 回填 sso，请重新 mint 或手工写入"
-                          >
-                            无邮箱
-                          </span>
-                        )}
-                        {rowNoSso && (
+                    <td className="w-[4.5rem] min-w-[4.5rem] max-w-[4.5rem] px-3 py-2.5">
+                      {/* SSO：有=绿 / 无=黄（固定槽位防布局跳动） */}
+                      <div className="flex h-5 items-center">
+                        {rowNoSso ? (
                           <span
                             className="shrink-0 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400"
-                            title="无 sso 字段：可筛选后点「回填SSO」（需有邮箱）"
+                            title={
+                              rowNoEmail
+                                ? '无 SSO · 且无邮箱，无法 email 回填'
+                                : '无 SSO：可筛选后点「回填SSO」（需有邮箱）'
+                            }
                           >
-                            无sso
+                            无
                           </span>
-                        )}
-                        {/* SSO 转换 / 已含 sso：绿色 sso 标记 */}
-                        {!rowNoSso && (
+                        ) : (
                           <span
                             className="shrink-0 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400"
-                            title="已含 sso（SSO→Auth 转换或已回填）"
+                            title="已含 SSO（SSO→Auth 转换或已回填）"
                           >
-                            sso
+                            有
                           </span>
                         )}
                       </div>
@@ -1427,7 +1949,14 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                     </td>
                     <td className="w-[4.5rem] min-w-[4.5rem] px-3 py-2.5">
                       <BotFlagBadge
-                        flag={item.botFlagSource}
+                        flag={
+                          // 0 合法；有 sso 且无 claim 时显示绿 None
+                          item.botFlagSource != null && item.botFlagSource !== ''
+                            ? item.botFlagSource
+                            : item.hasSso
+                              ? 0
+                              : item.botFlagSource
+                        }
                         is1={item.isBotFlag1}
                         missing="dash"
                       />
@@ -1452,12 +1981,29 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                           className="h-7 shrink-0"
                           disabled={busy}
                           onClick={() => void probeOne(item)}
-                          title="单条 CPA 测活"
+                          title="单条 CPA 测活（结果落盘）"
                         >
                           <Activity
                             className={cn('h-3.5 w-3.5', rowProbe && 'animate-pulse')}
                           />
                           {rowProbe ? '…' : '测活'}
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          className="h-7 shrink-0"
+                          disabled={busy || rowNoEmail}
+                          onClick={() => void reloginOne(item)}
+                          title={
+                            rowNoEmail
+                              ? '无邮箱无法重登'
+                              : '密码重登 → mint → 随机英文消息激活 → 更新测活/状态'
+                          }
+                        >
+                          <KeyRound
+                            className={cn('h-3.5 w-3.5', rowRelogin && 'animate-pulse')}
+                          />
+                          {rowRelogin ? '…' : '重登'}
                         </Button>
                         <Button
                           variant="secondary"
@@ -1615,3 +2161,4 @@ function AuthMetric({
     </div>
   );
 }
+

@@ -204,9 +204,8 @@ function merge(partial: unknown): AppSettings {
     grok2apiPassword:
       typeof (p as AppSettings).grok2apiPassword === 'string'
         ? (p as AppSettings).grok2apiPassword
-        : DEFAULT_SETTINGS.grok2apiPassword,
-    // 固定 web_convert：忽略历史 build_direct，UI 不再暴露切换
-    grok2apiUploadMode: 'web_convert'
+        : DEFAULT_SETTINGS.grok2apiPassword
+    // grok2api 上传固定 web_convert（字段已删除；Python config 仍写死，见 registerRuntime）
   };
   // 旧配置无此字段时回落到默认 60
   if (

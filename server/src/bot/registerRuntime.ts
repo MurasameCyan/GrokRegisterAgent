@@ -251,10 +251,10 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
   else delete config.grok2api_username;
   if (g2pass) config.grok2api_password = g2pass;
   else delete config.grok2api_password;
-  // 固定 web_convert（UI 已移除上传模式选择；与 grok-register-web 一致）
+  // 固定 web_convert；清理历史可选模式 / 引擎字段
   config.grok2api_upload_mode = 'web_convert';
-  // 清理历史引擎字段（若旧 config 残留）
   delete config.register_engine;
+  delete config.grok2apiUploadMode;
 
   if (typeof count === 'number') {
     config.run = { ...(config.run || {}), count };

@@ -27,10 +27,10 @@ function pickBotFlagRaw(pl: Record<string, unknown>): unknown {
     'bot_flag_src'
   ];
   for (const k of keys) {
-    if (pl[k] !== undefined && pl[k] !== null && pl[k] !== '') {
-      return pl[k];
-    }
-    if (pl[k] === 0 || pl[k] === '0') return pl[k];
+    const v = pl[k];
+    // 0 / "0" 合法；仅跳过缺失与空串（勿先 !== '' 再比 0 → TS2367）
+    if (v === undefined || v === null || v === '') continue;
+    return v;
   }
   return undefined;
 }

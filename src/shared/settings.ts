@@ -160,12 +160,6 @@ export interface AppSettings {
   grok2apiUrl: string;
   grok2apiUsername: string;
   grok2apiPassword: string;
-  /**
-   * grok2api 上传模式（固定 web_convert，UI 不再暴露）。
-   * SSO → /accounts/web/import → convert-to-build（与 grok-register-web 一致）。
-   * 保留字段仅兼容旧配置读盘；运行时强制 web_convert。
-   */
-  grok2apiUploadMode: 'web_convert' | 'build_direct';
   /** 主题模式 */
   theme: ThemeMode;
 }
@@ -219,7 +213,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   grok2apiUrl: '',
   grok2apiUsername: '',
   grok2apiPassword: '',
-  grok2apiUploadMode: 'web_convert',
   theme: 'system'
 };
 

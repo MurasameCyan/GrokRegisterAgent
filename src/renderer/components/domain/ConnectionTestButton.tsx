@@ -1,24 +1,25 @@
-import { useState, type ReactNode } from 'react';
-import { Loader2, CheckCircle2, AlertCircle } from 'lucide-react';
+import { useState } from 'react';
+import { Loader2, PlugZap } from 'lucide-react';
 import { Button } from '@renderer/components/ui/Button';
-import type { TestResult } from '@shared/runEvents';
 import { cn } from '@renderer/lib/cn';
+import type { TestResult } from '@shared/runEvents';
 
 export function ConnectionTestButton({
-  label = '测试连接',
   onTest,
-  disabled
+  disabled,
+  label = '检测远程连通性'
 }: {
-  label?: string;
-  onTest(): Promise<TestResult>;
+  onTest: () => Promise<TestResult & { latencyMs?: number; ms?: number }>;
   disabled?: boolean;
-}): ReactNode {
-  const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<TestResult | null>(null);
+  label?: string;
+}) {
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<(TestResult & { latencyMs?: number; ms?: number }) | null>(
+    null
+  );
 
-  const click = async () => {
-    setBusy(true);
-    setResult(null);
+  const run = async () => {
+    setLoading(true);
     try {
       const r = await onTest();
       setResult(r);
@@ -28,31 +29,40 @@ export function ConnectionTestButton({
         message: err instanceof Error ? err.message : String(err)
       });
     } finally {
-      setBusy(false);
+      setLoading(false);
     }
   };
 
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <Button variant="secondary" size="sm" onClick={click} disabled={disabled || busy}>
-        {busy ? (
+      <Button
+        type="button"
+        variant="secondary"
+        size="sm"
+        disabled={disabled || loading}
+        onClick={() => void run()}
+      >
+        {loading ? (
           <Loader2 className="h-3.5 w-3.5 animate-spin" />
-        ) : result?.ok ? (
-          <CheckCircle2 className="h-3.5 w-3.5 text-ok" />
-        ) : result && !result.ok ? (
-          <AlertCircle className="h-3.5 w-3.5 text-danger" />
-        ) : null}
-        {label}
+        ) : (
+          <PlugZap className="h-3.5 w-3.5" />
+        )}
+        {loading ? '检测中…' : label}
       </Button>
       {result && (
         <span
           className={cn(
-            'text-[12px] font-medium',
+            'max-w-full text-[12px] leading-5',
             result.ok ? 'text-ok' : 'text-danger'
           )}
           title={result.message}
         >
-          {result.ms != null && result.ok ? `${result.message} · ${result.ms}ms` : result.message}
+          {result.ok ? '✓ ' : '✗ '}
+          {result.message}
+          {(() => {
+            const lat = result.latencyMs ?? result.ms;
+            return lat != null ? ` · ${lat}ms` : '';
+          })()}
         </span>
       )}
     </div>

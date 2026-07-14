@@ -199,6 +199,40 @@ def probe_cpa_auth(
 # 测活 dead 后触发密码重登二次检测的 HTTP 状态
 RECOVER_HTTP_STATUSES = frozenset({401, 403})
 
+# 写入 auth JSON 的侧车字段（CPA 忽略；列表/UI 持久化测活与 HTTP）
+PROBE_ACTION_KEY = "probe_action"
+PROBE_HTTP_KEY = "probe_http"
+PROBE_AT_KEY = "probe_at"
+
+
+def persist_probe_result(path: str | Path, probe: dict[str, Any]) -> None:
+    """把测活 action / http_status 写回 auth 文件，刷新后仍可显示。"""
+    p = Path(path)
+    if not p.is_file():
+        return
+    action = str(probe.get("action") or "").strip()
+    if not action:
+        return
+    try:
+        http = int(probe.get("http_status") or 0)
+    except Exception:
+        http = 0
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return
+        data[PROBE_ACTION_KEY] = action
+        if http > 0:
+            data[PROBE_HTTP_KEY] = http
+        else:
+            data.pop(PROBE_HTTP_KEY, None)
+        data[PROBE_AT_KEY] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        tmp = p.with_suffix(p.suffix + ".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        tmp.replace(p)
+    except Exception:
+        pass
+
 # mint 刚完成时常出现瞬时 permission-denied / 403，CPA 面板稍后仍 200
 _SOFT_403_MARKERS = (
     "permission-denied",
@@ -356,4 +390,7 @@ def probe_and_cleanup(
             r["deleted"] = True
         except Exception as e:
             r["delete_error"] = str(e)
+    # 未删除时持久化测活结果，供下次列表展示
+    if not r.get("deleted") and path.is_file():
+        persist_probe_result(path, r)
     return r

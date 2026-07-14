@@ -29,6 +29,17 @@ interface RunState {
 
 let seq = 0;
 
+/** 日志去重：同 run + 同 level + 规范化文本，短窗内丢弃重复行 */
+const LOG_DEDUP_MS = 2500;
+const lastLogKeyByRun = new Map<string, { key: string; ts: number }>();
+
+function normalizeLogText(text: string): string {
+  return String(text || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 400);
+}
+
 function isActive(phase: string) {
   return phase === 'starting' || phase === 'running';
 }
@@ -127,29 +138,33 @@ export const useRunStore = create<RunState>((set) => ({
           break;
         }
         case 'stdout':
+        case 'stderr': {
+          const level = event.type === 'stderr' ? ('stderr' as const) : event.level;
+          const text = String(event.text || '');
+          const norm = normalizeLogText(text);
+          const dedupKey = `${event.runId}|${level}|${norm}`;
+          const prev = lastLogKeyByRun.get(event.runId);
+          if (
+            prev &&
+            prev.key === dedupKey &&
+            event.ts - prev.ts >= 0 &&
+            event.ts - prev.ts < LOG_DEDUP_MS
+          ) {
+            break;
+          }
+          lastLogKeyByRun.set(event.runId, { key: dedupKey, ts: event.ts });
           logs = [
             ...logs,
             {
               id: `${Date.now()}-${seq++}`,
               ts: event.ts,
-              level: event.level,
-              text: event.text,
+              level,
+              text,
               runId: event.runId
             }
           ].slice(-2000);
           break;
-        case 'stderr':
-          logs = [
-            ...logs,
-            {
-              id: `${Date.now()}-${seq++}`,
-              ts: event.ts,
-              level: 'stderr',
-              text: event.text,
-              runId: event.runId
-            }
-          ].slice(-2000);
-          break;
+        }
         case 'progress':
           if (!focus || event.runId === focus || event.runId === status.runId) {
             status = { ...status, current: event.current, total: event.total };

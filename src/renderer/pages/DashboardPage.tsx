@@ -1,67 +1,35 @@
-import { useEffect, useMemo, useState } from 'react';
-import {
-  ArrowUpCircle,
-  Clock3,
-  Database,
-  HeartPulse,
-  RefreshCcw
-} from 'lucide-react';
+import { useEffect, useMemo } from 'react';
+import { Database, HeartPulse } from 'lucide-react';
 import { useAccountsStore } from '@renderer/store/accountsStore';
 import { useSettingsStore } from '@renderer/store/settingsStore';
 import { useRunStore } from '@renderer/store/runStore';
-import { cn } from '@renderer/lib/cn';
 import { fmtBeijing, nowBeijing } from '@renderer/lib/time';
-import type { UpdateInfo } from '@shared/ipc';
 
 export function DashboardPage({ username }: { username: string }) {
   const accounts = useAccountsStore((s) => s.accounts);
   const reloadAccounts = useAccountsStore((s) => s.reload);
   const settings = useSettingsStore((s) => s.data);
   const status = useRunStore((s) => s.status);
-  const [update, setUpdate] = useState<UpdateInfo | null>(null);
-  const [updateLoading, setUpdateLoading] = useState(false);
-
-  const loadUpdate = async () => {
-    setUpdateLoading(true);
-    try {
-      setUpdate(await window.api.checkUpdate());
-    } finally {
-      setUpdateLoading(false);
-    }
-  };
 
   useEffect(() => {
     void reloadAccounts();
-    void loadUpdate();
   }, [reloadAccounts]);
 
   const ssoCount = useMemo(() => accounts.filter((a) => a.sso).length, [accounts]);
   const latest = accounts[0];
   const now = new Date();
-  const timeLabel = now.toLocaleTimeString('zh-CN', {
-    timeZone: 'Asia/Shanghai',
-    hour12: false,
-    hour: '2-digit',
-    minute: '2-digit'
-  });
 
   return (
     <div className="space-y-4">
       <div className="grid gap-4 lg:grid-cols-2 lg:items-stretch">
-        {/* 左：精简概览 */}
+        {/* 左：精简概览（版本/检查更新已移至侧边栏） */}
         <section className="welcome-card flex h-full min-h-0 flex-col space-y-4 !p-4 sm:!p-5">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <p className="page-kicker">概览</p>
-              <h2 className="mt-0.5 text-[22px] font-bold tracking-[-0.03em] sm:text-[24px]">
-                {username}，{greeting(now)}
-              </h2>
-              <p className="mt-1 text-[12px] text-muted-foreground">{nowBeijing()} · 北京时间</p>
-            </div>
-            <span className="chip shrink-0">
-              <Clock3 className="h-3.5 w-3.5" />
-              {timeLabel}
-            </span>
+          <div className="min-w-0">
+            <p className="page-kicker">概览</p>
+            <h2 className="mt-0.5 text-[22px] font-bold tracking-[-0.03em] sm:text-[24px]">
+              {username}，{greeting(now)}
+            </h2>
+            <p className="mt-1 text-[12px] text-muted-foreground">{nowBeijing()} · 北京时间</p>
           </div>
 
           <div className="grid flex-1 grid-cols-2 content-start gap-2.5">
@@ -78,8 +46,6 @@ export function DashboardPage({ username }: { username: string }) {
               Icon={HeartPulse}
             />
           </div>
-
-          <VersionBadge update={update} loading={updateLoading} onCheck={() => void loadUpdate()} />
         </section>
 
         {/* 右：SSO 最近（与左侧同宽同高） */}
@@ -139,46 +105,6 @@ function InfoRow({ label, value }: { label: string; value: string }) {
       >
         {value}
       </span>
-    </div>
-  );
-}
-
-function VersionBadge({
-  update,
-  loading,
-  onCheck
-}: {
-  update: UpdateInfo | null;
-  loading: boolean;
-  onCheck(): void;
-}) {
-  const current = update?.current;
-  const hasUpdate = !!update?.hasUpdate;
-
-  return (
-    <div className="flex flex-wrap items-center gap-2">
-      <span className="chip">v{current ?? '…'}</span>
-      {hasUpdate ? (
-        <a
-          href={update?.htmlUrl ?? '#'}
-          target="_blank"
-          rel="noreferrer"
-          className="pill pill-danger"
-        >
-          <ArrowUpCircle className="h-3.5 w-3.5" />
-          有新版本 {update?.latest}
-        </a>
-      ) : (
-        <button
-          type="button"
-          onClick={onCheck}
-          disabled={loading}
-          className="chip hover:text-foreground"
-        >
-          <RefreshCcw className={cn('h-3 w-3', loading && 'animate-spin')} />
-          {loading ? '检查中…' : update?.error ? update.error : update ? '已是最新' : '检查更新'}
-        </button>
-      )}
     </div>
   );
 }

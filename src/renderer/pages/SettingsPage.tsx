@@ -1,9 +1,10 @@
 import { FormEvent, useEffect, useState, type ReactNode } from 'react';
-import { KeyRound, ShieldCheck } from 'lucide-react';
+import { ChevronDown, ChevronRight, KeyRound, ShieldCheck } from 'lucide-react';
 import { SettingsForm } from '@renderer/components/domain/SettingsForm';
 import { Button } from '@renderer/components/ui/Button';
 import { Input } from '@renderer/components/ui/Input';
 import { PasswordInput } from '@renderer/components/ui/PasswordInput';
+import { cn } from '@renderer/lib/cn';
 import { useSettingsStore } from '@renderer/store/settingsStore';
 import { useToastStore } from '@renderer/store/toastStore';
 import type { AuthState, ChangeCredentialsInput } from '@shared/ipc';
@@ -24,19 +25,20 @@ export function SettingsPage({
 
   return (
     <div className="mx-auto max-w-5xl space-y-5 pb-20">
-      <SecurityPanel username={username} onAuthChanged={onAuthChanged} />
       <SettingsForm />
+      <CredentialsPanel username={username} onAuthChanged={onAuthChanged} />
     </div>
   );
 }
 
-function SecurityPanel({
+function CredentialsPanel({
   username,
   onAuthChanged
 }: {
   username: string;
   onAuthChanged(next: AuthState): void;
 }) {
+  const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<ChangeCredentialsInput>({
     currentPassword: '',
     username,
@@ -76,51 +78,72 @@ function SecurityPanel({
 
   return (
     <form onSubmit={submit} className="ios-group">
-      <div className="flex items-center justify-between border-b border-border/70 px-4 py-3.5">
-        <div>
-          <p className="page-kicker">安全</p>
-          <h3 className="mt-0.5 text-[17px] font-semibold tracking-[-0.02em]">账号与密码</h3>
+      <div
+        className={cn(
+          'flex cursor-pointer select-none items-center justify-between gap-3 px-4 py-3.5 hover:bg-muted/30',
+          open && 'border-b border-border/70'
+        )}
+        role="button"
+        tabIndex={0}
+        onClick={() => setOpen((v) => !v)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            setOpen((v) => !v);
+          }
+        }}
+      >
+        <div className="flex min-w-0 items-start gap-2">
+          {open ? (
+            <ChevronDown className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+          ) : (
+            <ChevronRight className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+          )}
+          <div className="min-w-0">
+            <h3 className="text-[17px] font-semibold tracking-[-0.02em]">账号与密码</h3>
+            <p className="mt-1 text-[13px] leading-5 text-muted-foreground">
+              当前账号 {username} · 修改后更新会话
+            </p>
+          </div>
         </div>
-        <ShieldCheck className="h-4 w-4 text-ok" />
+        <ShieldCheck className="h-4 w-4 shrink-0 text-ok" />
       </div>
-      <div className="space-y-4 p-4">
-        <div className="rounded-xl bg-muted/70 p-3.5 text-[13px] leading-5 text-muted-foreground">
-          当前账号 <span className="font-medium text-foreground">{username}</span>
-          。请勿长期使用默认密码；修改后会更新当前会话。
+      {open && (
+        <div className="space-y-4 p-4" onClick={(e) => e.stopPropagation()}>
+          <div className="grid gap-4 lg:grid-cols-2">
+            <Field label="当前密码">
+              <PasswordInput
+                value={draft.currentPassword}
+                onChange={(e) => setDraft({ ...draft, currentPassword: e.target.value })}
+              />
+            </Field>
+            <Field label="新用户名">
+              <Input
+                value={draft.username}
+                onChange={(e) => setDraft({ ...draft, username: e.target.value })}
+              />
+            </Field>
+            <Field label="新密码">
+              <PasswordInput
+                value={draft.password}
+                onChange={(e) => setDraft({ ...draft, password: e.target.value })}
+              />
+            </Field>
+            <Field label="确认密码">
+              <PasswordInput
+                value={draft.confirmPassword}
+                onChange={(e) => setDraft({ ...draft, confirmPassword: e.target.value })}
+              />
+            </Field>
+          </div>
+          <div className="flex justify-end">
+            <Button type="submit" disabled={busy}>
+              <KeyRound className="h-4 w-4" />
+              {busy ? '保存中…' : '修改账号密码'}
+            </Button>
+          </div>
         </div>
-        <div className="grid gap-4 lg:grid-cols-2">
-          <Field label="当前密码">
-            <PasswordInput
-              value={draft.currentPassword}
-              onChange={(e) => setDraft({ ...draft, currentPassword: e.target.value })}
-            />
-          </Field>
-          <Field label="新用户名">
-            <Input
-              value={draft.username}
-              onChange={(e) => setDraft({ ...draft, username: e.target.value })}
-            />
-          </Field>
-          <Field label="新密码">
-            <PasswordInput
-              value={draft.password}
-              onChange={(e) => setDraft({ ...draft, password: e.target.value })}
-            />
-          </Field>
-          <Field label="确认密码">
-            <PasswordInput
-              value={draft.confirmPassword}
-              onChange={(e) => setDraft({ ...draft, confirmPassword: e.target.value })}
-            />
-          </Field>
-        </div>
-        <div className="flex justify-end">
-          <Button type="submit" disabled={busy}>
-            <KeyRound className="h-4 w-4" />
-            {busy ? '保存中…' : '修改账号密码'}
-          </Button>
-        </div>
-      </div>
+      )}
     </form>
   );
 }

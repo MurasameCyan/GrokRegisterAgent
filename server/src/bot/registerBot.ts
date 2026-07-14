@@ -50,6 +50,46 @@ function isActivePhase(phase: RunPhase): boolean {
   return phase === 'starting' || phase === 'running';
 }
 
+/**
+ * UI 无需展示的冗长调试行（进度/成功/失败仍会先解析，再决定是否 hide）。
+ * 来源：邮件创建、重定向轮询、mint 细节、代理轮换、grok2api 中间步骤等。
+ */
+function isNoiseStdoutLine(msg: string): boolean {
+  const m = String(msg || '').trim();
+  if (!m) return true;
+  // 纯时间戳行
+  if (/^\d{2}:\d{2}:\d{2}$/.test(m)) return true;
+  const rules: RegExp[] = [
+    /邮件\s*API\s*:/i,
+    /email_register\s+build/i,
+    /邮箱域名池\s*:/,
+    /邮箱创建成功\s*:/,
+    /等待重定向到\s*grok\.com/i,
+    /已追加写入.*(?:sso|SSO).*到文件/,
+    /\[auth\]\s*SSO\s*[→\-].*mint/i,
+    /\[auth\]\s*SSO→CPA\s*mint/i,
+    /access_token\s*referrer/i,
+    /access_token\s*\(expires_in/i,
+    /\[auth\]\s*wrote\s+/i,
+    /\[auth\]\s*probe\s+action=/i,
+    /\[auth\]\s*access_token/i,
+    /\[grok2api\]\s*Updating\s+Web\s+egress/i,
+    /\[grok2api\]\s*Uploading\s+SSO\s+mode=/i,
+    /代理注册成功计数\s*\+/i,
+    /可用池成功计数\s*\+/i,
+    /复用已有\s*DISPLAY\s*=/i,
+    /代理池\s*:\s*\d+\s*条/i,
+    /本轮代理\s*IP\s*键\s*:/i,
+    /浏览器代理\s*\(\s*本轮/i,
+    /本轮特征\s*:/i,
+    /当前使用代理\s*:/i,
+    /代理降级未生效:\s*未匹配到可用池/i,
+    // mint 软重试细节
+    /\[auth\]\s*probe.*soft_/i
+  ];
+  return rules.some((re) => re.test(m));
+}
+
 export class RegisterBot extends EventEmitter {
   private jobs = new Map<string, Job>();
   /** 前端「聚焦」任务：日志/状态默认展示这个；空则取最近活跃 */
@@ -549,6 +589,9 @@ export class RegisterBot extends EventEmitter {
         total
       });
     }
+
+    // 噪声行：不写 UI 日志（进度/成功/失败事件已在上面处理）
+    if (isNoiseStdoutLine(msg)) return;
 
     if (isRoundFail || msg.startsWith('✘') || msg.includes('[Error]') || msg.includes('失败')) {
       this.error(runId, msg);

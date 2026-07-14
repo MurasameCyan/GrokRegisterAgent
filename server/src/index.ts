@@ -27,6 +27,7 @@ import { fetchEmails, extractVerificationCode, fetchLatestCodeByAddress } from '
 import { probeProxy, probeProxyBatch } from './api/proxyApi.js';
 import { fetchProxiesFromUrl } from './api/proxyFetchApi.js';
 import { resolveHttpProxy } from './resolveHttpProxy.js';
+import { proxiedRequest } from './httpClient.js';
 import { checkSso } from './ssoCheck.js';
 import {
   authBootstrapInfo,
@@ -44,6 +45,7 @@ import {
   probeCpaAuthBatch,
   pushCpaAuthRemoteBatch,
   readCpaAuthFiles,
+  reloginCpaAuth,
   resignCpaAuth,
   resignCpaAuthBatch,
   testCpaRemoteConnectivity
@@ -560,6 +562,111 @@ app.post('/api/test/cpa-remote', async (req, res) => {
     const body = (req.body ?? {}) as { url?: string; key?: string };
     const result = await testCpaRemoteConnectivity(body);
     return res.json(result);
+  } catch (e: any) {
+    return res.json({ ok: false, message: `检测异常: ${e?.message || e}` });
+  }
+});
+
+/** 远程 grok2api 管理登录连通性（不上传账号） */
+app.post('/api/test/grok2api-remote', async (req, res) => {
+  try {
+    const settings = await loadSettings();
+    const body = (req.body ?? {}) as {
+      url?: string;
+      username?: string;
+      password?: string;
+    };
+    let base = String(body.url ?? settings.grok2apiUrl ?? '')
+      .trim()
+      .replace(/\/+$/, '');
+    const username = String(body.username ?? settings.grok2apiUsername ?? '').trim();
+    const password = String(body.password ?? settings.grok2apiPassword ?? '').trim();
+    if (!base) {
+      return res.json({ ok: false, message: '请先填写 grok2api 地址' });
+    }
+    if (!username || !password) {
+      return res.json({ ok: false, message: '请先填写 grok2api 用户名和密码' });
+    }
+    const loginUrl = `${base}/api/admin/v1/auth/login`;
+    const started = Date.now();
+    const proxy = resolveHttpProxy(settings);
+    const resp = await proxiedRequest(loginUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json'
+      },
+      body: { username, password },
+      proxy: proxy || undefined,
+      timeoutMs: 15000
+    });
+    const ms = Date.now() - started;
+    if (resp.status >= 200 && resp.status < 300) {
+      const data = resp.data as Record<string, unknown> | null;
+      const nested =
+        data && typeof data === 'object'
+          ? ((data.data as Record<string, unknown> | undefined) ?? data)
+          : null;
+      const tokens =
+        nested && typeof nested === 'object'
+          ? (nested.tokens as Record<string, unknown> | undefined)
+          : undefined;
+      const token =
+        (tokens && (tokens.accessToken || tokens.access_token)) ||
+        (nested && (nested.accessToken || nested.access_token || nested.token));
+      if (token) {
+        return res.json({
+          ok: true,
+          message: 'grok2api 管理登录成功',
+          ms,
+          latencyMs: ms,
+          status: resp.status,
+          remoteUrl: base
+        });
+      }
+      return res.json({
+        ok: true,
+        message: `已连通（HTTP ${resp.status}，响应无 accessToken 字段，请确认管理 API 版本）`,
+        ms,
+        latencyMs: ms,
+        status: resp.status,
+        remoteUrl: base
+      });
+    }
+    if (resp.status === 401 || resp.status === 403) {
+      return res.json({
+        ok: false,
+        message: `已连上 ${base}，但账号密码被拒（HTTP ${resp.status}）`,
+        ms,
+        latencyMs: ms,
+        status: resp.status,
+        remoteUrl: base
+      });
+    }
+    if (resp.status === 404) {
+      return res.json({
+        ok: false,
+        message: 'HTTP 404：请确认地址为 grok2api 根路径（不要带多余 path）',
+        ms,
+        latencyMs: ms,
+        status: 404,
+        remoteUrl: base
+      });
+    }
+    const bodyText =
+      typeof resp.data === 'string'
+        ? resp.data
+        : resp.data != null
+          ? JSON.stringify(resp.data)
+          : '';
+    return res.json({
+      ok: false,
+      message: `HTTP ${resp.status}${bodyText ? `: ${bodyText.slice(0, 120)}` : ''}`,
+      ms,
+      latencyMs: ms,
+      status: resp.status,
+      remoteUrl: base
+    });
   } catch (e: any) {
     return res.json({ ok: false, message: `检测异常: ${e?.message || e}` });
   }

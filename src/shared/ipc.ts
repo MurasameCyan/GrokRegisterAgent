@@ -115,6 +115,10 @@ export interface CpaAuthItem {
   ssoHash?: string | null;
   /** auth 是否写入了 sso 原文（不返回原文，仅布尔） */
   hasSso?: boolean;
+  /** 上次测活结果（落盘，刷新后仍显示） */
+  probeAction?: string | null;
+  probeHttp?: number | null;
+  probeAt?: string | null;
 }
 
 export interface CpaAuthListResult {
@@ -375,6 +379,12 @@ export interface RendererApi {
   testCpaRemote(input?: { url?: string; key?: string }): Promise<
     TestResult & { status?: number; remoteUrl?: string }
   >;
+  /** 远程 grok2api 管理登录连通性（不上传账号） */
+  testGrok2apiRemote(input?: {
+    url?: string;
+    username?: string;
+    password?: string;
+  }): Promise<TestResult & { status?: number; remoteUrl?: string; latencyMs?: number }>;
   /** 单条代理测活（经代理访问公网 IP） */
   testProxy(proxy: string): Promise<TestResult & { exitIp?: string; latencyMs?: number }>;
   /** 批量并发代理测活（大批量请前端分块调用，避免反向代理 524） */

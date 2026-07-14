@@ -3,7 +3,6 @@ import {
   Layers,
   Play,
   Save,
-  SlidersHorizontal,
   StopCircle,
   TriangleAlert
 } from 'lucide-react';
@@ -80,8 +79,9 @@ export function RegisterPage({ onOpenSettings }: { onOpenSettings(): void }) {
 
   return (
     <div className="space-y-5">
-      <div className="grid gap-4 lg:grid-cols-[1.3fr_0.9fr]">
-        <section className="ios-group">
+      {/* 左：实时状态（含运行设置）；右：任务列表加高；两列等高拉伸 */}
+      <div className="grid items-stretch gap-4 lg:grid-cols-[1.3fr_0.9fr]">
+        <section className="ios-group flex h-full min-h-[520px] flex-col">
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/70 px-4 py-3.5">
             <div>
               <h2 className="text-[20px] font-bold tracking-[-0.02em]">实时状态</h2>
@@ -124,7 +124,7 @@ export function RegisterPage({ onOpenSettings }: { onOpenSettings(): void }) {
               </Button>
             </div>
           </div>
-          <div className="space-y-4 p-4">
+          <div className="flex flex-1 flex-col space-y-4 p-4">
             <StatusCard status={status} />
 
             <div className="rounded-xl bg-muted/70 p-4">
@@ -157,6 +157,9 @@ export function RegisterPage({ onOpenSettings }: { onOpenSettings(): void }) {
               </div>
             )}
 
+            {/* 原「运行设置」合并进实时状态 */}
+            <RuntimeSettingsInline />
+
             <div className="grid gap-3 sm:grid-cols-2">
               <InfoBox label="轮数" value={String(settings?.runCount ?? '--')} />
               <InfoBox label="并行上限" value={String(maxParallel)} />
@@ -173,9 +176,8 @@ export function RegisterPage({ onOpenSettings }: { onOpenSettings(): void }) {
           </div>
         </section>
 
-        <div className="space-y-4">
-          <JobListPanel maxParallel={maxParallel} />
-          <RuntimeSettingsPanel />
+        <div className="flex h-full min-h-0 flex-col">
+          <JobListPanel maxParallel={maxParallel} tall />
         </div>
       </div>
 
@@ -184,7 +186,8 @@ export function RegisterPage({ onOpenSettings }: { onOpenSettings(): void }) {
   );
 }
 
-function RuntimeSettingsPanel() {
+/** 轮数 / 并行上限：嵌在实时状态卡内，不再单独成卡 */
+function RuntimeSettingsInline() {
   const data = useSettingsStore((s) => s.data);
   const reload = useSettingsStore((s) => s.reload);
   const push = useToastStore((s) => s.push);
@@ -192,18 +195,14 @@ function RuntimeSettingsPanel() {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (data && !draft) setDraft(data);
-  }, [data, draft]);
-
-  useEffect(() => {
     if (data) setDraft(data);
   }, [data]);
 
   if (!draft) {
     return (
-      <section className="ios-group">
-        <div className="p-6 text-sm text-muted-foreground">正在加载运行参数…</div>
-      </section>
+      <div className="rounded-xl border border-border/60 bg-muted/40 p-3 text-[13px] text-muted-foreground">
+        正在加载运行参数…
+      </div>
     );
   }
 
@@ -233,63 +232,55 @@ function RuntimeSettingsPanel() {
   };
 
   return (
-    <section className="ios-group flex flex-col">
-      <div className="flex items-center justify-between border-b border-border/70 px-4 py-3.5">
+    <div className="space-y-3 rounded-xl border border-border/60 bg-muted/40 p-3.5">
+      <div className="flex items-center justify-between gap-2">
         <div>
-          <p className="page-kicker">参数</p>
-          <h3 className="mt-0.5 text-[17px] font-semibold tracking-[-0.02em]">运行设置</h3>
+          <div className="text-[13px] font-semibold tracking-[-0.02em]">运行设置</div>
+          <p className="mt-0.5 text-[11px] text-muted-foreground">
+            保存后下次启动生效
+          </p>
         </div>
-        <SlidersHorizontal className="h-4 w-4 text-muted-foreground" />
-      </div>
-      <div className="flex flex-1 flex-col justify-between space-y-4 p-4">
-        <div className="space-y-4">
-          <div className="rounded-xl bg-muted/70 p-4">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <div className="field-label">轮数（每路任务）</div>
-                <div className="mt-1 text-[12px] text-muted-foreground">
-                  单次 1–50，保存后下次启动生效
-                </div>
-              </div>
-              <span className="chip tabular-nums">{draft.runCount}</span>
-            </div>
-            <div className="mt-3">
-              <Slider
-                min={1}
-                max={50}
-                value={draft.runCount}
-                onValueChange={(v) => update('runCount', v)}
-              />
-            </div>
-          </div>
-
-          <div className="rounded-xl bg-muted/70 p-4">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <div className="field-label">并行任务上限</div>
-                <div className="mt-1 text-[12px] text-muted-foreground">
-                  同时运行的注册机路数，1–8
-                </div>
-              </div>
-              <span className="chip tabular-nums">{draft.maxParallelWorkers ?? 3}</span>
-            </div>
-            <div className="mt-3">
-              <Slider
-                min={1}
-                max={8}
-                value={draft.maxParallelWorkers ?? 3}
-                onValueChange={(v) => update('maxParallelWorkers', v)}
-              />
-            </div>
-          </div>
-        </div>
-
-        <Button onClick={save} disabled={!dirty || saving} className="w-full">
-          <Save className="h-4 w-4" />
+        <Button
+          size="sm"
+          onClick={() => void save()}
+          disabled={!dirty || saving}
+          className="shrink-0"
+        >
+          <Save className="h-3.5 w-3.5" />
           {saving ? '保存中…' : '保存'}
         </Button>
       </div>
-    </section>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="rounded-xl bg-background/60 p-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="field-label">轮数（每路）</div>
+            <span className="chip tabular-nums">{draft.runCount}</span>
+          </div>
+          <div className="mt-2">
+            <Slider
+              min={1}
+              max={50}
+              value={draft.runCount}
+              onValueChange={(v) => update('runCount', v)}
+            />
+          </div>
+        </div>
+        <div className="rounded-xl bg-background/60 p-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="field-label">并行上限</div>
+            <span className="chip tabular-nums">{draft.maxParallelWorkers ?? 3}</span>
+          </div>
+          <div className="mt-2">
+            <Slider
+              min={1}
+              max={8}
+              value={draft.maxParallelWorkers ?? 3}
+              onValueChange={(v) => update('maxParallelWorkers', v)}
+            />
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 

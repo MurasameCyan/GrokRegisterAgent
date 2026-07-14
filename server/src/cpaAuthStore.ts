@@ -34,6 +34,11 @@ export interface CpaAuthItem {
   /** auth 内 sso 的 SHA-256（规范化后），不返回 sso 原文 */
   ssoHash?: string | null;
   hasSso?: boolean;
+  /** 上次测活结果（落盘 probe_action / probe_http） */
+  probeAction?: string | null;
+  probeHttp?: number | null;
+  /** ISO 时间，上次测活写入时刻 */
+  probeAt?: string | null;
 }
 
 /** 规范化 SSO cookie / JWT 文本后做 SHA-256 hex */
@@ -233,6 +238,27 @@ export async function listCpaAuth(): Promise<{ dir: string; items: CpaAuthItem[]
       const bot = readBotFlagFromAuthRecord(data);
       const rawSso = extractSsoFromAuthData(data);
       const ssoHash = hashSsoToken(rawSso);
+      const hasSso = Boolean(rawSso && rawSso.trim());
+      // 0 是合法 None：禁止用 !bot.botFlagSource / || null 吞掉
+      let botFlagSource: number | string | null =
+        bot.botFlagSource !== undefined && bot.botFlagSource !== null && bot.botFlagSource !== ''
+          ? bot.botFlagSource
+          : null;
+      // 有 sso 仍无 claim：默认 None(0)，Auth 列表显示绿 None
+      if (botFlagSource == null && hasSso) {
+        botFlagSource = 0;
+      }
+      // 持久化测活：auth JSON 内 probe_action / probe_http / probe_at
+      const probeActionRaw = String(data.probe_action || data.probeAction || '').trim();
+      const probeAction = probeActionRaw || null;
+      let probeHttp: number | null = null;
+      const httpRaw = data.probe_http ?? data.probeHttp;
+      if (httpRaw != null && httpRaw !== '') {
+        const n = Number(httpRaw);
+        if (Number.isFinite(n) && n > 0) probeHttp = n;
+      }
+      const probeAtRaw = String(data.probe_at || data.probeAt || '').trim();
+      const probeAt = probeAtRaw || null;
       items.push({
         filename: name,
         path: full,
@@ -242,10 +268,13 @@ export async function listCpaAuth(): Promise<{ dir: string; items: CpaAuthItem[]
         disabled: Boolean(data.disabled),
         hasRefresh: Boolean(data.refresh_token),
         mtime: st.mtimeMs,
-        botFlagSource: bot.botFlagSource,
-        isBotFlag1: bot.isBotFlag1,
+        botFlagSource,
+        isBotFlag1: Boolean(bot.isBotFlag1),
         ssoHash,
-        hasSso: Boolean(rawSso && rawSso.trim()),
+        hasSso,
+        probeAction,
+        probeHttp,
+        probeAt,
         ...flags
       });
     } catch {
@@ -1072,6 +1101,124 @@ print(json.dumps(r, ensure_ascii=False))
   };
 }
 
+/** 把测活结果写回 auth JSON（Node 侧兜底；Python 侧也会写） */
+async function persistProbeOnAuthFile(
+  filePath: string,
+  action: string,
+  httpStatus?: number
+): Promise<void> {
+  const act = String(action || '').trim();
+  if (!act || !filePath || !existsSync(filePath)) return;
+  try {
+    const raw = await fsp.readFile(filePath, 'utf-8');
+    const data = JSON.parse(raw) as Record<string, unknown>;
+    data.probe_action = act;
+    const http = Number(httpStatus || 0);
+    if (http > 0) data.probe_http = http;
+    else delete data.probe_http;
+    data.probe_at = new Date().toISOString();
+    const tmp = `${filePath}.tmp`;
+    await fsp.writeFile(tmp, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+    await fsp.rename(tmp, filePath);
+  } catch {
+    /* ignore persist failure */
+  }
+}
+
+/**
+ * 手动重登激活：密码登录 → mint 覆盖 → 随机英文消息 → 二次测活 → 写回测活标签。
+ * 不依赖当前 token 是否 401/403。
+ */
+export async function reloginCpaAuth(input: {
+  filename?: string;
+  path?: string;
+}): Promise<Record<string, unknown>> {
+  const settings = await loadSettings();
+  const dir = resolveAuthDir(settings.authDir);
+  let resolved = '';
+  if (input.path) {
+    resolved = resolve(String(input.path).trim());
+  } else {
+    const name = basename(String(input.filename || '').trim());
+    if (!name || name.includes('..') || !name.endsWith('.json')) {
+      throw new Error('无效的 filename');
+    }
+    resolved = join(dir, name);
+  }
+  assertInsideAuthDir(resolved, dir);
+  if (!existsSync(resolved)) throw new Error(`文件不存在: ${resolved}`);
+
+  let emailHint = '';
+  try {
+    const raw = await fsp.readFile(resolved, 'utf-8');
+    const doc = JSON.parse(raw) as { email?: string };
+    emailHint = String(doc.email || '').trim();
+  } catch {
+    /* ignore */
+  }
+  if (!emailHint) throw new Error('Auth 文件无邮箱，无法密码重登');
+
+  let password = '';
+  try {
+    const { listAccounts } = await import('./accountStore.js');
+    const accounts = await listAccounts();
+    const em = emailHint.toLowerCase();
+    for (const a of accounts) {
+      if (String(a.email || '').trim().toLowerCase() === em) {
+        password = String(a.password || '').trim();
+        if (password) break;
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  if (!password) {
+    throw new Error(`号池中未找到 ${emailHint} 的密码，无法重登`);
+  }
+
+  const runtime = resolveRegisterRuntime(settings);
+  if (!runtime) throw new Error('未找到注册脚本目录，无法调用 Python 重登');
+
+  const code = `
+import json, sys
+sys.path.insert(0, ${JSON.stringify(runtime.registerDir)})
+from password_login import recover_auth_on_dead
+path = sys.argv[1]
+email = sys.argv[2] if len(sys.argv) > 2 else ""
+password = sys.argv[3] if len(sys.argv) > 3 else ""
+proxy = sys.argv[4] if len(sys.argv) > 4 else ""
+r = recover_auth_on_dead(path, email, password, proxy=proxy, trigger_http=0)
+print(json.dumps(r, ensure_ascii=False))
+`.trim();
+
+  const r = await runPythonJson(runtime.pythonPath, runtime.registerDir, code, [
+    resolved,
+    emailHint,
+    password,
+    resolveHttpProxy(settings, 'cpaAuth')
+  ]);
+
+  const second =
+    r.second_probe && typeof r.second_probe === 'object'
+      ? (r.second_probe as Record<string, unknown>)
+      : r;
+  const action = String(second.action || r.action || (r.ok ? 'ok' : 'error'));
+  const httpStatus = Number(second.http_status || r.http_status || 0) || undefined;
+  // Node 兜底写盘（Python 已写则幂等）
+  if (existsSync(resolved)) {
+    await persistProbeOnAuthFile(resolved, action, httpStatus);
+  }
+  return {
+    ...r,
+    filename: basename(resolved),
+    email: String(r.email || emailHint),
+    ok: r.ok === true || action === 'ok',
+    probeAction: action,
+    probeHttp: httpStatus,
+    mode: 'relogin_activate'
+  };
+}
+
 /**
  * 批量 CPA 测活（cehuo /responses）。
  * 默认对 401/402/403 删除文件（deleteOnDead=true）。
@@ -1202,6 +1349,10 @@ print(json.dumps(r, ensure_ascii=False))
         const recovered =
           Boolean(r.recovered_403) || Boolean(r.recovered_auth);
         const recoverHttp = Number(r.recover_http || 0) || httpStatus;
+        // 未删文件时 Node 兜底持久化测活标签
+        if (!deleted && action && existsSync(resolved)) {
+          await persistProbeOnAuthFile(resolved, action, httpStatus);
+        }
         results.push({
           filename: basename(resolved),
           email: String(r.email || emailHint || ''),

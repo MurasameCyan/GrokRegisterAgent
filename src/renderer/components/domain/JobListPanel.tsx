@@ -45,7 +45,14 @@ function fmtTime(ts: number | null) {
   }
 }
 
-export function JobListPanel({ maxParallel }: { maxParallel: number }) {
+export function JobListPanel({
+  maxParallel,
+  /** 注册页右侧：与「实时状态」同列拉高列表可视区 */
+  tall = false
+}: {
+  maxParallel: number;
+  tall?: boolean;
+}) {
   const jobs = useRunStore((s) => s.jobs);
   const jobsActive = useRunStore((s) => s.jobsActive);
   const focusRunId = useRunStore((s) => s.focusRunId);
@@ -164,8 +171,13 @@ export function JobListPanel({ maxParallel }: { maxParallel: number }) {
   };
 
   return (
-    <section className="ios-group">
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/70 px-4 py-3.5">
+    <section
+      className={cn(
+        'ios-group flex min-h-0 flex-col',
+        tall ? 'h-full min-h-[520px]' : ''
+      )}
+    >
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border/70 px-4 py-3.5">
         <div className="min-w-0">
           <p className="page-kicker">并行</p>
           <h3 className="mt-0.5 text-[17px] font-semibold tracking-[-0.02em]">任务列表</h3>
@@ -200,11 +212,16 @@ export function JobListPanel({ maxParallel }: { maxParallel: number }) {
       </div>
 
       {jobs.length === 0 ? (
-        <div className="p-8 text-center text-[13px] text-muted-foreground">
+        <div className="flex min-h-0 flex-1 items-center justify-center p-8 text-center text-[13px] text-muted-foreground">
           暂无任务。点「开始 / 再开一路」启动并行注册。
         </div>
       ) : (
-        <div className="max-h-[280px] space-y-1.5 overflow-y-auto p-3">
+        <div
+          className={cn(
+            'min-h-0 flex-1 space-y-1.5 overflow-y-auto p-3',
+            tall ? 'max-h-none' : 'max-h-[280px]'
+          )}
+        >
           {jobs.map((job) => {
             const focused = job.runId === focusRunId || job.focused;
             const active = job.phase === 'running' || job.phase === 'starting';

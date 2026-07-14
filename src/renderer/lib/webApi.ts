@@ -8,12 +8,20 @@ function buildHeaders(body?: unknown): HeadersInit {
   };
 }
 
+/** 批量任务取消：Auth 等页在批次期间挂上 AbortSignal，结束后务必 clear */
+let activeAbortSignal: AbortSignal | null = null;
+
+export function setWebApiAbortSignal(signal: AbortSignal | null): void {
+  activeAbortSignal = signal;
+}
+
 async function http<T>(method: string, path: string, body?: unknown): Promise<T> {
   const res = await fetch(path, {
     method,
     credentials: 'include',
     headers: buildHeaders(body),
-    body: body !== undefined ? JSON.stringify(body) : undefined
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+    signal: activeAbortSignal ?? undefined
   });
   if (!res.ok) {
     let detail = '';
@@ -178,6 +186,7 @@ const webApi: RendererApi = {
   resignCpaAuthBatch: (input) => http('POST', '/api/cpa-auth/resign-batch', input),
   mintCpaAuthFromSso: (input) => http('POST', '/api/cpa-auth/mint', input),
   probeCpaAuthBatch: (input) => http('POST', '/api/cpa-auth/probe-batch', input),
+  reloginCpaAuth: (input) => http('POST', '/api/cpa-auth/relogin', input),
   pushCpaAuthRemote: (input) => http('POST', '/api/cpa-auth/push-remote', input),
   deleteCpaAuth: (input) => http('POST', '/api/cpa-auth/delete', input),
   exportCpaAuth: (input) => http('POST', '/api/cpa-auth/export', input),
@@ -213,6 +222,16 @@ const webApi: RendererApi = {
       url: input?.url,
       key: input?.key
     }),
+  testGrok2apiRemote: (input) =>
+    http<TestResult & { status?: number; remoteUrl?: string; latencyMs?: number }>(
+      'POST',
+      '/api/test/grok2api-remote',
+      {
+        url: input?.url,
+        username: input?.username,
+        password: input?.password
+      }
+    ),
   testProxy: (proxy) =>
     http<TestResult & { exitIp?: string; latencyMs?: number }>('POST', '/api/test/proxy', {
       proxy

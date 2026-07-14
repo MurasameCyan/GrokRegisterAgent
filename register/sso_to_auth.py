@@ -27,6 +27,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from curl_cffi import requests
 
@@ -70,6 +71,54 @@ def decode_jwt_payload(token: str) -> dict:
         return json.loads(b64url_decode(token.split(".")[1]))
     except Exception:
         return {}
+
+
+def _pick_bot_flag_from_payload(pl: dict) -> Any:
+    """从 JWT payload 取 bot_flag 类 claim；0 是合法 None。"""
+    if not isinstance(pl, dict):
+        return None
+    for k in (
+        "bot_flag_source",
+        "botFlagSource",
+        "bot_flag",
+        "botFlag",
+        "bot_flag_src",
+    ):
+        if k not in pl:
+            continue
+        v = pl.get(k)
+        if v is None or v == "":
+            continue
+        if isinstance(v, str) and v.strip().lower() == "none":
+            return 0
+        if v == 0 or v == "0":
+            return 0
+        try:
+            if isinstance(v, str) and v.strip().isdigit():
+                return int(v.strip())
+        except Exception:
+            pass
+        return v
+    return None
+
+
+def extract_bot_flag_source(
+    access: str = "",
+    sso: str = "",
+    id_token: str = "",
+) -> Any:
+    """优先 access → sso → id_token；返回 claim 值（含 0）或 None（无 claim）。"""
+    for tok in (access, sso, id_token):
+        t = str(tok or "").strip()
+        if t.lower().startswith("sso="):
+            t = t[4:].strip()
+        if not t or t.count(".") < 2:
+            continue
+        pl = decode_jwt_payload(t)
+        raw = _pick_bot_flag_from_payload(pl)
+        if raw is not None:
+            return raw
+    return None
 
 
 def rfc3339_ns(ts: float | None = None) -> str:
@@ -406,6 +455,13 @@ def token_to_cpa_record(
         sso_val = sso_val[4:].strip()
     if sso_val:
         entry["sso"] = sso_val
+    # 侧车 bot_flag_source：列表优先读字段（0=None 合法）。
+    # JWT 无 claim 时默认写 0，避免 Auth 列表永远显示 —
+    flag = extract_bot_flag_source(access, sso_val, id_token.strip() if id_token else "")
+    if flag is not None:
+        entry["bot_flag_source"] = flag
+    elif sso_val or access:
+        entry["bot_flag_source"] = 0
     return entry
 
 

@@ -1,12 +1,14 @@
 import { FormEvent, useEffect, useState } from 'react';
 import {
   Activity,
+  ArrowUpCircle,
   Database,
   Github,
   KeyRound,
   LayoutDashboard,
   LogOut,
   PlayCircle,
+  RefreshCcw,
   Settings2,
   ShieldCheck
 } from 'lucide-react';
@@ -25,7 +27,7 @@ import { useRunStore } from '@renderer/store/runStore';
 import { useSettingsStore } from '@renderer/store/settingsStore';
 import { useAccountsStore } from '@renderer/store/accountsStore';
 import { useToastStore } from '@renderer/store/toastStore';
-import type { AuthState, ChangeCredentialsInput } from '@shared/ipc';
+import type { AuthState, ChangeCredentialsInput, UpdateInfo } from '@shared/ipc';
 
 type Tab = 'dashboard' | 'register' | 'pool' | 'auth' | 'settings';
 
@@ -53,6 +55,18 @@ export default function App() {
   const applyAccount = useAccountsStore((s) => s.applyAccount);
   const reloadSettings = useSettingsStore((s) => s.reload);
   const status = useRunStore((s) => s.status);
+  const [update, setUpdate] = useState<UpdateInfo | null>(null);
+  const [updateLoading, setUpdateLoading] = useState(false);
+  const [nowTick, setNowTick] = useState(() => new Date());
+
+  const loadUpdate = async () => {
+    setUpdateLoading(true);
+    try {
+      setUpdate(await window.api.checkUpdate());
+    } finally {
+      setUpdateLoading(false);
+    }
+  };
 
   useEffect(() => {
     let active = true;
@@ -81,7 +95,15 @@ export default function App() {
         description: err instanceof Error ? err.message : String(err)
       });
     });
+    void loadUpdate();
   }, [auth.authenticated, pushToast, reloadSettings]);
+
+  // 顶栏时钟（北京时间 HH:mm），每 30s 刷新
+  useEffect(() => {
+    if (!auth.authenticated) return;
+    const t = window.setInterval(() => setNowTick(new Date()), 30_000);
+    return () => window.clearInterval(t);
+  }, [auth.authenticated]);
 
   useEffect(() => {
     if (!auth.authenticated) return;
@@ -170,7 +192,13 @@ export default function App() {
             ))}
           </nav>
 
-          <div className="mt-auto space-y-2.5 border-t border-border p-3">
+          <div className="mt-auto space-y-2 border-t border-border p-3">
+            {/* 版本 + 检查更新（窄侧栏：一行紧凑） */}
+            <SidebarUpdateBar
+              update={update}
+              loading={updateLoading}
+              onCheck={() => void loadUpdate()}
+            />
             <div className="flex items-center gap-2">
               <div className="min-w-0 flex-1">
                 <ThemeToggle />
@@ -218,7 +246,18 @@ export default function App() {
               <Activity className="h-3.5 w-3.5" />
               {status.phase}
             </span>
-            <span className="chip">{new Date().toLocaleDateString('zh-CN')}</span>
+            {/* 时间在日期左边 */}
+            <span className="chip tabular-nums">
+              {nowTick.toLocaleTimeString('zh-CN', {
+                timeZone: 'Asia/Shanghai',
+                hour12: false,
+                hour: '2-digit',
+                minute: '2-digit'
+              })}
+            </span>
+            <span className="chip">
+              {nowTick.toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' })}
+            </span>
           </div>
         </header>
 
@@ -244,6 +283,57 @@ export default function App() {
       )}
 
       <ToastViewport />
+    </div>
+  );
+}
+
+/** 侧边栏底部：版本 + 检查更新（窄宽适配，错误文案统一成「检查更新」） */
+function SidebarUpdateBar({
+  update,
+  loading,
+  onCheck
+}: {
+  update: UpdateInfo | null;
+  loading: boolean;
+  onCheck(): void;
+}) {
+  const current = update?.current;
+  const hasUpdate = !!update?.hasUpdate;
+
+  let actionLabel = '检查更新';
+  if (loading) actionLabel = '检查中…';
+  else if (hasUpdate && update?.latest) actionLabel = `新 ${update.latest}`;
+  else if (update && !update.error && !hasUpdate) actionLabel = '已最新';
+  // error（含「仓库暂无发布版本」）仍显示「检查更新」，可点重试
+
+  return (
+    <div className="flex min-w-0 items-center gap-1.5">
+      <span className="chip shrink-0 px-1.5 py-0.5 text-[11px] tabular-nums">
+        v{current ?? '…'}
+      </span>
+      {hasUpdate ? (
+        <a
+          href={update?.htmlUrl ?? '#'}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex min-w-0 flex-1 items-center justify-center gap-1 truncate rounded-full bg-danger/15 px-2 py-1 text-[11px] font-medium text-danger"
+          title={`有新版本 ${update?.latest ?? ''}`}
+        >
+          <ArrowUpCircle className="h-3 w-3 shrink-0" />
+          <span className="truncate">{actionLabel}</span>
+        </a>
+      ) : (
+        <button
+          type="button"
+          onClick={onCheck}
+          disabled={loading}
+          className="inline-flex min-w-0 flex-1 items-center justify-center gap-1 truncate rounded-full bg-muted px-2 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-60"
+          title={update?.error || '检查 GitHub Releases'}
+        >
+          <RefreshCcw className={cn('h-3 w-3 shrink-0', loading && 'animate-spin')} />
+          <span className="truncate">{actionLabel}</span>
+        </button>
+      )}
     </div>
   );
 }

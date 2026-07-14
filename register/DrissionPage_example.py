@@ -1080,14 +1080,7 @@ return true;
             _step_pause(150, 500)
             return True
         if clicked == "blocked":
-            # 页面被墙/隧道错误：降级当前代理
-            try:
-                from pools import demote_proxy_to_pending
-
-                if _browser_proxy:
-                    demote_proxy_to_pending(_browser_proxy, reason="注册页不可达")
-            except Exception:
-                pass
+            # 页面被墙/隧道错误：由 open_signup_page 统一降级并换代理，此处只抛错
             raise Exception('注册页无法访问（代理/隧道错误，未找到邮箱注册按钮）')
         if clicked == "empty":
             # 空白页：多等一会儿
