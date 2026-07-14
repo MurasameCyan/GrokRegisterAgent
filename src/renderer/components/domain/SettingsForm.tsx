@@ -1637,13 +1637,14 @@ export function SettingsForm() {
       </Card>
 
       <Card>
-        <CardHeader>
-          <CardTitle>grok2api 推送</CardTitle>
-        </CardHeader>
+        <CardHeader
+          title="grok2api 推送"
+          description="注册成功后 Web 导入 SSO → Convert to Build；失败不阻断本轮。需配置 URL/账号密码。"
+        />
         <CardBody className="space-y-3">
           <ToggleRow
             label="自动推送 grok2api"
-            hint="注册成功后：Web 导入 SSO → Convert to Build（需配置 URL/账号密码）；失败不阻断本轮"
+            hint="开启后注册成功自动上传到 grok2api 管理面板"
             checked={draft.grok2apiAutoUpload === true}
             onChange={(v) => update('grok2apiAutoUpload', v)}
           />
@@ -1676,7 +1677,7 @@ export function SettingsForm() {
             hint="web_convert=与 grok-register-web 一致；build_direct=本地 Device Flow 后 import"
           >
             <select
-              className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm"
+              className={SELECT_CLASS}
               value={
                 draft.grok2apiUploadMode === 'build_direct'
                   ? 'build_direct'

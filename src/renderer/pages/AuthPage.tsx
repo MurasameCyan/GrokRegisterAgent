@@ -89,8 +89,10 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
     'resign' | 'probe' | 'delete' | 'export' | 'push' | 'backfill' | null
   >(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  /** 最近一次测活结果：filename → probeAction */
-  const [probeMap, setProbeMap] = useState<Record<string, string>>({});
+  /** 最近一次测活结果：filename → action + http 状态码 */
+  const [probeMap, setProbeMap] = useState<
+    Record<string, { action: string; http?: number }>
+  >({});
   const [prog, setProg] = useState<TaskProgress | null>(null);
   const [emailMasked, setEmailMasked] = useState(() => loadEmailPrivacyMask());
   /** 重签成功后是否再推远程（默认关，localStorage 记忆） */
@@ -310,9 +312,13 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
       const one = r.results[0];
       if (one?.filename) {
         const fname = one.filename;
+        const http = Number(one.probeHttp || 0) || undefined;
         setProbeMap((m) => ({
           ...m,
-          [fname]: one.probeAction || (one.ok ? 'ok' : 'error')
+          [fname]: {
+            action: one.probeAction || (one.ok ? 'ok' : 'error'),
+            http
+          }
         }));
       }
       setProg({
@@ -543,7 +549,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
       let dead = 0;
       let deleted = 0;
       let ssoDeleted = 0;
-      const nextProbe: Record<string, string> = {};
+      const nextProbe: Record<string, { action: string; http?: number }> = {};
       for (let i = 0; i < filenames.length; i += CHUNK) {
         const chunk = filenames.slice(i, i + CHUNK);
         setProg((p) => (p ? { ...p, current: chunk[0], running: true } : p));
@@ -559,7 +565,11 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
         ssoDeleted += r.ssoDeleted || 0;
         for (const x of r.results) {
           if (x.filename) {
-            nextProbe[x.filename] = x.probeAction || (x.ok ? 'ok' : 'error');
+            const http = Number(x.probeHttp || 0) || undefined;
+            nextProbe[x.filename] = {
+              action: x.probeAction || (x.ok ? 'ok' : 'error'),
+              http
+            };
           }
         }
         setProbeMap((m) => ({ ...m, ...nextProbe }));
@@ -1312,12 +1322,17 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                 <th className="w-10 px-3 py-2.5" />
                 <th className="px-3 py-2.5 font-medium">邮箱</th>
                 <th className="w-[5.5rem] px-3 py-2.5 font-medium">标记</th>
-                <th className="px-3 py-2.5 font-medium">文件</th>
+                <th className="w-[7rem] max-w-[7rem] px-2 py-2.5 font-medium">
+                  授权
+                </th>
                 <th className="w-[3.25rem] px-3 py-2.5 font-medium">xai</th>
                 <th className="w-[4.5rem] px-3 py-2.5 font-medium">bot_flag</th>
                 {/* 固定窄列仅放 O/X，避免测活后邻列（标记/sso）横向跳动 */}
                 <th className="w-10 whitespace-nowrap px-2 py-2.5 text-center font-medium">
                   测活
+                </th>
+                <th className="w-12 whitespace-nowrap px-2 py-2.5 text-center font-medium">
+                  状态
                 </th>
                 <th className="px-3 py-2.5 font-medium">过期</th>
                 <th className="px-3 py-2.5 font-medium">操作</th>
@@ -1326,6 +1341,8 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
             <tbody>
               {pageItems.map((item) => {
                 const probe = probeMap[item.filename];
+                const probeAction = probe?.action;
+                const probeHttp = probe?.http;
                 const rowResign = rowBusy === `resign:${item.filename}`;
                 const rowProbe = rowBusy === `probe:${item.filename}`;
                 const rowNoEmail = !hasEmail(item);
@@ -1390,7 +1407,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                       </div>
                     </td>
                     <td
-                      className="max-w-[12rem] truncate px-3 py-2.5 font-mono text-[12px] text-muted-foreground"
+                      className="w-[7rem] max-w-[7rem] truncate px-2 py-2.5 font-mono text-[11px] text-muted-foreground"
                       title={item.filename}
                     >
                       {item.filename}
@@ -1414,8 +1431,11 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                     <td className="w-10 min-w-10 max-w-10 whitespace-nowrap px-2 py-2.5 text-center">
                       {/* 仅固定 O/X 槽，按钮移至操作列，杜绝邻列位移 */}
                       <span className="inline-flex h-5 w-5 items-center justify-center">
-                        <ProbeBadge action={probe} />
+                        <ProbeBadge action={probeAction} />
                       </span>
+                    </td>
+                    <td className="w-12 min-w-12 max-w-12 whitespace-nowrap px-2 py-2.5 text-center">
+                      <ProbeHttpBadge http={probeHttp} action={probeAction} />
                     </td>
                     <td className="whitespace-nowrap px-3 py-2.5 text-[12px] text-muted-foreground">
                       {item.expired || '—'}
@@ -1525,6 +1545,49 @@ function ProbeBadge({ action }: { action?: string }) {
   return (
     <span className={cn(shell, 'bg-muted text-muted-foreground')} title={action}>
       ?
+    </span>
+  );
+}
+
+/** 测活 HTTP 状态码：200 / 401 / 403 / 429 等 */
+function ProbeHttpBadge({
+  http,
+  action
+}: {
+  http?: number;
+  action?: string;
+}) {
+  if (!http && !action) {
+    return (
+      <span className="text-[11px] tabular-nums text-muted-foreground" title="未测活">
+        —
+      </span>
+    );
+  }
+  if (!http) {
+    return (
+      <span className="text-[11px] tabular-nums text-muted-foreground" title="无 HTTP 状态">
+        —
+      </span>
+    );
+  }
+  const code = String(http);
+  const tone =
+    http >= 200 && http < 300
+      ? 'text-emerald-600 dark:text-emerald-400'
+      : http === 429
+        ? 'text-amber-600 dark:text-amber-400'
+        : http === 401 || http === 403 || http === 402
+          ? 'text-red-600 dark:text-red-400'
+          : http >= 400
+            ? 'text-red-600/90 dark:text-red-400'
+            : 'text-muted-foreground';
+  return (
+    <span
+      className={cn('text-[11px] font-semibold tabular-nums', tone)}
+      title={`HTTP ${code}${action ? ` · ${action}` : ''}`}
+    >
+      {code}
     </span>
   );
 }
