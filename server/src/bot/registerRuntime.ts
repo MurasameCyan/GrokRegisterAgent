@@ -133,38 +133,41 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
   config.mail_domain_mode = settings.mailDomainMode || 'round_robin';
   config.email_domain_mode = settings.mailDomainMode || 'round_robin';
 
-  // 代理总开关 / 池开关
-  const proxyText = String(settings.proxyPool || settings.proxy || '').trim();
-  const proxyOn =
-    settings.proxyEnabled === true ||
-    (settings.proxyEnabled !== false && proxyText.length > 0);
-  const proxyPoolOn =
-    proxyOn &&
-    (settings.proxyPoolEnabled === true ||
-      (settings.proxyPoolEnabled !== false && String(settings.proxyPool || '').trim().length > 0));
-  if (!proxyOn) {
+  // 代理：以「池/单条是否有内容」为准，避免 UI 总开关未勾选却把已填池清掉
+  const poolProxies = parseProxyPool(settings.proxyPool);
+  const singleProxy = stripProxyComment(settings.proxy || '');
+  const browserOnly = stripProxyComment(settings.browserProxy || '');
+  // 显式关闭才直连；未设置/true 或有代理内容 → 启用
+  const explicitOff = settings.proxyEnabled === false && poolProxies.length === 0 && !singleProxy && !browserOnly;
+  const wantPool =
+    poolProxies.length > 0 &&
+    settings.proxyPoolEnabled !== false; // 有池内容且未显式关池
+
+  if (explicitOff) {
     config.proxy = '';
     config.browser_proxy = '';
     delete config.proxy_pool;
     config.proxy_mode = settings.proxyMode || 'round_robin';
-  } else if (proxyPoolOn) {
-    // 池模式：剥离 #备注 后写入；单代理字段清空避免干扰
-    const proxies = parseProxyPool(settings.proxyPool);
+  } else if (wantPool) {
     config.proxy = '';
-    if (proxies.length > 0) {
-      config.proxy_pool = proxies;
-    } else {
-      delete config.proxy_pool;
-    }
+    config.proxy_pool = poolProxies;
     config.proxy_mode = settings.proxyMode || 'round_robin';
-    // 浏览器跟随池轮换（Python 侧 next_proxy）；此处不写死单条
+    // 浏览器每轮 next_proxy，不写死单条
+    config.browser_proxy = '';
+  } else if (singleProxy || browserOnly) {
+    config.proxy = singleProxy;
+    config.browser_proxy = browserOnly || singleProxy;
+    delete config.proxy_pool;
+    config.proxy_mode = settings.proxyMode || 'round_robin';
+  } else if (poolProxies.length > 0) {
+    // 池开关关了但仍有内容：仍写入池，避免 265 条白填
+    config.proxy = '';
+    config.proxy_pool = poolProxies;
+    config.proxy_mode = settings.proxyMode || 'round_robin';
     config.browser_proxy = '';
   } else {
-    // 单代理
-    const single = stripProxyComment(settings.proxy || '');
-    const browser = stripProxyComment(settings.browserProxy || '') || single;
-    config.proxy = single;
-    config.browser_proxy = browser;
+    config.proxy = '';
+    config.browser_proxy = '';
     delete config.proxy_pool;
     config.proxy_mode = settings.proxyMode || 'round_robin';
   }
@@ -193,6 +196,19 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
 
   if (typeof count === 'number') {
     config.run = { ...(config.run || {}), count };
+  }
+
+  // 启动前日志：代理/域名是否写入 Python config（便于对照注册日志）
+  try {
+    const nPool = Array.isArray(config.proxy_pool) ? config.proxy_pool.length : 0;
+    const nDom = Array.isArray(config.mail_domains) ? config.mail_domains.length : 0;
+    console.log(
+      `[writeConfig] proxy_pool=${nPool} proxy=${config.proxy ? 'set' : 'empty'} ` +
+        `browser_proxy=${config.browser_proxy ? 'set' : 'empty'} ` +
+        `mail_domains=${nDom} prefer_local_forward=${!!config.proxy_prefer_local_forward}`
+    );
+  } catch {
+    /* ignore */
   }
 
   // 人机验证自动通过等待上限（秒）；Python 在 [30, max] 内随机

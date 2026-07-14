@@ -589,13 +589,37 @@ def start_browser():
         st = peek_status() if callable(peek_status) else {}
         pool_n = len(st.get("proxies") or []) if isinstance(st, dict) else 0
         if pool_n:
-            print(f"[*] 代理池: {pool_n} 条 mode={st.get('proxy_mode') or '?'}")
+            print(
+                f"[*] 代理池: {pool_n} 条 mode={st.get('proxy_mode') or '?'} "
+                f"next_idx={st.get('proxy_idx', '?')}"
+            )
+        else:
+            # 池空：打印 config 关键键，便于排查「UI 有代理却直连」
+            try:
+                import json as _jdbg
+                _cp = os.path.join(os.path.dirname(__file__), "config.json")
+                if os.path.isfile(_cp):
+                    with open(_cp, "r", encoding="utf-8") as _fdbg:
+                        _cd = _jdbg.load(_fdbg)
+                    _pp = _cd.get("proxy_pool") or _cd.get("proxies")
+                    _n = len(_pp) if isinstance(_pp, list) else (1 if _pp else 0)
+                    print(
+                        f"[Warn] 代理池为空 | config.proxy_pool条目={_n} "
+                        f"proxy={bool(str(_cd.get('proxy') or '').strip())} "
+                        f"browser_proxy={bool(str(_cd.get('browser_proxy') or '').strip())} "
+                        f"proxyEnabled未写入Python(仅看proxy_pool/proxy字段)"
+                    )
+                else:
+                    print("[Warn] 代理池为空且无 config.json")
+            except Exception as _e:
+                print(f"[Warn] 代理池为空（读 config 失败: {_e}）")
     except Exception:
         pass
 
     proxy_apply_result = None
     try:
-        picked = next_proxy(_browser_proxy)
+        # 池优先；池空则 next_proxy 返回 fallback（browser_proxy/proxy）
+        picked = (next_proxy(_browser_proxy) or "").strip()
         if picked:
             _browser_proxy = picked
             # 脱敏日志
