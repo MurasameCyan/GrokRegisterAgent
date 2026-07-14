@@ -5,7 +5,9 @@
 import { promises as fsp, existsSync } from 'node:fs';
 import { join, resolve, basename } from 'node:path';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { loadSettings, dataDir } from './settingsStore.js';
+import { resolveHttpProxy } from './resolveHttpProxy.js';
 import { resolveRegisterRuntime } from './bot/registerRuntime.js';
 import { readBotFlagFromAuthRecord, readBotFlagFromToken } from './jwtBotFlag.js';
 import { proxiedRequest } from './httpClient.js';
@@ -29,6 +31,35 @@ export interface CpaAuthItem {
   /** access_token/sso JWT 中的 bot_flag_source */
   botFlagSource?: number | string | null;
   isBotFlag1?: boolean;
+  /** auth 内 sso 的 SHA-256（规范化后），不返回 sso 原文 */
+  ssoHash?: string | null;
+  hasSso?: boolean;
+}
+
+/** 规范化 SSO cookie / JWT 文本后做 SHA-256 hex */
+export function normalizeSsoToken(sso: string): string {
+  return String(sso || '')
+    .trim()
+    .replace(/^sso=/i, '')
+    .trim();
+}
+
+export function hashSsoToken(sso: string): string | null {
+  const token = normalizeSsoToken(sso);
+  if (!token || token.length < 8) return null;
+  return createHash('sha256').update(token, 'utf8').digest('hex');
+}
+
+function extractSsoFromAuthData(data: Record<string, unknown>): string {
+  const direct = data.sso;
+  if (typeof direct === 'string' && direct.trim()) return direct;
+  // 兼容嵌套 / extra
+  const extra = data.extra;
+  if (extra && typeof extra === 'object') {
+    const s = (extra as Record<string, unknown>).sso;
+    if (typeof s === 'string' && s.trim()) return s;
+  }
+  return '';
 }
 
 export interface CpaRemoteResult {
@@ -201,6 +232,8 @@ export async function listCpaAuth(): Promise<{ dir: string; items: CpaAuthItem[]
       }
       const flags = xaiFlags(name, data);
       const bot = readBotFlagFromAuthRecord(data);
+      const rawSso = extractSsoFromAuthData(data);
+      const ssoHash = hashSsoToken(rawSso);
       items.push({
         filename: name,
         path: full,
@@ -212,6 +245,8 @@ export async function listCpaAuth(): Promise<{ dir: string; items: CpaAuthItem[]
         mtime: st.mtimeMs,
         botFlagSource: bot.botFlagSource,
         isBotFlag1: bot.isBotFlag1,
+        ssoHash,
+        hasSso: Boolean(rawSso && rawSso.trim()),
         ...flags
       });
     } catch {
@@ -219,7 +254,215 @@ export async function listCpaAuth(): Promise<{ dir: string; items: CpaAuthItem[]
     }
   }
   items.sort((a, b) => b.mtime - a.mtime);
+
+  // 无 sso 时无法做号池 SSO 哈希匹配（仅靠 email）
+  const missingSso = items.filter((i) => !i.hasSso);
+  if (missingSso.length > 0) {
+    const sample = missingSso
+      .slice(0, 8)
+      .map((i) => i.filename)
+      .join(', ');
+    const more = missingSso.length > 8 ? ` …等共 ${missingSso.length} 个` : '';
+    console.warn(
+      `[cpa-auth] ${missingSso.length} 个 auth 文件无 sso 字段，无法 hash 匹配号池` +
+        `（仅靠 email）。可用「回填 SSO」从号池反写。示例: ${sample}${more}`
+    );
+  }
+
   return { dir, items };
+}
+
+export interface BackfillCpaAuthSsoResult {
+  dir: string;
+  scanned: number;
+  /** 已有 sso 且未 force 覆盖 */
+  alreadyHasSso: number;
+  /** 成功写入 sso */
+  filled: number;
+  /** 无邮箱 */
+  skippedNoEmail: number;
+  /** 号池无同邮箱 SSO */
+  skippedNoMatch: number;
+  failed: number;
+  dryRun: boolean;
+  results: Array<{
+    filename: string;
+    email: string;
+    ok: boolean;
+    action: 'filled' | 'already' | 'no_email' | 'no_match' | 'failed' | 'would_fill';
+    error?: string;
+  }>;
+}
+
+/**
+ * 从号池按 email（忽略大小写）给 auth 目录回填顶层 sso。
+ * 用于旧 mint 产物无 sso 字段、号池无邮箱时无法 hash 匹配的场景。
+ */
+export async function backfillCpaAuthSsoFromPool(input?: {
+  /** 仅处理这些文件名；空=全部 .json */
+  filenames?: string[];
+  /** true 时已有 sso 也覆盖为号池最新匹配 */
+  force?: boolean;
+  /** 只统计不写盘 */
+  dryRun?: boolean;
+}): Promise<BackfillCpaAuthSsoResult> {
+  const { listAccounts } = await import('./accountStore.js');
+  const settings = await loadSettings();
+  const dir = resolveAuthDir(settings.authDir);
+  const force = Boolean(input?.force);
+  const dryRun = Boolean(input?.dryRun);
+  const filterNames = new Set(
+    (Array.isArray(input?.filenames) ? input!.filenames : [])
+      .map((f) => basename(String(f || '').trim()))
+      .filter((f) => f.endsWith('.json'))
+  );
+
+  const accounts = await listAccounts();
+  // email(lower) → 最佳 sso（有 sso 的优先，createdAt 新的优先）
+  const emailToSso = new Map<string, { sso: string; createdAt: string }>();
+  for (const a of accounts) {
+    const email = String(a.email || '')
+      .trim()
+      .toLowerCase();
+    const sso = normalizeSsoToken(a.sso);
+    if (!email || !sso || sso.length < 8) continue;
+    const prev = emailToSso.get(email);
+    if (!prev || String(a.createdAt || '') > prev.createdAt) {
+      emailToSso.set(email, { sso, createdAt: String(a.createdAt || '') });
+    }
+  }
+
+  const empty: BackfillCpaAuthSsoResult = {
+    dir,
+    scanned: 0,
+    alreadyHasSso: 0,
+    filled: 0,
+    skippedNoEmail: 0,
+    skippedNoMatch: 0,
+    failed: 0,
+    dryRun,
+    results: []
+  };
+  if (!existsSync(dir)) return empty;
+
+  const names = await fsp.readdir(dir);
+  const results: BackfillCpaAuthSsoResult['results'] = [];
+  let scanned = 0;
+  let alreadyHasSso = 0;
+  let filled = 0;
+  let skippedNoEmail = 0;
+  let skippedNoMatch = 0;
+  let failed = 0;
+
+  for (const name of names) {
+    if (!name.endsWith('.json')) continue;
+    if (filterNames.size > 0 && !filterNames.has(name)) continue;
+    const full = join(dir, name);
+    scanned++;
+    try {
+      const st = await fsp.stat(full);
+      if (!st.isFile()) continue;
+      let data: Record<string, unknown> = {};
+      try {
+        data = JSON.parse(await fsp.readFile(full, 'utf-8')) as Record<string, unknown>;
+      } catch (e) {
+        failed++;
+        results.push({
+          filename: name,
+          email: '',
+          ok: false,
+          action: 'failed',
+          error: e instanceof Error ? e.message : String(e)
+        });
+        continue;
+      }
+
+      const email = String(data.email || '')
+        .trim()
+        .toLowerCase();
+      const existing = extractSsoFromAuthData(data);
+      if (existing && !force) {
+        alreadyHasSso++;
+        results.push({
+          filename: name,
+          email: String(data.email || ''),
+          ok: true,
+          action: 'already'
+        });
+        continue;
+      }
+      if (!email) {
+        skippedNoEmail++;
+        results.push({
+          filename: name,
+          email: '',
+          ok: false,
+          action: 'no_email'
+        });
+        continue;
+      }
+      const hit = emailToSso.get(email);
+      if (!hit) {
+        skippedNoMatch++;
+        results.push({
+          filename: name,
+          email: String(data.email || ''),
+          ok: false,
+          action: 'no_match'
+        });
+        continue;
+      }
+
+      if (dryRun) {
+        filled++;
+        results.push({
+          filename: name,
+          email: String(data.email || ''),
+          ok: true,
+          action: 'would_fill'
+        });
+        continue;
+      }
+
+      data.sso = hit.sso;
+      const tmp = `${full}.tmp`;
+      await fsp.writeFile(tmp, JSON.stringify(data, null, 2) + '\n', 'utf-8');
+      await fsp.rename(tmp, full);
+      filled++;
+      results.push({
+        filename: name,
+        email: String(data.email || ''),
+        ok: true,
+        action: 'filled'
+      });
+    } catch (e) {
+      failed++;
+      results.push({
+        filename: name,
+        email: '',
+        ok: false,
+        action: 'failed',
+        error: e instanceof Error ? e.message : String(e)
+      });
+    }
+  }
+
+  console.log(
+    `[cpa-auth] backfill sso: scanned=${scanned} filled=${filled} already=${alreadyHasSso} ` +
+      `noEmail=${skippedNoEmail} noMatch=${skippedNoMatch} failed=${failed} dryRun=${dryRun}`
+  );
+
+  return {
+    dir,
+    scanned,
+    alreadyHasSso,
+    filled,
+    skippedNoEmail,
+    skippedNoMatch,
+    failed,
+    dryRun,
+    results
+  };
 }
 
 export async function resignCpaAuth(input: {
@@ -262,7 +505,7 @@ print(json.dumps(r, ensure_ascii=False))
 
   const r = await runPythonJson(runtime.pythonPath, runtime.registerDir, code, [
     resolved,
-    settings.proxy || '',
+    resolveHttpProxy(settings, 'cpaAuth'),
     String(input.sso || '').trim(),
     pushRemote ? '1' : '0'
   ]);
@@ -728,7 +971,7 @@ print(json.dumps(r, ensure_ascii=False))
         const r = await runPythonJson(runtime!.pythonPath, runtime!.registerDir, code, [
           sso,
           email,
-          settings.proxy || '',
+          resolveHttpProxy(settings, 'cpaAuth'),
           dir,
           doPrecheck ? '1' : '0',
           deleteOnDead ? '1' : '0'
@@ -904,7 +1147,7 @@ print(json.dumps(r, ensure_ascii=False))
 
         const r = await runPythonJson(runtime!.pythonPath, runtime!.registerDir, code, [
           resolved,
-          settings.proxy || '',
+          resolveHttpProxy(settings, 'cpaAuth'),
           deleteOnDead ? '1' : '0'
         ]);
         const action = String(r.action || '');

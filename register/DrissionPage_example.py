@@ -733,16 +733,19 @@ def start_browser():
     except Exception as e:
         print(f"[Warn] 代理池选取失败: {e}")
 
-    # 随机注册特征
+    # 随机注册特征（UA 大版本对齐真实 Chromium，降低 Turnstile 版本错配）
     if build_fingerprint is not None:
         try:
-            _current_fingerprint = build_fingerprint()
+            major = _real_chrome_major()
+            _current_fingerprint = build_fingerprint(chrome_major=major)
             if apply_to_chromium_options is not None:
                 apply_to_chromium_options(co, _current_fingerprint)
+            ua_note = f" chrome_major={major}" if major else ""
             print(
                 f"[*] 本轮特征: ua={_current_fingerprint.user_agent[:60]}… "
                 f"tz={_current_fingerprint.timezone} "
                 f"size={_current_fingerprint.window_w}x{_current_fingerprint.window_h}"
+                f"{ua_note}"
             )
         except Exception as e:
             print(f"[Warn] 指纹生成失败: {e}")
@@ -881,6 +884,7 @@ def stop_browser():
 
 def restart_browser():
     # 整机重启以切换代理与随机特征（池轮换依赖新 Chromium 进程）。
+    # 注意：main 循环改为「先 start 再打第 N 轮标题」，优先用 stop+start 由 main 编排。
     stop_browser()
     start_browser()
 
@@ -1890,19 +1894,40 @@ def _pick_turnstile_auto_wait_secs(timeout: float) -> float:
     return float(min(picked, cap)) if cap > 0 else 0.0
 
 
+def _scroll_turnstile_into_view() -> None:
+    """把 Turnstile 宿主滚进视口，避免点到错误坐标。"""
+    try:
+        page.run_js(
+            """
+const input = document.querySelector('input[name="cf-turnstile-response"]');
+const host = document.querySelector('.cf-turnstile, [data-sitekey]')
+  || (input && input.parentElement);
+if (host && host.scrollIntoView) {
+  host.scrollIntoView({ block: 'center', inline: 'nearest' });
+  return true;
+}
+return false;
+            """
+        )
+    except Exception:
+        pass
+
+
 def getTurnstileToken(timeout=50):
     """
     求解最终注册页 Turnstile。
-    优先长等自动通过（实测成功多在此）；自动等待时长在 30~n 秒随机（n 由 WebUI 运行参数配置）。
-    点击阶段压缩，少点、少等。
+    优先长等自动通过；若控件长期 1x1 折叠则中途 soft reset + 宿主框点击。
+    点击阶段：折叠态最多 4 次，正常最多 3 次；点击前滚入视口。
     """
     refresh_active_page()
     _apply_stealth_patches(page)
+    _scroll_turnstile_into_view()
     deadline = time.time() + timeout
     last_diag = ""
     click_attempts = 0
     reset_count = 0
-    max_clicks = 2  # 连点收益低，压缩次数
+    mid_reset_done = False
+    max_clicks = 3
 
     # 自动通过：30 ~ n 秒随机（n = config turnstile.auto_wait_max，默认 60）
     auto_wait_secs = _pick_turnstile_auto_wait_secs(timeout)
@@ -1911,6 +1936,7 @@ def getTurnstileToken(timeout=50):
         f"[*] Turnstile 自动通过等待最长 {auto_wait_secs:.0f}s "
         f"（区间 30~{_load_turnstile_auto_wait_max()}s 随机）…"
     )
+    auto_start = time.time()
     while time.time() < auto_wait_until:
         token = _read_turnstile_token()
         if token:
@@ -1919,6 +1945,27 @@ def getTurnstileToken(timeout=50):
         state = _turnstile_widget_state()
         if state.get("failure"):
             print("[Warn] 自动等待阶段检测到 Turnstile failure 反馈页。")
+            break
+        # 折叠超过 ~12s 且有宿主尺寸：中途 soft reset 一次，给 widget 重渲染机会
+        elapsed = time.time() - auto_start
+        if (
+            not mid_reset_done
+            and elapsed >= 12
+            and state.get("collapsedOnly")
+            and state.get("hostSized")
+            and not state.get("failure")
+            and reset_count < 2
+        ):
+            print("[*] 自动等待中控件仍 1x1，执行 mid soft reset…")
+            _soft_reset_turnstile()
+            mid_reset_done = True
+            reset_count += 1
+            time.sleep(1.2 + secrets.randbelow(8) / 10.0)
+            _scroll_turnstile_into_view()
+            continue
+        # 已有可点尺寸的 challenge：提前结束自动等待，进入点击
+        if state.get("challenge") or state.get("sized"):
+            print("[*] 检测到可交互 Turnstile 控件，进入点击阶段。")
             break
         time.sleep(0.4)
 
@@ -1929,13 +1976,17 @@ def getTurnstileToken(timeout=50):
             return token
 
         state = _turnstile_widget_state()
+        # 折叠态多给几次点击机会
+        if state.get("collapsedOnly"):
+            max_clicks = 4
+
         if state.get("failure"):
             last_diag = f"failure-state frames={state.get('frames')}"
-            if reset_count < 1 and time.time() + 6 < deadline:
+            if reset_count < 2 and time.time() + 6 < deadline:
                 print("[*] 检测到 Turnstile failure，执行 soft reset。")
                 _soft_reset_turnstile()
                 reset_count += 1
-                wait_end = time.time() + min(6, deadline - time.time())
+                wait_end = time.time() + min(8, deadline - time.time())
                 while time.time() < wait_end:
                     token = _read_turnstile_token()
                     if token:
@@ -1950,13 +2001,26 @@ def getTurnstileToken(timeout=50):
 
         if click_attempts >= max_clicks:
             last_diag = f"max-clicks:{click_attempts}"
-            # 不再二次 reset+重点，直接结束压缩总耗时
+            # 最后一次 reset 后再等一小段，避免直接放弃
+            if reset_count < 2 and time.time() + 5 < deadline:
+                print("[*] 点击次数用尽，最后 soft reset 并短等…")
+                _soft_reset_turnstile()
+                reset_count += 1
+                click_attempts = max(0, max_clicks - 1)  # 允许再点 1 次
+                wait_end = time.time() + min(5, deadline - time.time())
+                while time.time() < wait_end:
+                    token = _read_turnstile_token()
+                    if token:
+                        print("[*] 最终 soft reset 后已自动通过。")
+                        return token
+                    time.sleep(0.4)
+                continue
             break
 
         target, how = _locate_turnstile_click_target()
         if target is None:
             last_diag = f"locate-fail:{how} state={state}"
-            if state.get("collapsedOnly") and reset_count < 1 and time.time() + 8 < deadline:
+            if state.get("collapsedOnly") and reset_count < 2 and time.time() + 8 < deadline:
                 print("[*] Turnstile 控件折叠为 1x1，soft reset 一次。")
                 _soft_reset_turnstile()
                 reset_count += 1
@@ -1974,14 +2038,15 @@ def getTurnstileToken(timeout=50):
         if click_attempts == 0:
             print(f"[*] 已定位 Turnstile ({how})，CDP 点击（最多 {max_clicks} 次）。")
 
-        time.sleep(0.15 + secrets.randbelow(20) / 100.0)
+        _scroll_turnstile_into_view()
+        time.sleep(0.15 + secrets.randbelow(25) / 100.0)
         clicked, detail = _click_turnstile_checkbox(target, prefer_cdp=True, how=how)
         click_attempts += 1
         last_diag = f"click#{click_attempts} via={how} detail={detail} ok={clicked}"
         print(f"[*] Turnstile 点击尝试 #{click_attempts}: {detail}")
 
-        # 点击后短等；无 token 尽快下一轮或结束
-        wait_slice = min(5.0, max(2.0, deadline - time.time()))
+        # 点击后等待：折叠态稍长，给 token 生成时间
+        wait_slice = min(7.0 if state.get("collapsedOnly") else 5.0, max(2.5, deadline - time.time()))
         wait_end = time.time() + wait_slice
         while time.time() < wait_end:
             token = _read_turnstile_token()
@@ -1995,7 +2060,7 @@ def getTurnstileToken(timeout=50):
                 break
             time.sleep(0.35)
 
-        time.sleep(0.25 + secrets.randbelow(20) / 100.0)
+        time.sleep(0.25 + secrets.randbelow(25) / 100.0)
 
     # 最终诊断
     try:
@@ -2004,7 +2069,12 @@ def getTurnstileToken(timeout=50):
         if diag.get("failure"):
             raise Exception(
                 "failed to solve turnstile: Cloudflare 返回 failure 反馈页"
-                "（多为 IP 信誉/浏览器指纹问题，而非单纯点不中）"
+                "（多为 IP 信誉/浏览器指纹/架构问题，而非单纯点不中）"
+            )
+        if diag.get("collapsedOnly"):
+            raise Exception(
+                "failed to solve turnstile: widget 折叠为 1x1 且无 token"
+                "（常见于 ARM 容器 / UA 与 Chromium 版本错配 / 代理 IP 信誉偏低）"
             )
     except Exception as e:
         if "failed to solve turnstile" in str(e):
@@ -3166,15 +3236,20 @@ def main():
     fail_count = 0
     collected_sso: list = []
     try:
-        start_browser()
-        # start_browser 内已打指纹；仅当未打过时再补一次（避免双份）
-        log_runtime_fingerprint(page, force=False)
         while True:
             if args.count > 0 and current_round >= args.count:
                 break
 
             current_round += 1
             print(f"")
+            # 先拉起浏览器并打出本轮代理/特征，再打「第 N 轮」分隔线，方便对照
+            try:
+                stop_browser()
+            except Exception:
+                pass
+            start_browser()
+            # start_browser 内已打指纹；仅首轮详打一次（避免双份）
+            log_runtime_fingerprint(page, force=False)
             print(f"─── 第 {current_round}/{total} 轮 ────────────────────────")
 
             try:
@@ -3189,8 +3264,6 @@ def main():
             except Exception as error:
                 fail_count += 1
                 print(f"✘ 第 {current_round} 轮失败 | {error}")
-            finally:
-                restart_browser()
 
             if args.count == 0 or current_round < args.count:
                 time.sleep(0.5)

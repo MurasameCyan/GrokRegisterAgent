@@ -400,7 +400,10 @@ def token_to_cpa_record(
     }
     if id_token:
         entry["id_token"] = id_token.strip()
+    # 强制写入 sso（号池无邮箱时靠 SSO SHA-256 匹配「已转 Auth」）
     sso_val = str(sso or "").strip()
+    if sso_val.lower().startswith("sso="):
+        sso_val = sso_val[4:].strip()
     if sso_val:
         entry["sso"] = sso_val
     return entry

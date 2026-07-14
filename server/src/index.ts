@@ -11,6 +11,7 @@ import type { RunEvent } from '@shared/runEvents';
 import { loadSettings, saveSettings, dataDir } from './settingsStore.js';
 import { registerBot } from './bot/registerBot.js';
 import {
+  applyAccountSsoChecks,
   deleteAccounts,
   importAccountsFromText,
   listAccounts,
@@ -19,6 +20,8 @@ import {
 import { checkForUpdate, currentVersion } from './updateCheck.js';
 import { fetchEmails, extractVerificationCode, fetchLatestCodeByAddress } from './api/emailApi.js';
 import { probeProxy, probeProxyBatch } from './api/proxyApi.js';
+import { fetchProxiesFromUrl } from './api/proxyFetchApi.js';
+import { resolveHttpProxy } from './resolveHttpProxy.js';
 import { checkSso } from './ssoCheck.js';
 import {
   authBootstrapInfo,
@@ -29,6 +32,7 @@ import {
   logout
 } from './authStore.js';
 import {
+  backfillCpaAuthSsoFromPool,
   deleteCpaAuthBatch,
   listCpaAuth,
   mintCpaAuthFromSso,
@@ -332,6 +336,21 @@ app.post('/api/cpa-auth/export', async (req: Request, res: Response) => {
   }
 });
 
+/** 从号池按 email 给 auth 回填顶层 sso（旧文件无 sso 时用于 hash 匹配） */
+app.post('/api/cpa-auth/backfill-sso', async (req: Request, res: Response) => {
+  try {
+    const body = (req.body ?? {}) as {
+      filenames?: string[];
+      force?: boolean;
+      dryRun?: boolean;
+    };
+    res.json(await backfillCpaAuthSsoFromPool(body));
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(400).json({ error: message });
+  }
+});
+
 app.get('/api/mail/code', async (req: Request, res: Response) => {
   const address = String(req.query.address || '').trim();
   if (!address) {
@@ -342,7 +361,7 @@ app.get('/api/mail/code', async (req: Request, res: Response) => {
   const result = await fetchLatestCodeByAddress(
     address,
     { apiBase: settings.mail.apiBase, adminAuth: settings.mail.adminAuth },
-    settings.proxy
+    resolveHttpProxy(settings)
   );
   res.json(result);
 });
@@ -354,11 +373,26 @@ app.post('/api/sso/check', async (req: Request, res: Response) => {
     return;
   }
   const settings = await loadSettings();
-  const proxy = settings.proxy;
+  // 号池验活：受 ssoCheckUseProxy + 总开关控制（原先无条件用 settings.proxy）
+  const proxy = resolveHttpProxy(settings, 'ssoCheck');
 
   // 限并发 5，避免对 grok 发起过多并发请求
   const CONCURRENCY = 5;
-  const results: unknown[] = [];
+  const results: Array<{
+    id: string;
+    alive: boolean;
+    status: number;
+    checkedAt: string;
+    email?: string;
+    givenName?: string;
+    familyName?: string;
+    emailConfirmed?: boolean;
+    sessionTierId?: string;
+    createTime?: string;
+    error?: string;
+    botFlagSource?: number | string | null;
+    isBotFlag1?: boolean;
+  }> = [];
   for (let i = 0; i < items.length; i += CONCURRENCY) {
     const batch = items.slice(i, i + CONCURRENCY) as { id: string; sso: string }[];
     const settled = await Promise.all(
@@ -369,7 +403,15 @@ app.post('/api/sso/check', async (req: Request, res: Response) => {
     );
     results.push(...settled);
   }
-  res.json({ results });
+  // 落盘到号池 accounts.json，跨设备/清浏览器缓存仍可恢复；无邮箱时按验活结果补 email
+  let emailsFilled = 0;
+  try {
+    const persisted = await applyAccountSsoChecks(results);
+    emailsFilled = persisted.emailsFilled ?? 0;
+  } catch (err) {
+    console.warn('[sso/check] persist ssoCheck failed:', err);
+  }
+  res.json({ results, emailsFilled });
 });
 
 app.post('/api/verify-code', async (req, res) => {
@@ -435,6 +477,35 @@ app.post('/api/test/proxy', async (req, res) => {
     return res.json(result);
   } catch (e: any) {
     return res.json({ ok: false, message: `测活异常: ${e?.message || e}` });
+  }
+});
+
+/**
+ * 从网页拉取代理列表（hide.mn 表格 / 纯文本 ip:port 等）。
+ * viaProxy=true 时用当前配置的 HTTP 代理出站（被墙时）。
+ */
+app.post('/api/proxy/fetch', async (req: Request, res: Response) => {
+  try {
+    const settings = await loadSettings();
+    const url = String(req.body?.url || settings.proxyFetchUrl || '').trim();
+    const useVia =
+      req.body?.viaProxy === true ||
+      req.body?.viaProxy === '1' ||
+      req.body?.viaProxy === 1;
+    const viaProxy = useVia ? resolveHttpProxy(settings) : '';
+    const result = await fetchProxiesFromUrl({ url, viaProxy });
+    res.json(result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(400).json({
+      ok: false,
+      url: '',
+      lines: [],
+      count: 0,
+      format: 'error',
+      message,
+      sample: []
+    });
   }
 });
 

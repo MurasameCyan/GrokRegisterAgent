@@ -225,7 +225,7 @@ export default function App() {
         {tab === 'dashboard' && <DashboardPage username={auth.username ?? 'admin'} />}
         {tab === 'register' && <RegisterPage onOpenSettings={() => setTab('settings')} />}
         {tab === 'pool' && <PoolPage />}
-        {tab === 'auth' && <AuthPage />}
+        {tab === 'auth' && <AuthPage onOpenPool={() => setTab('pool')} />}
         {tab === 'settings' && (
           <SettingsPage
             username={auth.username ?? 'admin'}

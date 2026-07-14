@@ -108,6 +108,13 @@ export interface CpaAuthItem {
   authType: string;
   botFlagSource?: number | string | null;
   isBotFlag1?: boolean;
+  /**
+   * auth 文件内 sso 字段的 SHA-256 hex（规范化 strip sso= 后）。
+   * 用于号池无邮箱时与账号 SSO 交叉匹配「已转 Auth」。
+   */
+  ssoHash?: string | null;
+  /** auth 是否写入了 sso 原文（不返回原文，仅布尔） */
+  hasSso?: boolean;
 }
 
 export interface CpaAuthListResult {
@@ -270,7 +277,11 @@ export interface RendererApi {
 
   // mail & sso
   getMailCode(address: string): Promise<MailCodeResult>;
-  checkSso(items: SsoCheckItem[]): Promise<SsoCheckResult[]>;
+  /**
+   * SSO 验活。服务端会落盘 ssoCheck，并对「号池无邮箱且 grok 返回 email」的账号补全邮箱。
+   * 返回 results；emailsFilled 为本次补全邮箱条数。
+   */
+  checkSso(items: SsoCheckItem[]): Promise<SsoCheckResult[] & { emailsFilled?: number }>;
 
   // CPA auth（与登录 /api/auth 区分）
   listCpaAuth(): Promise<CpaAuthListResult>;
@@ -310,6 +321,31 @@ export interface RendererApi {
     failed: number;
     results: CpaAuthBatchResultItem[];
   }>;
+  /**
+   * 从号池按 email 给 auth 目录回填顶层 sso。
+   * 用于旧文件无 sso、号池无邮箱时无法 SSO 哈希匹配。
+   */
+  backfillCpaAuthSso(input?: {
+    filenames?: string[];
+    force?: boolean;
+    dryRun?: boolean;
+  }): Promise<{
+    dir: string;
+    scanned: number;
+    alreadyHasSso: number;
+    filled: number;
+    skippedNoEmail: number;
+    skippedNoMatch: number;
+    failed: number;
+    dryRun: boolean;
+    results: Array<{
+      filename: string;
+      email: string;
+      ok: boolean;
+      action: string;
+      error?: string;
+    }>;
+  }>;
   /** 读取 auth 文件内容（导出） */
   exportCpaAuth(input: {
     filenames: string[];
@@ -345,6 +381,22 @@ export interface RendererApi {
     results: Array<
       TestResult & { proxy?: string; scheme?: string; exitIp?: string; latencyMs?: number }
     >;
+  }>;
+  /**
+   * 从网页拉取代理（hide.mn 表格 / 明文 ip:port）。
+   * viaProxy：是否用当前 HTTP 代理去拉页面。
+   */
+  fetchProxiesFromUrl(input: {
+    url?: string;
+    viaProxy?: boolean;
+  }): Promise<{
+    ok: boolean;
+    url: string;
+    lines: string[];
+    count: number;
+    format: string;
+    message: string;
+    sample: string[];
   }>;
 
   // system

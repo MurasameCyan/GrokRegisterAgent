@@ -5,6 +5,7 @@ import { Button } from '@renderer/components/ui/Button';
 import { cn } from '@renderer/lib/cn';
 
 const colorByLevel = {
+  /** 注册机常规 stdout（[*] 状态行等）保持蓝色 */
   info: 'text-info',
   warn: 'text-warn',
   error: 'text-danger',

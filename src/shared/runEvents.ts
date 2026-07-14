@@ -32,6 +32,22 @@ export interface RunStatus {
   errorMessage: string | null;
 }
 
+/** 号池 SSO 验活快照（落盘在 accounts.json，跨设备/清浏览器缓存仍可恢复） */
+export interface AccountSsoCheck {
+  alive: boolean;
+  status: number;
+  checkedAt: string;
+  email?: string;
+  givenName?: string;
+  familyName?: string;
+  emailConfirmed?: boolean;
+  sessionTierId?: string;
+  createTime?: string;
+  error?: string;
+  botFlagSource?: number | string | null;
+  isBotFlag1?: boolean;
+}
+
 /** 一条完整账号记录：邮箱 + 密码 + sso，由 registerBot 从 Python stdout 关联生成 */
 export interface AccountRecord {
   id: string;
@@ -41,6 +57,8 @@ export interface AccountRecord {
   sso: string;
   /** ISO 字符串 */
   createdAt: string;
+  /** 最近一次 SSO 验活结果（可选，服务端持久化） */
+  ssoCheck?: AccountSsoCheck;
 }
 
 export type RunEvent =

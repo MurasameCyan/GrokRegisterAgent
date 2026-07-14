@@ -147,7 +147,19 @@ function merge(partial: unknown): AppSettings {
     skipBotFlag1OnMint: asBool(
       (p as AppSettings).skipBotFlag1OnMint,
       DEFAULT_SETTINGS.skipBotFlag1OnMint
-    )
+    ),
+    ssoCheckUseProxy: asBool(
+      (p as AppSettings).ssoCheckUseProxy,
+      DEFAULT_SETTINGS.ssoCheckUseProxy
+    ),
+    cpaAuthUseProxy: asBool(
+      (p as AppSettings).cpaAuthUseProxy,
+      DEFAULT_SETTINGS.cpaAuthUseProxy
+    ),
+    proxyFetchUrl:
+      typeof (p as AppSettings).proxyFetchUrl === 'string'
+        ? (p as AppSettings).proxyFetchUrl
+        : DEFAULT_SETTINGS.proxyFetchUrl
   };
   // 旧配置无此字段时回落到默认 60
   if (

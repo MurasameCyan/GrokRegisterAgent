@@ -232,4 +232,12 @@ def build_cpa_xai_auth(
         for k, v in extra.items():
             if k not in payload:
                 payload[k] = v
+    # 顶层 sso 优先：mint/resign 必须可被号池 SSO 哈希匹配（无邮箱场景）
+    if extra and isinstance(extra, dict):
+        sso_v = extra.get("sso")
+        if isinstance(sso_v, str) and sso_v.strip():
+            token = sso_v.strip()
+            if token.lower().startswith("sso="):
+                token = token[4:].strip()
+            payload["sso"] = token
     return payload

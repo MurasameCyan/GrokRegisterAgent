@@ -4,11 +4,12 @@
  *
  * 落盘：DATA_DIR/accounts.json（Docker 默认 /data/accounts.json，挂载 ./data 持久化）。
  * 兼容：若新路径不存在，会尝试迁移 cwd/out/accounts.json，并从 SSO 目录导入历史 txt。
+ * 验活结果写在每条 AccountRecord.ssoCheck 上，与号池同库持久化。
  */
 import { promises as fsp, existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, resolve, basename } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { AccountRecord } from '@shared/runEvents';
+import type { AccountRecord, AccountSsoCheck } from '@shared/runEvents';
 import { dataDir } from './settingsStore.js';
 
 function accountsDir(): string {
@@ -29,16 +30,33 @@ function ssoDir(): string {
   return join(dataDir(), 'sso');
 }
 
-function isAccountRecord(v: unknown): v is AccountRecord {
+function isAccountSsoCheck(v: unknown): v is AccountSsoCheck {
   if (!v || typeof v !== 'object') return false;
   const o = v as Record<string, unknown>;
   return (
-    typeof o.id === 'string' &&
-    typeof o.email === 'string' &&
-    typeof o.password === 'string' &&
-    typeof o.sso === 'string' &&
-    typeof o.createdAt === 'string'
+    typeof o.alive === 'boolean' &&
+    typeof o.status === 'number' &&
+    typeof o.checkedAt === 'string'
   );
+}
+
+function isAccountRecord(v: unknown): v is AccountRecord {
+  if (!v || typeof v !== 'object') return false;
+  const o = v as Record<string, unknown>;
+  if (
+    typeof o.id !== 'string' ||
+    typeof o.email !== 'string' ||
+    typeof o.password !== 'string' ||
+    typeof o.sso !== 'string' ||
+    typeof o.createdAt !== 'string'
+  ) {
+    return false;
+  }
+  if (o.ssoCheck != null && !isAccountSsoCheck(o.ssoCheck)) {
+    // 脏字段丢弃，仍保留账号
+    delete o.ssoCheck;
+  }
+  return true;
 }
 
 async function ensureDir(dir: string) {
@@ -343,4 +361,79 @@ export async function resyncAccountsFromDisk(): Promise<{ total: number; importe
     await writeAll(all);
   }
   return { total: all.length, imported: Math.max(0, all.length - beforeCount) };
+}
+
+/** 将批量验活结果写回 accounts.json（按 id 合并 ssoCheck） */
+export async function applyAccountSsoChecks(
+  results: Array<{
+    id: string;
+    alive: boolean;
+    status: number;
+    checkedAt: string;
+    email?: string;
+    givenName?: string;
+    familyName?: string;
+    emailConfirmed?: boolean;
+    sessionTierId?: string;
+    createTime?: string;
+    error?: string;
+    botFlagSource?: number | string | null;
+    isBotFlag1?: boolean;
+  }>
+): Promise<{ updated: number; emailsFilled: number }> {
+  const list = Array.isArray(results) ? results : [];
+  if (list.length === 0) return { updated: 0, emailsFilled: 0 };
+
+  const byId = new Map<string, (typeof list)[number]>();
+  for (const r of list) {
+    const id = String(r?.id || '').trim();
+    if (!id || typeof r.alive !== 'boolean') continue;
+    byId.set(id, r);
+  }
+  if (byId.size === 0) return { updated: 0, emailsFilled: 0 };
+
+  const all = await readAll();
+  let updated = 0;
+  let emailsFilled = 0;
+  const next = all.map((a) => {
+    const r = byId.get(a.id);
+    if (!r) return a;
+    const ssoCheck: AccountSsoCheck = {
+      alive: r.alive,
+      status: typeof r.status === 'number' ? r.status : 0,
+      checkedAt:
+        typeof r.checkedAt === 'string' && r.checkedAt
+          ? r.checkedAt
+          : new Date().toISOString(),
+      email: r.email,
+      givenName: r.givenName,
+      familyName: r.familyName,
+      emailConfirmed: r.emailConfirmed,
+      sessionTierId: r.sessionTierId,
+      createTime: r.createTime,
+      error: r.error,
+      botFlagSource: r.botFlagSource,
+      isBotFlag1: r.isBotFlag1
+    };
+    updated++;
+    // 验活若返回邮箱且号池无邮箱：按 SSO 补 email（便于后续 auth 回填）
+    const prevEmail = String(a.email || '').trim();
+    const fromCheck = typeof r.email === 'string' ? r.email.trim() : '';
+    let email = a.email;
+    if (!prevEmail && fromCheck) {
+      email = fromCheck;
+      emailsFilled++;
+    }
+    return { ...a, email, ssoCheck };
+  });
+
+  if (updated > 0) {
+    await writeAll(next);
+  }
+  if (emailsFilled > 0) {
+    console.log(
+      `[accounts] sso 验活补全邮箱: ${emailsFilled} 条（号池无邮箱且 grok 返回 email）`
+    );
+  }
+  return { updated, emailsFilled };
 }

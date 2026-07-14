@@ -12,7 +12,8 @@ from typing import Any
 
 # 贴近当前主流桌面 Chrome（仍随机，避免全员同一大版本）
 # 有限规避：版本池越新越贴近真实用户分布；仍无保证不被 bot 模型命中
-_CHROME_VERS = [128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138]
+# 注意：UA 大版本应尽量贴近真实 Chromium（见 build_fingerprint(chrome_major=…)）
+_CHROME_VERS = [128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144, 145, 146, 147, 148, 149, 150]
 
 
 @dataclass
@@ -98,10 +99,48 @@ def _chrome_ua(platform_token: str, chrome_major: int) -> str:
     )
 
 
-def build_fingerprint(seed: str | None = None) -> BrowserFingerprint:
+def build_fingerprint(
+    seed: str | None = None,
+    *,
+    chrome_major: int | None = None,
+    prefer_native_os: bool = True,
+) -> BrowserFingerprint:
+    """生成浏览器指纹。
+
+    chrome_major: 若传入真实 Chromium 大版本，UA 将使用该版本（±0~1 微调），
+    避免「二进制 150 + UA 137」被 Turnstile 直接判定异常。
+    prefer_native_os: Linux 容器上提高 Linux UA 权重，减少 Win/Mac 错配。
+    """
+    import platform as _plat
+
     rnd = random.Random(seed) if seed else random.Random(secrets.randbits(64))
-    chrome = rnd.choice(_CHROME_VERS)
-    choice = rnd.randrange(3)
+    if chrome_major and 80 <= int(chrome_major) <= 200:
+        # 贴近真实版本：多数用精确 major，少数 ±1（仍在合理范围）
+        base = int(chrome_major)
+        jitter = rnd.choice([0, 0, 0, 0, 1, -1])
+        chrome = max(100, base + jitter)
+    else:
+        chrome = rnd.choice(_CHROME_VERS)
+
+    sys_name = (_plat.system() or "").lower()
+    if prefer_native_os and sys_name == "linux":
+        # 容器多为 Linux：70% Linux / 25% Win / 5% Mac（Mac 在 Linux 上最易穿帮）
+        r = rnd.random()
+        if r < 0.70:
+            choice = 2
+        elif r < 0.95:
+            choice = 0
+        else:
+            choice = 1
+    elif prefer_native_os and sys_name == "windows":
+        r = rnd.random()
+        choice = 0 if r < 0.80 else (1 if r < 0.90 else 2)
+    elif prefer_native_os and sys_name == "darwin":
+        r = rnd.random()
+        choice = 1 if r < 0.80 else (0 if r < 0.95 else 2)
+    else:
+        choice = rnd.randrange(3)
+
     if choice == 0:
         # Windows
         platform = "Win32"

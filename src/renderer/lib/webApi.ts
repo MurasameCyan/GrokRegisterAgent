@@ -153,10 +153,20 @@ const webApi: RendererApi = {
 
   getMailCode: (address) =>
     http('GET', `/api/mail/code?address=${encodeURIComponent(address)}`),
-  checkSso: (items) =>
-    http<{ results: import('@shared/ipc').SsoCheckResult[] }>('POST', '/api/sso/check', {
-      items
-    }).then((r) => r.results),
+  checkSso: async (items) => {
+    const r = await http<{
+      results: import('@shared/ipc').SsoCheckResult[];
+      emailsFilled?: number;
+    }>('POST', '/api/sso/check', { items });
+    const list = r.results || [];
+    // 把 emailsFilled 挂到数组上，便于 toast（不破坏 map/filter）
+    Object.defineProperty(list, 'emailsFilled', {
+      value: r.emailsFilled ?? 0,
+      enumerable: false,
+      writable: false
+    });
+    return list as typeof list & { emailsFilled?: number };
+  },
 
   listCpaAuth: () => http('GET', '/api/cpa-auth'),
   resignCpaAuth: (input) => http('POST', '/api/cpa-auth/resign', input),
@@ -166,6 +176,8 @@ const webApi: RendererApi = {
   pushCpaAuthRemote: (input) => http('POST', '/api/cpa-auth/push-remote', input),
   deleteCpaAuth: (input) => http('POST', '/api/cpa-auth/delete', input),
   exportCpaAuth: (input) => http('POST', '/api/cpa-auth/export', input),
+  backfillCpaAuthSso: (input) =>
+    http('POST', '/api/cpa-auth/backfill-sso', input ?? {}),
 
   getTheme: async () => {
     const stored = (localStorage.getItem('theme') as ThemeMode | null) ?? 'system';
@@ -199,6 +211,11 @@ const webApi: RendererApi = {
   testProxy: (proxy) =>
     http<TestResult & { exitIp?: string; latencyMs?: number }>('POST', '/api/test/proxy', {
       proxy
+    }),
+  fetchProxiesFromUrl: (input) =>
+    http('POST', '/api/proxy/fetch', {
+      url: input?.url,
+      viaProxy: input?.viaProxy === true
     }),
   testProxyBatch: (input) =>
     http('POST', '/api/test/proxy-batch', {

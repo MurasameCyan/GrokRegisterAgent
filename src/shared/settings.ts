@@ -114,6 +114,20 @@ export interface AppSettings {
    * 默认 true。无法抹掉已签发 claim，仅过滤。
    */
   skipBotFlag1OnMint: boolean;
+  /**
+   * 号池 SSO 验活是否走 HTTP 代理。
+   * 需同时 proxyEnabled=true 且配置了 proxy 才实际走代理。
+   */
+  ssoCheckUseProxy: boolean;
+  /**
+   * Auth 转换（mint）/ 重签 / CPA 测活是否走 HTTP 代理。
+   * 需同时 proxyEnabled=true 且配置了 proxy 才实际走代理。
+   */
+  cpaAuthUseProxy: boolean;
+  /**
+   * 网页拉取代理：默认源（hide.mn 列表页或其它 ip:port 文本页）
+   */
+  proxyFetchUrl: string;
   /** 主题模式 */
   theme: ThemeMode;
 }
@@ -152,6 +166,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
   cpaProbeDeleteOnDead: true,
   proxyIpIntervalSec: 0,
   skipBotFlag1OnMint: true,
+  /** 号池验活默认走代理（若总开关与 proxy 已配） */
+  ssoCheckUseProxy: true,
+  /** Auth mint/重签/测活默认走代理 */
+  cpaAuthUseProxy: true,
+  proxyFetchUrl: 'https://hide.mn/en/proxy-list/',
   theme: 'system'
 };
 

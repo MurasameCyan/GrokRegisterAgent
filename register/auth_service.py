@@ -109,6 +109,35 @@ def _read_cpa_remote_config() -> tuple[str, str]:
     return url, key
 
 
+def _normalize_sso_token(sso: str) -> str:
+    """strip 空白与可选 sso= 前缀，便于号池 SHA-256 与文件字段一致。"""
+    return str(sso or "").strip().removeprefix("sso=").removeprefix("SSO=").strip()
+
+
+def _ensure_payload_sso(payload: dict[str, Any], sso: str) -> dict[str, Any]:
+    """强制顶层写入 sso（覆盖 extra 仅嵌套、或 build 时丢字段的情况）。
+
+    号池「已转 Auth」在无邮箱时依赖 auth 文件内 sso 做 SHA-256 交叉匹配。
+    """
+    if not isinstance(payload, dict):
+        return payload
+    token = _normalize_sso_token(sso)
+    if not token:
+        # 仍尝试从已有字段/嵌套 extra 提升到顶层
+        existing = payload.get("sso")
+        if isinstance(existing, str) and existing.strip():
+            payload["sso"] = _normalize_sso_token(existing)
+            return payload
+        extra = payload.get("extra")
+        if isinstance(extra, dict):
+            nested = extra.get("sso")
+            if isinstance(nested, str) and nested.strip():
+                payload["sso"] = _normalize_sso_token(nested)
+        return payload
+    payload["sso"] = token
+    return payload
+
+
 def sso_to_cpa_auth(
     *,
     sso: str,
@@ -159,12 +188,13 @@ def sso_to_cpa_auth(
         )
         if not payload.get("email") and email:
             payload["email"] = email
-        if sso and "sso" not in payload:
-            payload["sso"] = sso
     except Exception:
         payload = token_to_cpa_record(token, email=email, headers=headers, sso=sso)
         if headers:
             payload["headers"] = headers
+
+    # 强制顶层写入 sso（号池无邮箱时靠 SSO SHA-256 匹配「已转 Auth」）
+    payload = _ensure_payload_sso(payload, sso)
 
     path = write_cpa_auth(out_dir, payload)
     log(f"[auth] wrote {path}")
@@ -341,10 +371,10 @@ def resign_auth_file(
         token = refresh_access_token(refresh, proxy=proxy)
         if token and token.get("access_token"):
             new_refresh = token.get("refresh_token") or refresh
+            # 优先入参 sso，其次文件内已有 sso
+            sso_keep = (sso or str(payload.get("sso") or "")).strip()
             try:
-                extra = {}
-                if payload.get("sso"):
-                    extra["sso"] = payload.get("sso")
+                extra = {"sso": sso_keep} if sso_keep else None
                 new_payload = build_cpa_xai_auth(
                     email=email,
                     access_token=token["access_token"],
@@ -354,10 +384,11 @@ def resign_auth_file(
                     base_url=str(payload.get("base_url") or DEFAULT_BASE_URL),
                     headers=headers,
                     sub=str(payload.get("sub") or "") or None,
-                    extra=extra or None,
+                    extra=extra,
                 )
             except Exception as e:
                 return {"ok": False, "error": f"build payload failed: {e}", "email": email}
+            new_payload = _ensure_payload_sso(new_payload, sso_keep)
             tmp = p.with_suffix(p.suffix + ".tmp")
             tmp.write_text(json.dumps(new_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             os.replace(tmp, p)

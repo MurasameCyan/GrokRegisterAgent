@@ -3,6 +3,7 @@ import {
   Activity,
   ChevronDown,
   ChevronRight,
+  Download,
   Github,
   KeyRound,
   Loader2,
@@ -21,6 +22,7 @@ import { useSettingsStore } from '@renderer/store/settingsStore';
 import { useToastStore } from '@renderer/store/toastStore';
 import type { AppSettings, PoolMode, ProxyPoolEntry } from '@shared/settings';
 import {
+  appendProxiesToPoolText,
   moveProxiesToAlivePool,
   parseProxyPoolEntries,
   removeProxiesFromPoolText,
@@ -261,6 +263,9 @@ export function SettingsForm() {
   const [probingKey, setProbingKey] = useState<string | null>(null);
   /** 可用池默认折叠 */
   const [alivePoolOpen, setAlivePoolOpen] = useState(false);
+  const [fetchingProxies, setFetchingProxies] = useState(false);
+  /** 拉列表时是否走当前 HTTP 代理（被墙时） */
+  const [fetchViaProxy, setFetchViaProxy] = useState(false);
 
   useEffect(() => {
     if (data && !draft) setDraft(data);
@@ -312,6 +317,56 @@ export function SettingsForm() {
     setDraft({ ...draft, mail: { ...draft.mail, [key]: value } });
   const update = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) =>
     setDraft({ ...draft, [key]: value });
+
+  /** 从网页拉取代理并追加到待测池 */
+  const fetchProxiesFromWeb = async () => {
+    if (!draft) return;
+    const url = String(draft.proxyFetchUrl || '').trim();
+    if (!url) {
+      push({ tone: 'warn', title: '请填写拉取 URL' });
+      return;
+    }
+    setFetchingProxies(true);
+    try {
+      const r = await window.api.fetchProxiesFromUrl({
+        url,
+        viaProxy: fetchViaProxy
+      });
+      if (!r.ok || !r.lines?.length) {
+        push({
+          tone: 'danger',
+          title: '拉取失败',
+          description: r.message || '未解析到代理'
+        });
+        return;
+      }
+      const before = parseProxyPoolEntries(draft.proxyPool).length;
+      const nextPool = appendProxiesToPoolText(
+        draft.proxyPool || '',
+        r.lines,
+        r.lines.join('\n')
+      );
+      const after = parseProxyPoolEntries(nextPool).length;
+      const added = Math.max(0, after - before);
+      setDraft({ ...draft, proxyPool: nextPool, proxyFetchUrl: url });
+      push({
+        tone: added > 0 ? 'ok' : 'warn',
+        title: added > 0 ? '已写入待测池' : '无新增（可能已存在）',
+        description:
+          `${r.message} · 新增 ${added} 条 · 池内共 ${after} 条` +
+          (r.sample?.length ? ` · 例: ${r.sample.slice(0, 3).join(' | ')}` : '') +
+          ' · 请测活后迁入可用池，并点保存'
+      });
+    } catch (err) {
+      push({
+        tone: 'danger',
+        title: '拉取异常',
+        description: err instanceof Error ? err.message : String(err)
+      });
+    } finally {
+      setFetchingProxies(false);
+    }
+  };
 
   /** 测活成功 → 移入可用池，从待测池移除 */
   const promoteOkProxies = (okProxies: string[], base?: AppSettings) => {
@@ -774,7 +829,7 @@ export function SettingsForm() {
           <div className="lg:col-span-2">
             <ToggleRow
               label="启用代理"
-              hint="关：直连；开：使用下方单代理或代理池"
+              hint="关：直连；开：使用下方单代理或代理池（注册机池轮换；Node 出站用单条 HTTP 代理）"
               checked={!!draft.proxyEnabled}
               onChange={(v) => update('proxyEnabled', v)}
             />
@@ -782,40 +837,108 @@ export function SettingsForm() {
 
           {draft.proxyEnabled && (
             <>
+              <div className="lg:col-span-2 grid gap-3 sm:grid-cols-2">
+                <ToggleRow
+                  label="号池验活走代理"
+                  hint="开：SSO 验活经 HTTP 代理访问 grok；关：直连"
+                  checked={draft.ssoCheckUseProxy !== false}
+                  onChange={(v) => update('ssoCheckUseProxy', v)}
+                />
+                <ToggleRow
+                  label="Auth 转换/重签/测活走代理"
+                  hint="开：mint、重签、CPA 测活经 HTTP 代理；关：直连"
+                  checked={draft.cpaAuthUseProxy !== false}
+                  onChange={(v) => update('cpaAuthUseProxy', v)}
+                />
+              </div>
+
               <div className="lg:col-span-2">
                 <ToggleRow
                   label="使用代理池"
-                  hint="开：从池中轮换；关：使用单条 HTTP/浏览器代理"
+                  hint="开：从池中轮换（仅注册机浏览器）；关：使用单条 HTTP/浏览器代理"
                   checked={!!draft.proxyPoolEnabled}
                   onChange={(v) => update('proxyPoolEnabled', v)}
                 />
               </div>
 
+              {/* 单条 HTTP 代理：号池验活 / Auth mint·重签·测活 出站用（与注册机代理池无关） */}
+              <Field
+                label={
+                  draft.proxyPoolEnabled
+                    ? 'HTTP 代理（验活 / Auth 出站）'
+                    : 'HTTP 代理'
+                }
+                hint={
+                  draft.proxyPoolEnabled
+                    ? '代理池仅给注册机浏览器轮换；此处单条给号池验活、Auth 转换/重签/测活'
+                    : '例如 http://127.0.0.1:7890'
+                }
+                error={errors.proxy}
+              >
+                <Input
+                  value={draft.proxy}
+                  onChange={(e) => update('proxy', e.target.value)}
+                  invalid={!!errors.proxy}
+                  placeholder="http://127.0.0.1:7890"
+                />
+              </Field>
               {!draft.proxyPoolEnabled && (
-                <>
-                  <Field label="HTTP 代理" hint="例如 http://127.0.0.1:7890" error={errors.proxy}>
-                    <Input
-                      value={draft.proxy}
-                      onChange={(e) => update('proxy', e.target.value)}
-                      invalid={!!errors.proxy}
-                    />
-                  </Field>
-                  <Field label="浏览器代理" hint="空则跟随 HTTP 代理">
-                    <Input
-                      value={draft.browserProxy}
-                      onChange={(e) => update('browserProxy', e.target.value)}
-                      placeholder="留空跟随 HTTP 代理"
-                    />
-                  </Field>
-                </>
+                <Field label="浏览器代理" hint="空则跟随 HTTP 代理">
+                  <Input
+                    value={draft.browserProxy}
+                    onChange={(e) => update('browserProxy', e.target.value)}
+                    placeholder="留空跟随 HTTP 代理"
+                  />
+                </Field>
               )}
 
               {draft.proxyPoolEnabled && (
                 <>
+                  <div className="lg:col-span-2 space-y-3 rounded-xl border border-border/60 bg-muted/30 p-3.5">
+                    <div>
+                      <div className="text-[13px] font-medium tracking-tight">
+                        从网页拉取代理
+                      </div>
+                      <p className="mt-0.5 text-[11px] leading-4 text-muted-foreground">
+                        适配 hide.mn 列表页表格（IP/Port/国家/类型），以及纯文本
+                        ip:port。写入「待测池」后请测活再迁入可用池。
+                      </p>
+                    </div>
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                      <Input
+                        className="min-w-0 flex-1"
+                        value={draft.proxyFetchUrl || ''}
+                        onChange={(e) => update('proxyFetchUrl', e.target.value)}
+                        placeholder="https://hide.mn/en/proxy-list/"
+                      />
+                      <Button
+                        type="button"
+                        size="sm"
+                        className="shrink-0"
+                        disabled={fetchingProxies}
+                        onClick={() => void fetchProxiesFromWeb()}
+                        title="拉取并追加到待测池（需保存设置后生效于其它设备）"
+                      >
+                        {fetchingProxies ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Download className="h-3.5 w-3.5" />
+                        )}
+                        {fetchingProxies ? '拉取中…' : '拉取并写入待测池'}
+                      </Button>
+                    </div>
+                    <ToggleRow
+                      label="经 HTTP 代理拉取页面"
+                      hint="本机直连打不开列表时打开（用上方单条 HTTP 代理出站）"
+                      checked={fetchViaProxy}
+                      onChange={setFetchViaProxy}
+                    />
+                  </div>
+
                   <div className="lg:col-span-2">
                     <Field
                       label="代理池（待测）"
-                      hint="可为空。支持 URL、#备注、括号备注、CSV：序号,ip:port,地区,协议,质量"
+                      hint="可为空。支持 URL、#备注、括号备注、CSV：序号,ip:port,地区,协议,质量；可从网页拉取"
                     >
                       <textarea
                         className={TEXTAREA_CLASS}
