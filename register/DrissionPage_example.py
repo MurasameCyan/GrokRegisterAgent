@@ -238,7 +238,7 @@ except Exception:
     _stop_local_forward_early = None
 
 # 启动自检：新代码是否在容器内
-_REGISTER_BUILD = "grok2api-push-2026-07-14"
+_REGISTER_BUILD = "no-exit-ip+g2api-2026-07-14"
 print(f"[*] register build: {_REGISTER_BUILD}")
 if apply_proxy_to_chromium_options is None:
     print("[Warn] 缺少 proxy_auth_ext —— 请确认 ./register 已挂载并重启容器")
@@ -631,9 +631,10 @@ def log_runtime_fingerprint(tab=None, force: bool = False):
 
 
 def _start_browser_once():
-    """单次拉起浏览器 + 应用一个代理 + 出口 IP 探测（不含换 IP 重试）。
+    """单次拉起浏览器 + 应用一个代理（不再做出口 IP 探测）。
 
     返回 dict: browser, page, exit_ip_ok, exit_ip_err, proxy, used_proxy
+    （exit_ip_* 固定为成功/空，兼容旧调用方）
     """
     # 每轮从全新浏览器开始，使用独立临时 profile 目录避免 Cookie/Session 复用。
     # 注意：带 user:pass 的代理必须用扩展注入，co.set_proxy 会静默忽略（DrissionPage 限制）。
@@ -822,165 +823,68 @@ def _start_browser_once():
         except Exception:
             pass
 
-    # 出口 IP：确认代理是否真正生效（浏览器视角）
-    exit_ip_ok = False
-    exit_ip_err = ""
-    try:
-        from proxy_local_forward import (
-            verify_exit_ip_via_browser,
-            verify_exit_ip,
-            stop_local_forward,
-        )
-
-        ip_info = verify_exit_ip_via_browser(page, timeout=12.0)
-        if ip_info.get("ok") and ip_info.get("ip"):
-            print(f"[*] 浏览器出口 IP: {ip_info['ip']}（api.ipify.org）")
-            exit_ip_ok = True
-        else:
-            err = ip_info.get("error") or ip_info.get("raw") or "unknown"
-            exit_ip_err = str(err)
-            print(f"[Warn] 浏览器出口 IP 探测失败: {err}")
-            # 认证扩展可能未生效：尝试本地转发并重建浏览器
-            can_fb = bool(
-                proxy_apply_result
-                and proxy_apply_result.get("can_fallback_local")
-                and proxy_apply_result.get("upstream_url")
-            )
-            if can_fb and apply_proxy_to_chromium_options is not None:
-                up = proxy_apply_result["upstream_url"]
-                print("[*] 尝试本地转发兜底并重建浏览器…")
-                try:
-                    stop_browser()
-                except Exception:
-                    pass
-                try:
-                    stop_local_forward()
-                except Exception:
-                    pass
-                co = _new_chromium_options()
-                fb = apply_proxy_to_chromium_options(
-                    co, up, work_dir=_chrome_temp_dir, prefer_local_forward=True
-                )
-                if fb.get("mode") == "local_forward":
-                    print(
-                        f"[*] 浏览器代理(兜底/本地转发): {fb.get('local_proxy')} → {fb.get('proxy')}"
-                    )
-                    if build_fingerprint is not None and _current_fingerprint is not None:
-                        try:
-                            if apply_to_chromium_options is not None:
-                                apply_to_chromium_options(co, _current_fingerprint)
-                        except Exception:
-                            pass
-                    co.set_user_data_path(_chrome_temp_dir)
-                    browser = Chromium(co)
-                    tabs = browser.get_tabs()
-                    page = tabs[-1] if tabs else browser.new_tab()
-                    try:
-                        page.set.window.size(win_w, win_h)
-                    except Exception:
-                        pass
-                    _apply_stealth_patches(page)
-                    if _current_fingerprint is not None and stealth_js is not None:
-                        try:
-                            page.run_js(stealth_js(_current_fingerprint))
-                        except Exception:
-                            pass
-                    ip2 = verify_exit_ip_via_browser(page, timeout=12.0)
-                    if ip2.get("ok") and ip2.get("ip"):
-                        print(f"[*] 浏览器出口 IP(本地转发): {ip2['ip']}")
-                        exit_ip_ok = True
-                        exit_ip_err = ""
-                    else:
-                        exit_ip_err = str(ip2.get("error") or ip2.get("raw") or exit_ip_err)
-                        print(
-                            f"[Warn] 本地转发后出口 IP 仍失败: {ip2.get('error') or ip2.get('raw')}"
-                        )
-                        try:
-                            py_ip = verify_exit_ip(up, timeout=10.0)
-                            if py_ip.get("ok"):
-                                print(f"[*] Python 经上游出口 IP: {py_ip.get('ip')}（浏览器未走通）")
-                            else:
-                                print(f"[Warn] Python 经上游也失败: {py_ip.get('error')}")
-                        except Exception as e3:
-                            print(f"[Warn] Python 出口探测异常: {e3}")
-                else:
-                    print(f"[Warn] 本地转发兜底失败: {fb.get('error')}")
-    except Exception as e:
-        exit_ip_err = str(e)
-        print(f"[Warn] 出口 IP 检测跳过: {e}")
-
+    # 已移除出口 IP 探测（api.ipify / CF trace 等），启动后直接进入注册流程
     # 进程内首次启动时打印架构/版本/WebGL，确认 ARM 无 GUI 环境
     log_runtime_fingerprint(page, force=False)
-    # 无代理时不强制出口 IP；有代理则由 start_browser 外层按失败换 IP
     return {
         "browser": browser,
         "page": page,
-        "exit_ip_ok": exit_ip_ok,
-        "exit_ip_err": exit_ip_err,
+        "exit_ip_ok": True,
+        "exit_ip_err": "",
         "proxy": _browser_proxy or "",
         "used_proxy": bool(str(_browser_proxy or "").strip()),
     }
 
 
-# 出口 IP 失败时本轮换代理次数（含首次）
-_EXIT_IP_PROXY_TRIES = 3
+def _format_proxy_for_log(proxy: str) -> str:
+    """日志用：脱敏 user:pass，保留 scheme/host:port。"""
+    p = str(proxy or "").strip()
+    if not p:
+        return "(直连)"
+    try:
+        if parse_proxy_url:
+            info = parse_proxy_url(p)
+            if info and info.get("has_auth"):
+                u = str(info.get("username") or "")[:8]
+                return (
+                    f"{info.get('scheme') or 'http'}://{u}…:***"
+                    f"@{info.get('host')}:{info.get('port')}"
+                )
+            if info:
+                return (
+                    f"{info.get('scheme') or 'http'}://"
+                    f"{info.get('host')}:{info.get('port')}"
+                )
+    except Exception:
+        pass
+    # 兜底脱敏
+    if "@" in p and "://" in p:
+        try:
+            scheme, rest = p.split("://", 1)
+            cred, host = rest.rsplit("@", 1)
+            user = cred.split(":")[0][:8]
+            return f"{scheme}://{user}…:***@{host}"
+        except Exception:
+            pass
+    return p[:96]
 
 
 def start_browser(*, max_proxy_tries: int | None = None):
-    """拉起浏览器；若配置了代理且出口 IP 探测失败，则换代理重试（默认最多 3 次）。"""
-    tries = int(max_proxy_tries if max_proxy_tries is not None else _EXIT_IP_PROXY_TRIES)
-    tries = max(1, min(tries, 10))
-    last_err = ""
-    last_proxy = ""
-    for attempt in range(1, tries + 1):
-        if attempt > 1:
-            print(
-                f"[*] 出口 IP 失败，换代理重试 {attempt}/{tries}"
-                + (f" | 上一条: {last_proxy}" if last_proxy else "")
-            )
-            try:
-                stop_browser()
-            except Exception:
-                pass
-            time.sleep(0.4 + secrets.randbelow(40) / 100.0)
+    """拉起浏览器（已取消出口 IP 检测与因此触发的换代理重试）。
 
-        info = _start_browser_once()
-        # 兼容旧调用：若内部异常路径仍返回 tuple
-        if isinstance(info, tuple):
-            return info
-        last_proxy = str(info.get("proxy") or "")[:80]
-        if info.get("exit_ip_ok"):
-            return info["browser"], info["page"]
-        # 未使用代理（直连）：不因出口探测失败整轮重来
-        if not info.get("used_proxy"):
-            if not info.get("exit_ip_ok") and info.get("exit_ip_err"):
-                print(f"[Warn] 直连出口 IP 探测失败（继续）: {info.get('exit_ip_err')}")
-            return info["browser"], info["page"]
-
-        last_err = str(info.get("exit_ip_err") or "exit-ip-failed")
-        fail_proxy = str(info.get("proxy") or last_proxy or "").strip()
-        print(
-            f"[Warn] 本轮代理出口不可用 ({attempt}/{tries}): {last_err[:180]}"
-        )
-        # 出口 IP 失败 → 从可用池降到待定池，避免下轮再抽到
-        if fail_proxy:
-            try:
-                from pools import demote_proxy_to_pending
-
-                reason = "出口IP失败"
-                if "TUNNEL" in last_err.upper() or "tunnel" in last_err.lower():
-                    reason = "出口IP失败·隧道"
-                elif "timeout" in last_err.lower() or "timed out" in last_err.lower():
-                    reason = "出口IP失败·超时"
-                demote_proxy_to_pending(fail_proxy, reason=reason)
-            except Exception as de:
-                print(f"[Warn] 降级回调异常: {de}")
-
-    # 全部失败：仍返回最后一次浏览器，避免 main 空指针；注册页大概率也会失败
-    print(
-        f"[Warn] 出口 IP 连续失败 {tries} 次仍继续本轮（最后错误: {last_err[:120]}）"
-    )
-    return browser, page
+    仅打印当前使用的代理信息，不做出口探测。
+    max_proxy_tries 保留兼容旧调用，忽略。
+    """
+    _ = max_proxy_tries
+    info = _start_browser_once()
+    if isinstance(info, tuple):
+        return info
+    used = str(info.get("proxy") or _browser_proxy or "").strip()
+    if info.get("used_proxy") and used:
+        print(f"[*] 当前使用代理: {_format_proxy_for_log(used)}")
+    else:
+        print("[*] 当前使用代理: (直连)")
+    return info["browser"], info["page"]
 
 
 def stop_browser():
@@ -3610,6 +3514,11 @@ def main():
             start_browser()
             # start_browser 内已打指纹；仅首轮详打一次（避免双份）
             log_runtime_fingerprint(page, force=False)
+            # 轮次分隔处再标一次当前代理，便于对照日志
+            try:
+                print(f"[*] 本轮代理: {_format_proxy_for_log(_browser_proxy)}")
+            except Exception:
+                pass
             print(f"─── 第 {current_round}/{total} 轮 ────────────────────────")
 
             try:
@@ -3617,6 +3526,14 @@ def main():
                 collected_sso.append(result["sso"])
                 success_count += 1
                 print(f"✔ 第 {current_round} 轮成功 | {result['email']}")
+                # 可用池对应代理成功计数 +1（绿色 UI 展示）
+                try:
+                    from pools import bump_proxy_register_success
+
+                    if _browser_proxy:
+                        bump_proxy_register_success(_browser_proxy, delta=1)
+                except Exception as be:
+                    print(f"[Warn] 代理成功计数回调异常: {be}")
             except KeyboardInterrupt:
                 print(f"")
                 print(f"[Info] 收到中断信号，停止后续轮次。")

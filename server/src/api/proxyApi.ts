@@ -14,7 +14,7 @@ export type ProxyProbeResult = {
   message: string;
   proxy?: string;
   scheme?: string;
-  /** 出口 IP（若可解析，多来自 CF trace / 基础探测） */
+  /** @deprecated 已移除出口 IP 检测，保留字段兼容旧前端 */
   exitIp?: string;
   latencyMs?: number;
   /**
@@ -108,16 +108,18 @@ function isSocks(scheme: string): boolean {
 
 /**
  * 测活三条件（缺一不可）：
- * 1. 代理可用：经代理 HTTPS 出站成功（中性 IP 接口）
+ * 1. 代理可用：经代理 HTTPS 出站成功
  * 2. 可达 xAI：grok / accounts
  * 3. 可达 Cloudflare：cdn-cgi/trace
  *
  * 判定：隧道建立并拿到任意 HTTP 响应（含 3xx/4xx）即该目标通。
  * 代理 407 / 连接失败 / 超时 = 该条件失败。
+ * 已取消出口 IP 解析/展示（不再依赖 ipify 回包正文）。
  */
+// 代理连通：用通用 HTTPS 目标即可，不必解析出口 IP
 const PROXY_ALIVE_URLS = [
-  'https://api.ipify.org?format=json',
-  'https://icanhazip.com'
+  'https://www.cloudflare.com/cdn-cgi/trace',
+  'https://1.1.1.1/cdn-cgi/trace'
 ];
 const XAI_PROBE_URLS = [
   'https://grok.x.ai/',
@@ -127,37 +129,6 @@ const CF_PROBE_URLS = [
   'https://www.cloudflare.com/cdn-cgi/trace',
   'https://1.1.1.1/cdn-cgi/trace'
 ];
-
-function extractIpFromCfTrace(body: string): string {
-  const m = /(?:^|\n)ip=([0-9a-fA-F.:]+)/.exec(body || '');
-  return m?.[1]?.trim() || '';
-}
-
-function extractIp(data: unknown, rawText?: string): string {
-  if (typeof data === 'string') {
-    const t = data.trim();
-    const fromTrace = extractIpFromCfTrace(t);
-    if (fromTrace) return fromTrace;
-    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(t)) return t;
-    try {
-      return extractIp(JSON.parse(t));
-    } catch {
-      return t.slice(0, 64);
-    }
-  }
-  if (data && typeof data === 'object') {
-    const o = data as Record<string, unknown>;
-    if (typeof o.ip === 'string') return o.ip;
-    if (typeof o.origin === 'string') return String(o.origin).split(',')[0]?.trim() || '';
-  }
-  if (rawText) {
-    const fromTrace = extractIpFromCfTrace(rawText);
-    if (fromTrace) return fromTrace;
-    const t = rawText.trim();
-    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(t)) return t;
-  }
-  return '';
-}
 
 type TargetProbe = {
   ok: boolean;
@@ -215,13 +186,12 @@ async function probeTargets(
           return label;
         }
       })();
-      const exitIp = extractIp(body, body);
-      // 明细只保留状态码/耗时，避免把 HTML 错误页塞进 toast
+      // 明细只保留状态码/耗时；不再解析/返回出口 IP
+      void body;
       return {
         ok: true,
         ms,
         status: res.status,
-        exitIp: exitIp || undefined,
         detail: `${host} · HTTP ${res.status} · ${ms}ms`
       };
     } catch (e) {
@@ -315,7 +285,7 @@ export async function probeProxy(
       probeTargets(agent, CF_PROBE_URLS, perTargetTimeout, 'CF')
     ]);
     const latencyMs = Date.now() - started;
-    const exitIp = alive.exitIp || cf.exitIp || xai.exitIp;
+    // 不再做「出口 IP」解析/展示（易把错误页 HTML 当 IP，且注册不依赖此字段）
     const allOk = alive.ok && xai.ok && cf.ok;
 
     const mark = (ok: boolean, name: string, t: TargetProbe) =>
@@ -325,7 +295,6 @@ export async function probeProxy(
       mark(alive.ok, '代理', alive),
       mark(xai.ok, 'xAI', xai),
       mark(cf.ok, 'CF', cf),
-      exitIp ? `出口 ${exitIp}` : '',
       scheme
     ].filter(Boolean);
 
@@ -337,7 +306,6 @@ export async function probeProxy(
     const base = {
       proxy,
       scheme,
-      exitIp: exitIp || undefined,
       latencyMs,
       proxyOk: alive.ok,
       xaiOk: xai.ok,

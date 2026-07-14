@@ -7,7 +7,10 @@ import { WebSocket, WebSocketServer } from 'ws';
 
 import type { RegisterStartArgs, SystemHealth, SystemHealthCheck } from '@shared/ipc';
 import type { AppSettings } from '@shared/settings';
-import { moveProxiesFromAliveToPending } from '@shared/settings';
+import {
+  bumpProxyRegisterSuccessInPoolText,
+  moveProxiesFromAliveToPending
+} from '@shared/settings';
 import type { RunEvent } from '@shared/runEvents';
 import { loadSettings, saveSettings, dataDir } from './settingsStore.js';
 import { registerBot } from './bot/registerBot.js';
@@ -482,9 +485,50 @@ app.post('/api/test/proxy', async (req, res) => {
 });
 
 /**
+ * 注册成功：可用池对应代理成功计数 +1（行尾 #成功N，前端绿色显示）。
+ * body: { proxies: string[] | string, delta?: number }
+ */
+app.post('/api/proxy/register-success', async (req: Request, res: Response) => {
+  try {
+    const settings = await loadSettings();
+    const raw = req.body?.proxies ?? req.body?.proxy ?? [];
+    const list: string[] = Array.isArray(raw)
+      ? raw.map((x: unknown) => String(x || '').trim()).filter(Boolean)
+      : String(raw || '')
+          .split(/[\n,]/)
+          .map((s) => s.trim())
+          .filter(Boolean);
+    if (list.length === 0) {
+      res.status(400).json({ ok: false, bumped: 0, message: 'proxies 为空' });
+      return;
+    }
+    const delta = Math.max(1, Math.min(100, Number(req.body?.delta) || 1));
+    const { text, bumped } = bumpProxyRegisterSuccessInPoolText(
+      settings.proxyPoolAlive || '',
+      list,
+      delta
+    );
+    if (bumped > 0) {
+      await saveSettings({ ...settings, proxyPoolAlive: text });
+    }
+    res.json({
+      ok: true,
+      bumped,
+      message:
+        bumped > 0
+          ? `可用池成功计数 +${delta}（命中 ${bumped} 条）`
+          : '未匹配到可用池中的代理（可能已不在可用池）'
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ ok: false, bumped: 0, message });
+  }
+});
+
+/**
  * 注册失败降级：从「可用池」移到「待定池」。
  * body: { proxies: string[] | string, reason?: string }
- * 供 Python 注册机在出口 IP / 页面不可达时回调。
+ * 供 Python 注册机在页面不可达等场景回调（已取消出口 IP 检测）。
  */
 app.post('/api/proxy/demote', async (req: Request, res: Response) => {
   try {

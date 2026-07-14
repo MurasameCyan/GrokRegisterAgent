@@ -1207,11 +1207,11 @@ export function SettingsForm() {
                       {pendingPoolOpen && (
                         <div className="space-y-2 border-t border-border/50 px-3.5 pb-3.5 pt-3">
                           <p className="text-[12px] text-muted-foreground">
-                            网页导入、测活失败、注册时出口失败会落在此池。
+                            网页导入、测活失败、注册页不可达等会落在此池。
                             <strong className="font-medium text-foreground">
                               仅「可用池」参与注册
                             </strong>
-                            ；三条件（代理连通 + xAI + CF）全过才迁入可用。
+                            ；三条件（代理连通 + xAI + CF）全过才迁入可用。已取消出口 IP 探测。
                           </p>
                           <textarea
                             ref={pendingPoolRef}
@@ -1316,7 +1316,7 @@ export function SettingsForm() {
                         <div className="space-y-2 border-t border-border/50 px-3.5 pb-3.5 pt-3">
                           <p className="text-[12px] text-muted-foreground">
                             注册机<strong className="font-medium text-foreground">只用本池</strong>
-                            。出口 IP / 注册页不可达时会自动降回「待定池」。可手改/粘贴/复测。
+                            。注册成功会给对应条目累加绿色「成功 N」。失败时可能降回「待定池」。已取消出口 IP 探测。
                           </p>
                           <textarea
                             className={TEXTAREA_CLASS}
@@ -1355,6 +1355,15 @@ export function SettingsForm() {
                                     >
                                       {e.host}
                                     </span>
+                                    {typeof e.successCount === 'number' &&
+                                      e.successCount > 0 && (
+                                        <span
+                                          className="shrink-0 text-[12px] font-semibold tabular-nums text-emerald-600 dark:text-emerald-400"
+                                          title={`注册成功 ${e.successCount} 次`}
+                                        >
+                                          成功 {e.successCount}
+                                        </span>
+                                      )}
                                     {probe.status === 'ok' && (
                                       <span
                                         className="max-w-[10rem] truncate text-emerald-600 dark:text-emerald-400"
@@ -1371,7 +1380,11 @@ export function SettingsForm() {
                                         {probe.message || '失败'}
                                       </span>
                                     )}
-                                    {probe.status === 'idle' && (
+                                    {probe.status === 'idle' &&
+                                      !(
+                                        typeof e.successCount === 'number' &&
+                                        e.successCount > 0
+                                      ) && (
                                       <span className="text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
                                         可用
                                       </span>
@@ -1511,7 +1524,7 @@ export function SettingsForm() {
                 <div className="lg:col-span-2">
                   <ToggleRow
                     label="优先本地代理转发"
-                    hint="带账号密码代理时：开则 127.0.0.1 无认证转发到上游；关则先试浏览器扩展，出口 IP 失败再兜底"
+                    hint="带账号密码代理时：开则 127.0.0.1 无认证转发到上游；关则优先浏览器扩展注入代理"
                     checked={!!draft.proxyPreferLocalForward}
                     onChange={(v) => update('proxyPreferLocalForward', v)}
                   />
@@ -1639,23 +1652,29 @@ export function SettingsForm() {
       <Card>
         <CardHeader
           title="grok2api 推送"
-          description="注册成功后 Web 导入 SSO → Convert to Build；失败不阻断本轮。需配置 URL/账号密码。"
+          description="注册成功拿到 SSO 后，按所选模式上传到 grok2api 管理面板。失败只打日志/不阻断本轮 SSO 落盘与 CPA 导出。"
         />
         <CardBody className="space-y-3">
           <ToggleRow
             label="自动推送 grok2api"
-            hint="开启后注册成功自动上传到 grok2api 管理面板"
+            hint="开启且 URL/账号/密码齐全时，每轮注册成功后自动上传；默认关闭"
             checked={draft.grok2apiAutoUpload === true}
             onChange={(v) => update('grok2apiAutoUpload', v)}
           />
-          <Field label="grok2api URL" hint="管理面板根地址，如 http://127.0.0.1:8000">
+          <Field
+            label="grok2api URL"
+            hint="管理面板根地址（不要带尾斜杠路径），如 http://127.0.0.1:8000 或 https://g2.example.com"
+          >
             <Input
               value={draft.grok2apiUrl || ''}
               onChange={(e) => update('grok2apiUrl', e.target.value)}
               placeholder="http://127.0.0.1:8000"
             />
           </Field>
-          <Field label="grok2api 用户名">
+          <Field
+            label="grok2api 用户名"
+            hint="管理后台登录用户名（POST /api/admin/v1/auth/login）"
+          >
             <Input
               value={draft.grok2apiUsername || ''}
               onChange={(e) => update('grok2apiUsername', e.target.value)}
@@ -1663,7 +1682,7 @@ export function SettingsForm() {
               autoComplete="off"
             />
           </Field>
-          <Field label="grok2api 密码">
+          <Field label="grok2api 密码" hint="管理后台登录密码，仅保存在本机配置中">
             <Input
               type="password"
               value={draft.grok2apiPassword || ''}
@@ -1674,7 +1693,11 @@ export function SettingsForm() {
           </Field>
           <Field
             label="上传模式"
-            hint="web_convert=与 grok-register-web 一致；build_direct=本地 Device Flow 后 import"
+            hint={
+              draft.grok2apiUploadMode === 'build_direct'
+                ? 'build_direct：本机用 SSO 走 OAuth Device Flow 换 Build access/refresh token，再调用 grok2api accounts/import。需 curl_cffi，且 SSO 须能访问 accounts.x.ai / auth.x.ai。'
+                : 'web_convert（推荐）：与 grok-register-web 相同——先 Web 账号 import（SSO），再 convert-to-build。可选同步浏览器 UA/CF cookie 到 egress-nodes。'
+            }
           >
             <select
               className={SELECT_CLASS}
@@ -1690,10 +1713,40 @@ export function SettingsForm() {
                 )
               }
             >
-              <option value="web_convert">web_convert（推荐）</option>
-              <option value="build_direct">build_direct</option>
+              <option value="web_convert">
+                web_convert — Web 导入 SSO → Convert to Build（推荐）
+              </option>
+              <option value="build_direct">
+                build_direct — 本地 Device Flow 换 Build 后 import
+              </option>
             </select>
           </Field>
+          <div className="space-y-2 rounded-xl border border-border/60 bg-muted/40 p-3 text-[12px] leading-5 text-muted-foreground">
+            <p className="font-medium text-foreground">模式说明（已适配 grok-register-web）</p>
+            <ul className="list-disc space-y-1.5 pl-4">
+              <li>
+                <span className="font-medium text-foreground">web_convert</span>
+                ：登录管理 API →{' '}
+                <code className="text-[11px]">/accounts/web/import</code> 上传 SSO →{' '}
+                <code className="text-[11px]">/accounts/web/convert-to-build</code>{' '}
+                转 Build。与参考项目一致，适合日常批量。
+              </li>
+              <li>
+                <span className="font-medium text-foreground">build_direct</span>
+                ：不经过 Web 账号中转，本机 Device Flow 直接拿 Build
+                凭证再 import。网络/依赖更苛刻，作备选。
+              </li>
+              <li>
+                与 CPA 远程推送互不冲突：可同时开「自动导出 Auth」与「自动推送
+                grok2api」。
+              </li>
+              <li>
+                注册日志中出现 <code className="text-[11px]">[*] grok2api 上传成功</code>{' '}
+                即成功；失败为 <code className="text-[11px]">[Warn] grok2api 上传失败</code>
+                ，不影响 SSO 文件与号池入库。
+              </li>
+            </ul>
+          </div>
         </CardBody>
       </Card>
 

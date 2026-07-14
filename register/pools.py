@@ -50,6 +50,14 @@ _HOST_PORT_RE = re.compile(
 )
 
 
+def _gra_api_base() -> str:
+    return (
+        os.environ.get("GRA_API_BASE")
+        or os.environ.get("GRA_SERVER_URL")
+        or "http://127.0.0.1:6657"
+    ).rstrip("/")
+
+
 def demote_proxy_to_pending(proxy: str, reason: str = "注册失败") -> bool:
     """注册使用失败：通知 Node 把该代理从可用池降到待定池。
 
@@ -61,12 +69,7 @@ def demote_proxy_to_pending(proxy: str, reason: str = "注册失败") -> bool:
     p = str(proxy or "").strip()
     if not p:
         return False
-    base = (
-        os.environ.get("GRA_API_BASE")
-        or os.environ.get("GRA_SERVER_URL")
-        or "http://127.0.0.1:6657"
-    ).rstrip("/")
-    url = f"{base}/api/proxy/demote"
+    url = f"{_gra_api_base()}/api/proxy/demote"
     body = json.dumps({"proxies": [p], "reason": str(reason or "注册失败")[:80]}, ensure_ascii=False)
     try:
         import urllib.request
@@ -92,6 +95,47 @@ def demote_proxy_to_pending(proxy: str, reason: str = "注册失败") -> bool:
         return False
     except Exception as e:
         print(f"[Warn] 代理降级回调失败（{url}）: {e}")
+        return False
+
+
+def bump_proxy_register_success(proxy: str, delta: int = 1) -> bool:
+    """注册成功：通知 Node 给可用池对应代理成功计数 +1。
+
+    端点：POST {GRA_API_BASE}/api/proxy/register-success
+    失败仅打日志，不抛异常。
+    """
+    p = str(proxy or "").strip()
+    if not p:
+        return False
+    url = f"{_gra_api_base()}/api/proxy/register-success"
+    body = json.dumps(
+        {"proxies": [p], "delta": max(1, int(delta or 1))},
+        ensure_ascii=False,
+    )
+    try:
+        import urllib.request
+
+        req = urllib.request.Request(
+            url,
+            data=body.encode("utf-8"),
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            raw = resp.read().decode("utf-8", "replace")
+        try:
+            data = json.loads(raw) if raw else {}
+        except Exception:
+            data = {}
+        bumped = int(data.get("bumped") or 0)
+        msg = data.get("message") or raw[:120]
+        if bumped > 0:
+            print(f"[*] 代理注册成功计数 +1: {p[:64]}… · {msg}")
+            return True
+        print(f"[Warn] 代理成功计数未写入: {msg}")
+        return False
+    except Exception as e:
+        print(f"[Warn] 代理成功计数回调失败（{url}）: {e}")
         return False
 
 

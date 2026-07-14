@@ -141,9 +141,9 @@ export interface AppSettings {
   grok2apiUsername: string;
   grok2apiPassword: string;
   /**
-   * grok2api 上传模式：
-   * - web_convert：SSO → Web 账号 → convert-to-build（与 grok-register-web 一致，推荐）
-   * - build_direct：本地 Device Flow 换 Build token 后 import
+   * grok2api 上传模式（已适配 grok-register-web 管理 API）：
+   * - web_convert：SSO → /accounts/web/import → convert-to-build（推荐）
+   * - build_direct：本机 Device Flow 换 Build token → /accounts/import
    */
   grok2apiUploadMode: 'web_convert' | 'build_direct';
   /** 主题模式 */
@@ -204,10 +204,26 @@ export interface ProxyPoolEntry {
   raw: string;
   /** 剥离 #备注 后的代理 URL */
   proxy: string;
-  /** 解码后的标签，如 香港-02；无备注时为空 */
+  /** 解码后的标签，如 香港-02；无备注时为空（不含「成功N」计数展示） */
   label: string;
   /** 展示用短主机（host:port） */
   host: string;
+  /**
+   * 注册成功次数（写在行尾备注 `#成功N`）。
+   * 仅可用池使用；前端绿色显示。
+   */
+  successCount?: number;
+}
+
+/** 从备注文本解析注册成功次数 */
+export function parseProxySuccessCount(text: string): number {
+  const s = String(text || '');
+  const m =
+    /(?:^|[\s·|/,_-])(?:成功|ok)[:：\s]*(\d+)\b/i.exec(s) ||
+    /#(?:成功|ok)[:：]?(\d+)\b/i.exec(s);
+  if (!m) return 0;
+  const n = Number(m[1]);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
 }
 
 function decodeProxyLabel(encoded: string): string {
@@ -346,11 +362,20 @@ export function parseProxyLine(line: string): ProxyPoolEntry | null {
   if (!raw || raw.startsWith('#')) return null;
   const { proxy, label } = splitProxyAnnotation(raw);
   if (!proxy) return null;
+  const successCount =
+    parseProxySuccessCount(raw) || parseProxySuccessCount(label) || 0;
+  // 展示标签去掉「成功N」，单独用 successCount 绿色显示
+  const labelClean = label
+    .replace(/(?:^|[\s·|/,_-])(?:成功|ok)[:：\s]*\d+\b/gi, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/^[·\s]+|[·\s]+$/g, '')
+    .trim();
   return {
     raw,
     proxy,
-    label,
-    host: proxyHostPort(proxy)
+    label: labelClean,
+    host: proxyHostPort(proxy),
+    ...(successCount > 0 ? { successCount } : {})
   };
 }
 
@@ -587,7 +612,70 @@ export function moveProxiesToAlivePool(
 }
 
 /**
- * 把代理从「可用」降级到「待定」（注册失败 / 出口 IP 不通）。
+ * 在可用池文本中给指定代理 +1 成功计数（写入/更新行尾 `#成功N`）。
+ * 匹配按 proxyDedupeKey；未命中返回原文本与 bumped=0。
+ */
+export function bumpProxyRegisterSuccessInPoolText(
+  aliveRaw: string,
+  proxies: string[],
+  delta = 1
+): { text: string; bumped: number } {
+  const keys = new Set(
+    proxies
+      .map((p) => proxyDedupeKey(p) || stripProxyComment(p) || String(p || '').trim())
+      .filter(Boolean)
+  );
+  if (keys.size === 0) return { text: String(aliveRaw || ''), bumped: 0 };
+
+  const text = String(aliveRaw || '').replace(/\r\n/g, '\n');
+  const lines = text.split('\n');
+  let bumped = 0;
+  const next = lines.map((line) => {
+    const entry = parseProxyLine(line);
+    if (!entry) return line;
+    const k = proxyDedupeKey(entry.proxy) || entry.proxy;
+    if (!k || !keys.has(k)) return line;
+
+    const prev =
+      parseProxySuccessCount(entry.raw) ||
+      parseProxySuccessCount(entry.label) ||
+      entry.successCount ||
+      0;
+    const n = Math.max(0, prev + (Number(delta) || 1));
+    bumped += 1;
+
+    let base = line.trim();
+    base = base
+      .replace(/(?:^|[\s·|/,_-])(?:成功|ok)[:：\s]*\d+\b/gi, ' ')
+      .replace(/#(?:成功|ok)[:：]?\d+\b/gi, '')
+      .replace(/\s{2,}/g, ' ')
+      .replace(/[·\s]+$/g, '')
+      .trim();
+
+    const schemeIdx = base.indexOf('://');
+    const searchFrom = schemeIdx >= 0 ? schemeIdx + 3 : 0;
+    const hashIdx = base.indexOf('#', searchFrom);
+    if (hashIdx >= 0) {
+      const head = base.slice(0, hashIdx).trimEnd();
+      let note = base.slice(hashIdx + 1).trim();
+      note = note
+        .replace(/(?:^|[\s·|/,_-])(?:成功|ok)[:：\s]*\d+\b/gi, ' ')
+        .replace(/\s{2,}/g, ' ')
+        .trim();
+      const merged = note ? `${note} · 成功${n}` : `成功${n}`;
+      return `${head}#${merged}`;
+    }
+    if (/[（(][^）)]*[）)]$/.test(base)) {
+      return `${base}#成功${n}`;
+    }
+    return `${base}#成功${n}`;
+  });
+
+  return { text: next.join('\n'), bumped };
+}
+
+/**
+ * 把代理从「可用」降级到「待定」（注册失败等）。
  * pending 追加（带 #注册失败 备注若无标签），alive 删除。
  */
 export function moveProxiesFromAliveToPending(
