@@ -277,6 +277,19 @@ export class RegisterBot extends EventEmitter {
 
   async start(opts: StartOptions = {}): Promise<{ runId: string }> {
     const settings = await loadSettings();
+    // CF 独立代理：开注册前确保 cfwp 已按配置运行
+    if (settings.cfProxyEnabled) {
+      const st = await syncCfwpFromSettings(settings);
+      if (!st.running && process.platform !== 'win32') {
+        throw new Error(
+          st.lastError ||
+            'CF 独立代理未运行：请检查域名/token 与 register/bin/cfwp 二进制后保存设置再试'
+        );
+      }
+      if (process.platform === 'win32' && st.lastError) {
+        console.warn('[registerBot] cfwp on Windows:', st.lastError);
+      }
+    }
     const runCount = opts.runCountOverride ?? settings.runCount;
     const maxParallel = Math.min(
       HARD_MAX_PARALLEL,

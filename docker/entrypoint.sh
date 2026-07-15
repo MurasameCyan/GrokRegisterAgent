@@ -87,6 +87,18 @@ if register_is_complete "$REGISTER_DIR"; then
       echo "[entrypoint] MISSING ${f} — 带密码代理/池轮换可能失效，请检查 ./register 挂载"
     fi
   done
+  # CF 独立代理 Linux 客户端（仅 amd64/arm64；不打包 windows）
+  arch="$(uname -m 2>/dev/null || echo x86_64)"
+  case "$arch" in
+    aarch64|arm64) cfwp_bin="${REGISTER_DIR}/bin/cfwp/linux-arm64" ;;
+    *) cfwp_bin="${REGISTER_DIR}/bin/cfwp/linux-amd64" ;;
+  esac
+  if [[ -f "$cfwp_bin" ]]; then
+    chmod +x "$cfwp_bin" 2>/dev/null || true
+    echo "[entrypoint] OK cfwp $(basename "$cfwp_bin")"
+  else
+    echo "[entrypoint] WARN missing cfwp binary at ${cfwp_bin}（CF 独立代理不可用）"
+  fi
 else
   echo "[entrypoint] ERROR: ${REGISTER_DIR} still incomplete — registration will fail"
 fi

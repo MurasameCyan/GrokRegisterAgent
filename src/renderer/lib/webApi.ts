@@ -265,6 +265,11 @@ const webApi: RendererApi = {
       timeoutMs: input.timeoutMs
     }),
 
+  getCfProxyStatus: () => http('GET', '/api/cf-proxy/status'),
+  startCfProxy: () => http('POST', '/api/cf-proxy/start'),
+  stopCfProxy: () => http('POST', '/api/cf-proxy/stop'),
+  syncCfProxy: () => http('POST', '/api/cf-proxy/sync'),
+
   getSystemHealth: () => http('GET', '/api/system/health'),
   checkUpdate: () => http('GET', '/api/system/update-check')
 };

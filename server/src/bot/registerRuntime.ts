@@ -2,7 +2,12 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import type { AppSettings } from '@shared/settings';
-import { parseProxyPool, parseStringList, stripProxyComment } from '@shared/settings';
+import {
+  buildCfLocalProxyUrl,
+  parseProxyPool,
+  parseStringList,
+  stripProxyComment
+} from '@shared/settings';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -151,6 +156,19 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
     : 'round_robin';
   config.email_domain_mode = config.mail_domain_mode;
 
+  // 代理三模式互斥：CF 独立 > 普通池/单条 > 直连
+  const cfOn = (settings as { cfProxyEnabled?: boolean }).cfProxyEnabled === true;
+  const cfLocalUrl = cfOn
+    ? buildCfLocalProxyUrl({
+        cfProxyPort: Number((settings as { cfProxyPort?: number }).cfProxyPort) || 30000,
+        cfProxyLocalScheme:
+          (settings as { cfProxyLocalScheme?: 'socks5' | 'http' }).cfProxyLocalScheme ===
+          'http'
+            ? 'http'
+            : 'socks5'
+      })
+    : '';
+
   // 代理：注册优先 **仅可用池**；可用空时回退待定池（尚未测活时）
   const alivePool = parseProxyPool(
     (settings as { proxyPoolAlive?: string }).proxyPoolAlive || ''
@@ -172,17 +190,38 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
   const singleProxy = stripProxyComment(settings.proxy || '');
   const browserOnly = stripProxyComment(settings.browserProxy || '');
   // 总开关 proxyEnabled：false = 强制直连（忽略池/单条内容，池文本仅保留编辑）
-  // 旧逻辑 bug：关代理但池非空时仍写 proxy_pool → UI 显示「直接连接」却仍降级池
-  const proxyMasterOn = settings.proxyEnabled !== false;
+  // CF 开时强制视为「有代理」但不用池
+  const proxyMasterOn = cfOn || settings.proxyEnabled !== false;
   // UI「使用代理池」开关（与池是否有 IP 无关；空池由 Python 启动守卫停止）
-  const poolSwitchOn = settings.proxyPoolEnabled === true;
-  const wantPool = proxyMasterOn && poolSwitchOn && poolProxies.length > 0;
+  const poolSwitchOn = !cfOn && settings.proxyPoolEnabled === true;
+  const wantPool = !cfOn && proxyMasterOn && poolSwitchOn && poolProxies.length > 0;
 
   // 写入 Python 可读开关，pools 侧二次保险（即使残留 proxy_pool 也不选用）
   config.proxy_enabled = proxyMasterOn;
   config.proxy_pool_enabled = proxyMasterOn && poolSwitchOn;
+  config.cf_proxy_enabled = cfOn;
+  if (cfOn) {
+    config.cf_proxy_domain = String(
+      (settings as { cfProxyDomain?: string }).cfProxyDomain || ''
+    ).trim();
+    config.cf_proxy_port = Number((settings as { cfProxyPort?: number }).cfProxyPort) || 30000;
+    config.cf_proxy_local_scheme =
+      (settings as { cfProxyLocalScheme?: string }).cfProxyLocalScheme === 'http'
+        ? 'http'
+        : 'socks5';
+  } else {
+    delete config.cf_proxy_domain;
+    delete config.cf_proxy_port;
+    delete config.cf_proxy_local_scheme;
+  }
 
-  if (!proxyMasterOn) {
+  if (cfOn) {
+    // CF 独立：本地 http/socks5 → 127.0.0.1:port（cfwp 进程由 server 管理）
+    config.proxy = cfLocalUrl;
+    config.browser_proxy = cfLocalUrl;
+    delete config.proxy_pool;
+    config.proxy_mode = settings.proxyMode || 'round_robin';
+  } else if (!proxyMasterOn) {
     config.proxy = '';
     config.browser_proxy = '';
     delete config.proxy_pool;
@@ -405,7 +444,8 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
     const nPool = Array.isArray(config.proxy_pool) ? config.proxy_pool.length : 0;
     const nDom = Array.isArray(config.mail_domains) ? config.mail_domains.length : 0;
     console.log(
-      `[writeConfig] proxyEnabled=${settings.proxyEnabled !== false} ` +
+      `[writeConfig] cf=${!!config.cf_proxy_enabled} ` +
+        `proxyEnabled=${settings.proxyEnabled !== false} ` +
         `proxyPoolEnabled=${settings.proxyPoolEnabled === true} ` +
         `proxy_pool=${nPool} proxy=${config.proxy ? 'set' : 'empty'} ` +
         `browser_proxy=${config.browser_proxy ? 'set' : 'empty'} ` +

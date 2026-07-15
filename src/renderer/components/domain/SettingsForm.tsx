@@ -31,6 +31,7 @@ import type {
 } from '@shared/settings';
 import {
   appendProxiesToPoolTextDetailed,
+  buildCfLocalProxyUrl,
   moveProxiesToAlivePool,
   parseProxyPoolEntries,
   proxySchemeBadgeLabel,
@@ -39,6 +40,7 @@ import {
   stripProxyComment,
   validateSettings
 } from '@shared/settings';
+import type { CfProxyStatus } from '@shared/ipc';
 import { cn } from '@renderer/lib/cn';
 
 /** 行内协议徽章着色：HTTP 蓝 / SOCKS5 紫 / SOCKS4 橙 / HTTPS 青 */
@@ -366,6 +368,76 @@ export function SettingsForm() {
     setDraft({ ...draft, mail: { ...draft.mail, [key]: value } });
   const update = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) =>
     setDraft({ ...draft, [key]: value });
+
+  /** 刷新 CF cfwp 状态 */
+  const refreshCfStatus = async () => {
+    try {
+      const st = await window.api.getCfProxyStatus();
+      setCfStatus(st);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  useEffect(() => {
+    void refreshCfStatus();
+    const t = window.setInterval(() => {
+      if (draft?.cfProxyEnabled) void refreshCfStatus();
+    }, 8000);
+    return () => window.clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft?.cfProxyEnabled]);
+
+  /** 开 CF → 关普通/池；开普通 → 关 CF */
+  const setProxyMode = (mode: 'off' | 'normal' | 'cf') => {
+    if (!draft) return;
+    if (mode === 'cf') {
+      patch({
+        cfProxyEnabled: true,
+        proxyEnabled: false,
+        proxyPoolEnabled: false
+      });
+    } else if (mode === 'normal') {
+      patch({
+        cfProxyEnabled: false,
+        proxyEnabled: true
+      });
+    } else {
+      patch({
+        cfProxyEnabled: false,
+        proxyEnabled: false,
+        proxyPoolEnabled: false
+      });
+    }
+  };
+
+  const runCfAction = async (action: 'start' | 'stop' | 'sync') => {
+    setCfBusy(true);
+    try {
+      const r =
+        action === 'start'
+          ? await window.api.startCfProxy()
+          : action === 'stop'
+            ? await window.api.stopCfProxy()
+            : await window.api.syncCfProxy();
+      setCfStatus(r);
+      if (r.lastError && !r.running) {
+        push({ tone: 'danger', title: 'CF 代理异常', description: r.lastError });
+      } else if (action === 'stop') {
+        push({ tone: 'ok', title: '已停止 CF 代理' });
+      } else if (r.running) {
+        push({
+          tone: 'ok',
+          title: 'CF 代理运行中',
+          description: r.localUrl || `127.0.0.1:${r.port}`
+        });
+      }
+    } catch (err) {
+      push({ tone: 'danger', title: 'CF 代理操作失败', description: String(err) });
+    } finally {
+      setCfBusy(false);
+    }
+  };
   /** 一次改多个字段，避免连点 update 互相覆盖（推送目标开关必须用这个） */
   const patch = (partial: Partial<AppSettings>) =>
     setDraft((prev) => (prev ? { ...prev, ...partial } : prev));
@@ -803,15 +875,21 @@ export function SettingsForm() {
   const save = async (override?: AppSettings, opts?: { silentOk?: boolean; okTitle?: string; okDesc?: string }) => {
     const base = override || draft;
     // 持久化前强制清洗可用池：禁止 # 网页导入 等垃圾写入 settings
-    const payload = {
-      ...base,
-      proxyPoolAlive: sanitizeProxyPoolText(base.proxyPoolAlive || '')
+    // CF 与普通代理/池互斥
+    let payload: AppSettings = {
+      ...base!,
+      proxyPoolAlive: sanitizeProxyPoolText(base!.proxyPoolAlive || '')
     };
+    if (payload.cfProxyEnabled) {
+      payload = { ...payload, proxyEnabled: false, proxyPoolEnabled: false };
+    }
     setSaving(true);
     try {
       await window.api.saveSettings(payload);
       setDraft(payload);
       await reload();
+      // 保存后服务端会 sync cfwp；刷新状态条
+      void refreshCfStatus();
       if (!opts?.silentOk) {
         push({
           tone: 'ok',
@@ -1183,19 +1261,273 @@ export function SettingsForm() {
       <Card collapsible defaultCollapsed>
         <CardHeader
           title="代理设置"
-          description="总开关关闭时直连；开启后可切换单代理或代理池"
+          description="三种模式二选一：直连 / 普通代理（单条或池）/ CF 独立代理（cfwp 本地 HTTP·SOCKS）"
         />
         <CardBody className="grid gap-4 lg:grid-cols-2">
-          <div className="lg:col-span-2">
-            <ToggleRow
-              label="启用代理"
-              hint="关：直连；开：使用下方单代理或代理池（注册机池轮换；Node 出站用单条 HTTP 代理）"
-              checked={!!draft.proxyEnabled}
-              onChange={(v) => update('proxyEnabled', v)}
-            />
+          {/* 模式互斥：CF 独立 ↔ 普通代理/池 */}
+          <div className="lg:col-span-2 space-y-2">
+            <div className="text-[13px] font-medium tracking-tight">代理模式</div>
+            <div className="grid gap-2 sm:grid-cols-3">
+              {(
+                [
+                  {
+                    id: 'off' as const,
+                    label: '直连',
+                    hint: '不走任何代理'
+                  },
+                  {
+                    id: 'normal' as const,
+                    label: '普通代理 / 池',
+                    hint: '单条 HTTP 或代理池轮换'
+                  },
+                  {
+                    id: 'cf' as const,
+                    label: 'CF 独立代理',
+                    hint: 'Workers/Pages → 本地 SOCKS/HTTP'
+                  }
+                ] as const
+              ).map((opt) => {
+                const active =
+                  opt.id === 'cf'
+                    ? !!draft.cfProxyEnabled
+                    : opt.id === 'normal'
+                      ? !draft.cfProxyEnabled && !!draft.proxyEnabled
+                      : !draft.cfProxyEnabled && !draft.proxyEnabled;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => setProxyMode(opt.id)}
+                    className={cn(
+                      'rounded-xl border px-3 py-2.5 text-left transition-colors',
+                      active
+                        ? 'border-primary/50 bg-primary/10 ring-1 ring-primary/30'
+                        : 'border-border/60 bg-muted/30 hover:bg-muted/50'
+                    )}
+                  >
+                    <div className="text-[13px] font-semibold tracking-tight">{opt.label}</div>
+                    <p className="mt-0.5 text-[11px] leading-4 text-muted-foreground">
+                      {opt.hint}
+                    </p>
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              CF 独立代理与普通代理/代理池<strong>只能二选一</strong>；镜像内仅打包 Linux
+              cfwp（amd64/arm64），不含 Windows 客户端。
+            </p>
           </div>
 
-          {draft.proxyEnabled && (
+          {/* —— CF 独立代理面板（对齐 cfsh.sh 参数）—— */}
+          {draft.cfProxyEnabled && (
+            <div className="lg:col-span-2 space-y-3 rounded-xl border border-sky-500/30 bg-sky-500/5 p-3.5">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="text-[13px] font-semibold tracking-tight">
+                    Cloudflare Socks5/HTTP 本地代理
+                  </div>
+                  <p className="mt-0.5 text-[11px] leading-4 text-muted-foreground">
+                    参数对齐{' '}
+                    <code className="text-[10px]">cfsh.sh</code>
+                    ：域名、token、本地端口、优选 IP、ProxyIP、DoH、ECH、分流。保存设置后自动启停
+                    cfwp。
+                  </p>
+                </div>
+                <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+                  <span
+                    className={cn(
+                      'chip text-[11px]',
+                      cfStatus?.running
+                        ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                        : 'bg-muted text-muted-foreground'
+                    )}
+                  >
+                    {cfStatus?.running
+                      ? `运行中 · pid ${cfStatus.pid ?? '?'}`
+                      : '未运行'}
+                  </span>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    className="h-7"
+                    disabled={cfBusy}
+                    onClick={() => void runCfAction('sync')}
+                  >
+                    {cfBusy ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Activity className="h-3.5 w-3.5" />
+                    )}
+                    同步
+                  </Button>
+                  {cfStatus?.running ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="danger"
+                      className="h-7"
+                      disabled={cfBusy}
+                      onClick={() => void runCfAction('stop')}
+                    >
+                      停止
+                    </Button>
+                  ) : (
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="h-7"
+                      disabled={cfBusy}
+                      onClick={() => void runCfAction('start')}
+                      title="需先保存设置且开启 CF"
+                    >
+                      启动
+                    </Button>
+                  )}
+                </div>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field
+                  label="1. CF 域名（Workers/Pages/自定义）"
+                  hint="格式：域名:443 系或 80 系端口"
+                  error={errors.cfProxyDomain}
+                >
+                  <Input
+                    value={draft.cfProxyDomain || ''}
+                    onChange={(e) => update('cfProxyDomain', e.target.value)}
+                    invalid={!!errors.cfProxyDomain}
+                    placeholder="xxx.workers.dev:443"
+                    spellCheck={false}
+                    className="font-mono text-[13px]"
+                  />
+                </Field>
+                <Field label="2. 密钥 token" hint="可空；对应 cfsh 密钥">
+                  <PasswordInput
+                    value={draft.cfProxyToken || ''}
+                    onChange={(e) => update('cfProxyToken', e.target.value)}
+                    placeholder="回车默认不设"
+                  />
+                </Field>
+                <Field
+                  label="3. 本地端口"
+                  hint="默认 30000 → client_ip=:port"
+                  error={errors.cfProxyPort}
+                >
+                  <Input
+                    type="number"
+                    min={1}
+                    max={65535}
+                    value={draft.cfProxyPort ?? 30000}
+                    onChange={(e) =>
+                      update(
+                        'cfProxyPort',
+                        Math.max(1, Math.min(65535, Number(e.target.value) || 30000))
+                      )
+                    }
+                    invalid={!!errors.cfProxyPort}
+                  />
+                </Field>
+                <Field label="4. 优选 IP/域名" hint="默认 yg1.ygkkk.dpdns.org">
+                  <Input
+                    value={draft.cfProxyCdnip || ''}
+                    onChange={(e) => update('cfProxyCdnip', e.target.value)}
+                    placeholder="yg1.ygkkk.dpdns.org"
+                    spellCheck={false}
+                    className="font-mono text-[13px]"
+                  />
+                </Field>
+                <Field label="5. ProxyIP" hint="可空：使用服务端 ProxyIP">
+                  <Input
+                    value={draft.cfProxyPyip || ''}
+                    onChange={(e) => update('cfProxyPyip', e.target.value)}
+                    placeholder="可空"
+                    spellCheck={false}
+                    className="font-mono text-[13px]"
+                  />
+                </Field>
+                <Field label="6. DoH 服务器" hint="默认 dns.alidns.com/dns-query">
+                  <Input
+                    value={draft.cfProxyDns || ''}
+                    onChange={(e) => update('cfProxyDns', e.target.value)}
+                    placeholder="dns.alidns.com/dns-query"
+                    spellCheck={false}
+                    className="font-mono text-[13px]"
+                  />
+                </Field>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <ToggleRow
+                  label="7. ECH 开关"
+                  hint="开：ECH-TLS；关：普通 TLS/无 TLS 由服务端决定"
+                  checked={draft.cfProxyEnableEch !== false}
+                  onChange={(v) => update('cfProxyEnableEch', v)}
+                />
+                <ToggleRow
+                  label="8. 国内外分流"
+                  hint="开：分流代理；关：全局代理"
+                  checked={draft.cfProxyCnrule !== false}
+                  onChange={(v) => update('cfProxyCnrule', v)}
+                />
+              </div>
+
+              <Field
+                label="本地协议（写入注册机）"
+                hint="cfwp 同时提供 HTTP 与 SOCKS；此处选择写入 config 的 scheme"
+                error={errors.cfProxyLocalScheme}
+              >
+                <select
+                  className={SELECT_CLASS}
+                  value={draft.cfProxyLocalScheme || 'socks5'}
+                  onChange={(e) =>
+                    update(
+                      'cfProxyLocalScheme',
+                      e.target.value === 'http' ? 'http' : 'socks5'
+                    )
+                  }
+                >
+                  <option value="socks5">socks5://127.0.0.1:端口（推荐）</option>
+                  <option value="http">http://127.0.0.1:端口</option>
+                </select>
+              </Field>
+
+              <div className="rounded-lg border border-border/50 bg-card/60 px-3 py-2 text-[12px]">
+                <div className="font-medium">将使用本地代理</div>
+                <code className="mt-0.5 block break-all font-mono text-[11px] text-muted-foreground">
+                  {buildCfLocalProxyUrl(draft)}
+                </code>
+                {cfStatus?.lastError && (
+                  <p className="mt-1 text-[11px] text-danger">{cfStatus.lastError}</p>
+                )}
+                {cfStatus && !cfStatus.binaryExists && (
+                  <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-300">
+                    未找到 Linux cfwp 二进制（register/bin/cfwp/linux-amd64|arm64）。请在
+                    Docker 镜像中构建。
+                  </p>
+                )}
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <ToggleRow
+                  label="SSO 验活走代理"
+                  hint="经 CF 本地代理"
+                  checked={draft.ssoCheckUseProxy !== false}
+                  onChange={(v) => update('ssoCheckUseProxy', v)}
+                />
+                <ToggleRow
+                  label="Auth 转换/重签/测活走代理"
+                  hint="经 CF 本地代理"
+                  checked={draft.cpaAuthUseProxy !== false}
+                  onChange={(v) => update('cpaAuthUseProxy', v)}
+                />
+              </div>
+            </div>
+          )}
+
+          {/* —— 普通代理 / 池 —— */}
+          {!draft.cfProxyEnabled && draft.proxyEnabled && (
             <>
               <div className="lg:col-span-2 grid gap-3 sm:grid-cols-2">
                 <ToggleRow

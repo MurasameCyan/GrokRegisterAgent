@@ -469,9 +469,34 @@ export interface RendererApi {
     pagesFetched?: number;
   }>;
 
+  /** CF 独立代理（cfwp）状态 */
+  getCfProxyStatus(): Promise<CfProxyStatus>;
+  /** 按已保存配置启动/重载 cfwp */
+  startCfProxy(): Promise<CfProxyStatus & { ok?: boolean; error?: string }>;
+  /** 停止 cfwp 进程 */
+  stopCfProxy(): Promise<CfProxyStatus & { ok?: boolean }>;
+  /** 按 settings 同步启停 */
+  syncCfProxy(): Promise<CfProxyStatus & { ok?: boolean }>;
+
   // system
   getSystemHealth(): Promise<SystemHealth>;
   checkUpdate(): Promise<UpdateInfo>;
+}
+
+/** CF cfwp 本地代理运行状态 */
+export interface CfProxyStatus {
+  running: boolean;
+  pid: number | null;
+  port: number;
+  localUrl: string;
+  binary: string | null;
+  binaryExists: boolean;
+  domain: string;
+  lastError: string | null;
+  startedAt: number | null;
+  logPath: string | null;
+  platform: string;
+  arch: string;
 }
 
 declare global {

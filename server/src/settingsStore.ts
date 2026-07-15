@@ -11,7 +11,8 @@ import {
   type MailProvider,
   type PoolMode,
   type RegisterMode,
-  DEFAULT_SETTINGS
+  DEFAULT_SETTINGS,
+  enforceProxyModeMutex
 } from '@shared/settings';
 
 const DATA_DIR = resolve(process.env.DATA_DIR || '/data');
@@ -162,6 +163,52 @@ function merge(partial: unknown): AppSettings {
     proxyPoolAlive,
     proxyPoolEnabled: asBool(p.proxyPoolEnabled, inferProxyPoolOn),
     proxyMode: asPoolMode(p.proxyMode, DEFAULT_SETTINGS.proxyMode),
+    // CF 独立代理（与普通代理/池互斥，见下方 enforce）
+    cfProxyEnabled: asBool(
+      (p as AppSettings).cfProxyEnabled,
+      DEFAULT_SETTINGS.cfProxyEnabled
+    ),
+    cfProxyDomain:
+      typeof (p as AppSettings).cfProxyDomain === 'string'
+        ? (p as AppSettings).cfProxyDomain
+        : DEFAULT_SETTINGS.cfProxyDomain,
+    cfProxyToken:
+      typeof (p as AppSettings).cfProxyToken === 'string'
+        ? (p as AppSettings).cfProxyToken
+        : DEFAULT_SETTINGS.cfProxyToken,
+    cfProxyPort: (() => {
+      const n = Number((p as AppSettings).cfProxyPort);
+      if (Number.isInteger(n) && n >= 1 && n <= 65535) return n;
+      return DEFAULT_SETTINGS.cfProxyPort;
+    })(),
+    cfProxyCdnip:
+      typeof (p as AppSettings).cfProxyCdnip === 'string' &&
+      String((p as AppSettings).cfProxyCdnip).trim()
+        ? (p as AppSettings).cfProxyCdnip
+        : DEFAULT_SETTINGS.cfProxyCdnip,
+    cfProxyPyip:
+      typeof (p as AppSettings).cfProxyPyip === 'string'
+        ? (p as AppSettings).cfProxyPyip
+        : DEFAULT_SETTINGS.cfProxyPyip,
+    cfProxyDns:
+      typeof (p as AppSettings).cfProxyDns === 'string' &&
+      String((p as AppSettings).cfProxyDns).trim()
+        ? (p as AppSettings).cfProxyDns
+        : DEFAULT_SETTINGS.cfProxyDns,
+    cfProxyEnableEch: asBool(
+      (p as AppSettings).cfProxyEnableEch,
+      DEFAULT_SETTINGS.cfProxyEnableEch
+    ),
+    cfProxyCnrule: asBool(
+      (p as AppSettings).cfProxyCnrule,
+      DEFAULT_SETTINGS.cfProxyCnrule
+    ),
+    cfProxyLocalScheme: (() => {
+      const v = String((p as AppSettings).cfProxyLocalScheme || '')
+        .trim()
+        .toLowerCase();
+      return v === 'http' ? 'http' : 'socks5';
+    })(),
     proxyProbeConcurrency: (() => {
       const n = Number((p as AppSettings).proxyProbeConcurrency);
       if (Number.isInteger(n) && n >= 1 && n <= 20) return n;
@@ -339,7 +386,9 @@ function merge(partial: unknown): AppSettings {
   ) {
     merged.turnstileAutoWaitMax = DEFAULT_SETTINGS.turnstileAutoWaitMax;
   }
-  return applyEnvOverrides(merged, p);
+  // CF 与普通代理/池二选一
+  const withMutex = enforceProxyModeMutex(merged);
+  return applyEnvOverrides(withMutex, p);
 }
 
 export async function loadSettings(): Promise<AppSettings> {

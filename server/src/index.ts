@@ -28,6 +28,7 @@ import { fetchEmails, extractVerificationCode, fetchLatestCodeByAddress } from '
 import { probeProxy, probeProxyBatch } from './api/proxyApi.js';
 import { fetchProxiesFromUrl } from './api/proxyFetchApi.js';
 import { resolveHttpProxy } from './resolveHttpProxy.js';
+import { getCfwpStatus, stopCfwp, syncCfwpFromSettings } from './cfwpManager.js';
 import { proxiedRequest } from './httpClient.js';
 import { checkSso } from './ssoCheck.js';
 import {
@@ -200,7 +201,48 @@ app.get('/api/settings', async (_req, res) => {
 app.put('/api/settings', async (req: Request, res: Response) => {
   const body = req.body as AppSettings;
   await saveSettings(body);
-  res.json({ ok: true });
+  // 保存后同步 CF 独立代理进程（开=启动/重载，关=停止）
+  try {
+    const s = await loadSettings();
+    const cf = await syncCfwpFromSettings(s);
+    res.json({ ok: true, cfwp: cf });
+  } catch (err) {
+    console.error('[settings] cfwp sync failed', err);
+    res.json({ ok: true, cfwpError: String(err) });
+  }
+});
+
+/** CF 独立代理（cfwp）状态 */
+app.get('/api/cf-proxy/status', async (_req, res) => {
+  const s = await loadSettings();
+  res.json(getCfwpStatus(s));
+});
+
+/** 按当前配置启动/重载 cfwp */
+app.post('/api/cf-proxy/start', async (_req, res) => {
+  const s = await loadSettings();
+  if (!s.cfProxyEnabled) {
+    res.status(400).json({
+      ok: false,
+      error: '请先在设置中开启「CF 独立代理」并保存'
+    });
+    return;
+  }
+  const status = await syncCfwpFromSettings(s);
+  res.json({ ok: !status.lastError || status.running, ...status });
+});
+
+/** 停止 cfwp（不改 settings；下次保存若仍开启会再启） */
+app.post('/api/cf-proxy/stop', async (_req, res) => {
+  const status = await stopCfwp();
+  res.json({ ok: true, ...status });
+});
+
+/** 按当前 settings 同步（与保存时相同） */
+app.post('/api/cf-proxy/sync', async (_req, res) => {
+  const s = await loadSettings();
+  const status = await syncCfwpFromSettings(s);
+  res.json({ ok: true, ...status });
 });
 
 app.get('/api/system/health', async (_req, res) => {
@@ -1003,7 +1045,24 @@ httpServer.listen(PORT, HOST, () => {
       console.log(`[Grok Register Agent] web account configured: ${info.username}`);
     }
   });
+  // 启动时按已保存配置同步 CF 独立代理（Linux 镜像内可跑 cfwp）
+  void loadSettings()
+    .then((s) => syncCfwpFromSettings(s))
+    .then((st) => {
+      if (sLikeEnabled(st)) {
+        console.log(
+          `[Grok Register Agent] cfwp: ${st.running ? 'running' : 'stopped'} ` +
+            `port=${st.port} binary=${st.binaryExists ? 'ok' : 'missing'}` +
+            (st.lastError ? ` err=${st.lastError}` : '')
+        );
+      }
+    })
+    .catch((err) => console.error('[Grok Register Agent] cfwp boot sync failed', err));
 });
+
+function sLikeEnabled(st: { domain?: string; running?: boolean; lastError?: string | null }) {
+  return !!(st.domain || st.running || st.lastError);
+}
 
 async function buildSystemHealth(): Promise<SystemHealth> {
   const checks: SystemHealthCheck[] = [];

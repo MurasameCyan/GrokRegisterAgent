@@ -269,6 +269,16 @@ export const DEFAULT_SETTINGS: AppSettings = {
   proxyPoolAlive: '',
   proxyPoolEnabled: false,
   proxyMode: 'round_robin',
+  cfProxyEnabled: false,
+  cfProxyDomain: '',
+  cfProxyToken: '',
+  cfProxyPort: 30000,
+  cfProxyCdnip: 'yg1.ygkkk.dpdns.org',
+  cfProxyPyip: '',
+  cfProxyDns: 'dns.alidns.com/dns-query',
+  cfProxyEnableEch: true,
+  cfProxyCnrule: true,
+  cfProxyLocalScheme: 'socks5',
   proxyProbeConcurrency: 8,
   proxyAutoSaveOnRemoveFailed: false,
   /** 默认开：带密码代理走本地转发，避免 DrissionPage set_proxy 丢弃凭据 */
@@ -1154,9 +1164,22 @@ export function validateSettings(s: AppSettings): Record<string, string> {
   ) {
     errors.proxyProbeConcurrency = '测活并发须在 1 到 20 之间';
   }
-  // 代理池（待测/可用）允许为空：测活删失败、暂清空后再粘贴都常见；注册启动时再检查
-  // 仅「未开池、只开单代理」且单代理也空时提示（开池后不拦保存）
-  if (s.proxyEnabled && !s.proxyPoolEnabled) {
+  // CF 独立代理与普通代理/池互斥：开 CF 时不校验单代理
+  if (s.cfProxyEnabled) {
+    if (!String(s.cfProxyDomain || '').trim()) {
+      errors.cfProxyDomain =
+        '已开启 CF 独立代理，请填写 Workers/Pages/自定义域名（域名:端口）';
+    }
+    const port = Number(s.cfProxyPort);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      errors.cfProxyPort = '本地端口须在 1～65535';
+    }
+    const scheme = String(s.cfProxyLocalScheme || 'socks5').toLowerCase();
+    if (scheme !== 'socks5' && scheme !== 'http') {
+      errors.cfProxyLocalScheme = '本地协议须为 socks5 或 http';
+    }
+  } else if (s.proxyEnabled && !s.proxyPoolEnabled) {
+    // 代理池（待测/可用）允许为空；仅「未开池、只开单代理」且单代理也空时提示
     const http = String(s.proxy || '').trim();
     if (!http) {
       errors.proxy = '已开启代理且未使用代理池，请填写 HTTP 代理';
@@ -1167,4 +1190,32 @@ export function validateSettings(s: AppSettings): Record<string, string> {
   delete errors.proxyPoolAlive;
   delete errors.browserProxy;
   return errors;
+}
+
+/**
+ * CF 本地代理 URL（注册机 / Node 出站）。
+ * 例：socks5://127.0.0.1:30000 或 http://127.0.0.1:30000
+ */
+export function buildCfLocalProxyUrl(s: Pick<AppSettings, 'cfProxyPort' | 'cfProxyLocalScheme'>): string {
+  const port = Number(s.cfProxyPort);
+  const p = Number.isInteger(port) && port >= 1 && port <= 65535 ? port : 30000;
+  const scheme =
+    String(s.cfProxyLocalScheme || 'socks5').toLowerCase() === 'http' ? 'http' : 'socks5';
+  return `${scheme}://127.0.0.1:${p}`;
+}
+
+/**
+ * 规范化代理模式互斥：
+ * - CF 开 → 关普通代理与池
+ * - 普通代理开 → 关 CF
+ */
+export function enforceProxyModeMutex(s: AppSettings): AppSettings {
+  if (s.cfProxyEnabled) {
+    return {
+      ...s,
+      proxyEnabled: false,
+      proxyPoolEnabled: false
+    };
+  }
+  return s;
 }
