@@ -134,3 +134,63 @@ def patch_auth_file_nsfw(path: str | Path, *, enabled: bool, error: str = "") ->
         return True
     except Exception:
         return False
+
+
+def set_zdr_tag(
+    *,
+    closed: bool,
+    email: str = "",
+    sso: str = "",
+    error: str = "",
+    steps: Any = None,
+) -> dict[str, Any]:
+    """写入 ZDR 关闭结果：closed=True → 关；False → 开。"""
+    tag = {
+        "zdr_closed": bool(closed),
+        "zdr_attempted": True,
+        "zdr_at": _now_iso(),
+        "zdr_error": (error or "")[:300] if not closed else "",
+    }
+    if steps is not None:
+        try:
+            tag["zdr_steps"] = steps
+        except Exception:
+            pass
+    with _LOCK:
+        data = _load()
+        email_k = str(email or "").strip().lower()
+        if email_k:
+            prev = dict(data["by_email"].get(email_k) or {})
+            prev.update(tag)
+            data["by_email"][email_k] = prev
+        h = sso_hash(sso)
+        if h:
+            prev = dict(data["by_sso_hash"].get(h) or {})
+            prev.update(tag)
+            data["by_sso_hash"][h] = prev
+        _save(data)
+    return tag
+
+
+def patch_auth_file_zdr(path: str | Path, *, closed: bool, error: str = "") -> bool:
+    """把 zdr 字段写回 CPA auth JSON（不挡主流程）。"""
+    p = Path(path)
+    if not p.is_file():
+        return False
+    try:
+        doc = json.loads(p.read_text(encoding="utf-8"))
+        if not isinstance(doc, dict):
+            return False
+        doc["zdr_closed"] = bool(closed)
+        doc["zdr_attempted"] = True
+        doc["zdr_at"] = _now_iso()
+        if not closed and error:
+            doc["zdr_error"] = str(error)[:300]
+        elif closed:
+            doc.pop("zdr_error", None)
+        tmp = p.with_suffix(p.suffix + ".tmp")
+        tmp.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        tmp.replace(p)
+        return True
+    except Exception:
+        return False
