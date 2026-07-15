@@ -1135,88 +1135,100 @@ export function parseStringList(raw?: string): string[] {
 
 function hasDomain(s: AppSettings): boolean {
   // 域名池仅 Cloudflare；其他提供方不校验池
-  const provider = String(s.mailProvider || 'cloudflare').toLowerCase();
+  const provider = String(s?.mailProvider || 'cloudflare').toLowerCase();
   const isCf = provider === 'cloudflare' || provider === 'cf' || !provider;
-  if (isCf && s.mailDomainPoolEnabled) {
+  if (isCf && s?.mailDomainPoolEnabled) {
     return parseStringList(s.mailDomains).length > 0;
   }
-  if (isCf) return !!s.mail.domain.trim();
+  if (isCf) return !!String(s?.mail?.domain ?? '').trim();
   // duckmail / yyds：域名可选（由 API 分配）
   return true;
 }
 
 export function validateSettings(s: AppSettings): Record<string, string> {
   const errors: Record<string, string> = {};
-  if (!Number.isInteger(s.runCount) || s.runCount < 1 || s.runCount > 50)
-    errors.runCount = '数量必须在 1 到 50 之间';
-  if (
-    !Number.isInteger(s.maxParallelWorkers) ||
-    s.maxParallelWorkers < 1 ||
-    s.maxParallelWorkers > 8
-  )
-    errors.maxParallelWorkers = '并行任务上限须在 1 到 8 之间';
-  if (
-    !Number.isInteger(s.turnstileAutoWaitMax) ||
-    s.turnstileAutoWaitMax < 30 ||
-    s.turnstileAutoWaitMax > 180
-  ) {
-    errors.turnstileAutoWaitMax = '人机验证自动等待上限须在 30 到 180 秒之间';
+  // 防御：旧/残缺 settings 不得让 .trim() 抛错拖垮配置页
+  if (!s || typeof s !== 'object') {
+    errors._form = '配置数据无效';
+    return errors;
   }
-  {
-    const dMin = Number(s.autoAuthDelayMinSec);
-    const dMax = Number(s.autoAuthDelayMaxSec);
-    if (!Number.isFinite(dMin) || dMin < 0 || dMin > 3600) {
-      errors.autoAuthDelayMinSec = '转换延迟下限须在 0～3600 秒';
+  const mail = s.mail && typeof s.mail === 'object' ? s.mail : { apiBase: '', adminAuth: '', domain: '' };
+  try {
+    if (!Number.isInteger(s.runCount) || s.runCount < 1 || s.runCount > 50)
+      errors.runCount = '数量必须在 1 到 50 之间';
+    if (
+      !Number.isInteger(s.maxParallelWorkers) ||
+      s.maxParallelWorkers < 1 ||
+      s.maxParallelWorkers > 8
+    )
+      errors.maxParallelWorkers = '并行任务上限须在 1 到 8 之间';
+    if (
+      !Number.isInteger(s.turnstileAutoWaitMax) ||
+      s.turnstileAutoWaitMax < 30 ||
+      s.turnstileAutoWaitMax > 180
+    ) {
+      errors.turnstileAutoWaitMax = '人机验证自动等待上限须在 30 到 180 秒之间';
     }
-    if (!Number.isFinite(dMax) || dMax < 0 || dMax > 7200) {
-      errors.autoAuthDelayMaxSec = '转换延迟上限须在 0～7200 秒';
-    } else if (Number.isFinite(dMin) && dMax < dMin) {
-      errors.autoAuthDelayMaxSec = '转换延迟上限不能小于下限';
+    {
+      const dMin = Number(s.autoAuthDelayMinSec);
+      const dMax = Number(s.autoAuthDelayMaxSec);
+      if (!Number.isFinite(dMin) || dMin < 0 || dMin > 3600) {
+        errors.autoAuthDelayMinSec = '转换延迟下限须在 0～3600 秒';
+      }
+      if (!Number.isFinite(dMax) || dMax < 0 || dMax > 7200) {
+        errors.autoAuthDelayMaxSec = '转换延迟上限须在 0～7200 秒';
+      } else if (Number.isFinite(dMin) && dMax < dMin) {
+        errors.autoAuthDelayMaxSec = '转换延迟上限不能小于下限';
+      }
     }
-  }
-  if (!s.mail.apiBase.trim()) errors['mail.apiBase'] = '请填写邮件后端地址';
-  if (!s.mail.adminAuth.trim()) errors['mail.adminAuth'] = '请填写邮件后端管理密码';
-  if (!hasDomain(s)) {
-    const provider = String(s.mailProvider || 'cloudflare').toLowerCase();
-    const isCf = provider === 'cloudflare' || provider === 'cf' || !provider;
-    errors['mail.domain'] =
-      isCf && s.mailDomainPoolEnabled
-        ? '请在域名池中至少填一个域名'
-        : '请填写邮件域名';
-  }
-  if (s.mailDomainMode !== 'round_robin' && s.mailDomainMode !== 'random') {
-    errors.mailDomainMode = '域名池模式无效';
-  }
-  if (s.proxyMode !== 'round_robin' && s.proxyMode !== 'random') {
-    errors.proxyMode = '代理池模式无效';
-  }
-  if (
-    !Number.isInteger(s.proxyProbeConcurrency) ||
-    s.proxyProbeConcurrency < 1 ||
-    s.proxyProbeConcurrency > 20
-  ) {
-    errors.proxyProbeConcurrency = '测活并发须在 1 到 20 之间';
-  }
-  // CF 独立代理与普通代理/池互斥：开 CF 时不校验单代理
-  if (s.cfProxyEnabled) {
-    if (!String(s.cfProxyDomain || '').trim()) {
-      errors.cfProxyDomain =
-        '已开启 CF 独立代理，请填写 Workers/Pages/自定义域名（域名:端口）';
+    if (!String(mail.apiBase ?? '').trim()) errors['mail.apiBase'] = '请填写邮件后端地址';
+    if (!String(mail.adminAuth ?? '').trim())
+      errors['mail.adminAuth'] = '请填写邮件后端管理密码';
+    if (!hasDomain({ ...s, mail })) {
+      const provider = String(s.mailProvider || 'cloudflare').toLowerCase();
+      const isCf = provider === 'cloudflare' || provider === 'cf' || !provider;
+      errors['mail.domain'] =
+        isCf && s.mailDomainPoolEnabled
+          ? '请在域名池中至少填一个域名'
+          : '请填写邮件域名';
     }
-    const port = Number(s.cfProxyPort);
-    if (!Number.isInteger(port) || port < 1 || port > 65535) {
-      errors.cfProxyPort = '本地端口须在 1～65535';
+    if (s.mailDomainMode !== 'round_robin' && s.mailDomainMode !== 'random') {
+      errors.mailDomainMode = '域名池模式无效';
     }
-    const scheme = String(s.cfProxyLocalScheme || 'socks5').toLowerCase();
-    if (scheme !== 'socks5' && scheme !== 'http') {
-      errors.cfProxyLocalScheme = '本地协议须为 socks5 或 http';
+    if (s.proxyMode !== 'round_robin' && s.proxyMode !== 'random') {
+      errors.proxyMode = '代理池模式无效';
     }
-  } else if (s.proxyEnabled && !s.proxyPoolEnabled) {
-    // 代理池（待测/可用）允许为空；仅「未开池、只开单代理」且单代理也空时提示
-    const http = String(s.proxy || '').trim();
-    if (!http) {
-      errors.proxy = '已开启代理且未使用代理池，请填写 HTTP 代理';
+    const probeConc = Number(s.proxyProbeConcurrency);
+    if (
+      !Number.isInteger(probeConc) ||
+      probeConc < 1 ||
+      probeConc > 20
+    ) {
+      errors.proxyProbeConcurrency = '测活并发须在 1 到 20 之间';
     }
+    // CF 独立代理与普通代理/池互斥：开 CF 时不校验单代理
+    if (s.cfProxyEnabled) {
+      if (!String(s.cfProxyDomain || '').trim()) {
+        errors.cfProxyDomain =
+          '已开启 CF 独立代理，请填写 Workers/Pages/自定义域名（域名:端口）';
+      }
+      const port = Number(s.cfProxyPort);
+      if (!Number.isInteger(port) || port < 1 || port > 65535) {
+        errors.cfProxyPort = '本地端口须在 1～65535';
+      }
+      const scheme = String(s.cfProxyLocalScheme || 'socks5').toLowerCase();
+      if (scheme !== 'socks5' && scheme !== 'http') {
+        errors.cfProxyLocalScheme = '本地协议须为 socks5 或 http';
+      }
+    } else if (s.proxyEnabled && !s.proxyPoolEnabled) {
+      // 代理池（待测/可用）允许为空；仅「未开池、只开单代理」且单代理也空时提示
+      const http = String(s.proxy || '').trim();
+      if (!http) {
+        errors.proxy = '已开启代理且未使用代理池，请填写 HTTP 代理';
+      }
+    }
+  } catch (err) {
+    errors._form = `配置校验异常: ${err instanceof Error ? err.message : String(err)}`;
   }
   // 确保历史逻辑不会再写入 proxyPool / browserProxy 必填错误
   delete errors.proxyPool;

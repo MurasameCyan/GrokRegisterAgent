@@ -14,7 +14,12 @@ export const useSettingsStore = create<SettingsState>((set) => ({
   set: (data) => set({ data }),
   reload: async () => {
     set({ loading: true });
-    const data = await window.api.getSettings();
-    set({ data, loading: false });
+    try {
+      const data = await window.api.getSettings();
+      set({ data, loading: false });
+    } catch (err) {
+      console.error('[settingsStore] reload failed', err);
+      set({ loading: false });
+    }
   }
 }));

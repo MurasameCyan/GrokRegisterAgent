@@ -32,6 +32,7 @@ import type {
 import {
   appendProxiesToPoolTextDetailed,
   buildCfLocalProxyUrl,
+  DEFAULT_SETTINGS,
   moveProxiesToAlivePool,
   parseProxyPoolEntries,
   proxySchemeBadgeLabel,
@@ -42,6 +43,54 @@ import {
 } from '@shared/settings';
 import type { CfProxyStatus } from '@shared/ipc';
 import { cn } from '@renderer/lib/cn';
+
+/** 合并默认值，避免旧 settings 缺字段 / null 导致渲染崩溃 */
+function normalizeSettingsDraft(raw: AppSettings | null | undefined): AppSettings {
+  const r = (raw && typeof raw === 'object' ? raw : {}) as Partial<AppSettings>;
+  const mailIn =
+    r.mail && typeof r.mail === 'object'
+      ? r.mail
+      : ({} as Partial<AppSettings['mail']>);
+  return {
+    ...DEFAULT_SETTINGS,
+    ...r,
+    mail: {
+      apiBase: String(mailIn.apiBase ?? DEFAULT_SETTINGS.mail.apiBase ?? ''),
+      adminAuth: String(mailIn.adminAuth ?? DEFAULT_SETTINGS.mail.adminAuth ?? ''),
+      domain: String(mailIn.domain ?? DEFAULT_SETTINGS.mail.domain ?? '')
+    },
+    proxy: String(r.proxy ?? ''),
+    proxyPool: String(r.proxyPool ?? ''),
+    proxyPoolAlive: sanitizeProxyPoolText(String(r.proxyPoolAlive ?? '')),
+    proxyEnabled: !!r.proxyEnabled,
+    proxyPoolEnabled: !!r.proxyPoolEnabled,
+    proxyMode:
+      r.proxyMode === 'random' || r.proxyMode === 'round_robin'
+        ? r.proxyMode
+        : DEFAULT_SETTINGS.proxyMode,
+    proxyProbeConcurrency: (() => {
+      const n = Number(r.proxyProbeConcurrency);
+      return Number.isInteger(n) && n >= 1 && n <= 20
+        ? n
+        : DEFAULT_SETTINGS.proxyProbeConcurrency;
+    })(),
+    cfProxyEnabled: !!r.cfProxyEnabled,
+    cfProxyDomain: String(r.cfProxyDomain ?? DEFAULT_SETTINGS.cfProxyDomain),
+    cfProxyToken: String(r.cfProxyToken ?? DEFAULT_SETTINGS.cfProxyToken),
+    cfProxyPort: (() => {
+      const n = Number(r.cfProxyPort);
+      return Number.isInteger(n) && n >= 1 && n <= 65535
+        ? n
+        : DEFAULT_SETTINGS.cfProxyPort;
+    })(),
+    cfProxyCdnip: String(r.cfProxyCdnip || DEFAULT_SETTINGS.cfProxyCdnip),
+    cfProxyPyip: String(r.cfProxyPyip ?? DEFAULT_SETTINGS.cfProxyPyip),
+    cfProxyDns: String(r.cfProxyDns || DEFAULT_SETTINGS.cfProxyDns),
+    cfProxyEnableEch: r.cfProxyEnableEch !== false,
+    cfProxyCnrule: r.cfProxyCnrule !== false,
+    cfProxyLocalScheme: r.cfProxyLocalScheme === 'http' ? 'http' : 'socks5'
+  };
+}
 
 /** 行内协议徽章着色：HTTP 蓝 / SOCKS5 紫 / SOCKS4 橙 / HTTPS 青 */
 function proxySchemeChipClass(scheme?: string): string {
@@ -335,11 +384,18 @@ export function SettingsForm() {
 
   const errors = useMemo(() => {
     if (!draft) return {} as Record<string, string>;
-    const e = { ...validateSettings(draft) };
-    // 代理池允许空：不因待测/可用均为空而拦截保存
-    delete e.proxyPool;
-    delete e.proxyPoolAlive;
-    return e;
+    try {
+      const e = { ...validateSettings(draft) };
+      // 代理池允许空：不因待测/可用均为空而拦截保存
+      delete e.proxyPool;
+      delete e.proxyPoolAlive;
+      return e;
+    } catch (err) {
+      console.error('[SettingsForm] validateSettings failed', err);
+      return {
+        _form: err instanceof Error ? err.message : String(err)
+      } as Record<string, string>;
+    }
   }, [draft]);
 
   const proxyPoolEntries = useMemo(() => {

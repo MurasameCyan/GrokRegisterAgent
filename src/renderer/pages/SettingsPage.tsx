@@ -1,4 +1,11 @@
-import { FormEvent, useEffect, useState, type ReactNode } from 'react';
+import {
+  Component,
+  FormEvent,
+  useEffect,
+  useState,
+  type ErrorInfo,
+  type ReactNode
+} from 'react';
 import { ChevronDown, ChevronRight, KeyRound, ShieldCheck } from 'lucide-react';
 import { SettingsForm } from '@renderer/components/domain/SettingsForm';
 import { Button } from '@renderer/components/ui/Button';
@@ -8,6 +15,47 @@ import { cn } from '@renderer/lib/cn';
 import { useSettingsStore } from '@renderer/store/settingsStore';
 import { useToastStore } from '@renderer/store/toastStore';
 import type { AuthState, ChangeCredentialsInput } from '@shared/ipc';
+
+/** 捕获配置表渲染异常，避免整页黑屏且无信息 */
+class SettingsErrorBoundary extends Component<
+  { children: ReactNode },
+  { error: Error | null }
+> {
+  state: { error: Error | null } = { error: null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error('[SettingsPage] render error', error, info.componentStack);
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="rounded-xl border border-destructive/40 bg-destructive/10 p-4 text-[13px]">
+          <div className="font-semibold text-destructive">配置页渲染失败</div>
+          <p className="mt-1 break-all text-muted-foreground">
+            {this.state.error.message}
+          </p>
+          <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-muted/50 p-2 text-[11px] text-muted-foreground">
+            {this.state.error.stack || String(this.state.error)}
+          </pre>
+          <Button
+            type="button"
+            size="sm"
+            className="mt-3"
+            onClick={() => this.setState({ error: null })}
+          >
+            重试
+          </Button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 export function SettingsPage({
   username,
@@ -26,7 +74,9 @@ export function SettingsPage({
   return (
     <div className="mx-auto max-w-5xl space-y-5 pb-20">
       <CredentialsPanel username={username} onAuthChanged={onAuthChanged} />
-      <SettingsForm />
+      <SettingsErrorBoundary>
+        <SettingsForm />
+      </SettingsErrorBoundary>
     </div>
   );
 }
