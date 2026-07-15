@@ -168,10 +168,17 @@ export function RegisterPage({ onOpenSettings }: { onOpenSettings(): void }) {
                 label="代理"
                 value={(() => {
                   const s = settings;
-                  if (!s || s.proxyEnabled === false) return '直接连接';
+                  if (!s) return '直接连接';
+                  // CF 独立代理优先（与 registerRuntime 三模式互斥一致）
+                  if (s.cfProxyEnabled === true) {
+                    const port = Number(s.cfProxyPort) || 30000;
+                    const scheme = s.cfProxyLocalScheme === 'http' ? 'http' : 'socks5';
+                    return `CF 独立 · ${scheme}://127.0.0.1:${port}`;
+                  }
+                  if (s.proxyEnabled !== true) return '直接连接';
                   const alive = String(s.proxyPoolAlive || '').trim();
                   const pending = String(s.proxyPool || '').trim();
-                  const poolOn = s.proxyPoolEnabled !== false && (alive || pending);
+                  const poolOn = s.proxyPoolEnabled === true && (alive || pending);
                   if (poolOn) {
                     // 注册机实际用可用池；无可用时回退待定（与 runtime 一致）
                     const n = (alive || pending)

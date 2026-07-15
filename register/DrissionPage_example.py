@@ -835,7 +835,27 @@ def _start_browser_once():
         else:
             # picked 为空：若总开关开着，说明池/单条都没配上
             try:
-                if proxy_enabled() and not is_cf_proxy_mode():
+                import json as _j_pe
+                _cfg_pe = {}
+                try:
+                    with open(
+                        os.path.join(os.path.dirname(__file__), "config.json"),
+                        "r",
+                        encoding="utf-8",
+                    ) as _fp:
+                        _cfg_pe = _j_pe.load(_fp) or {}
+                except Exception:
+                    _cfg_pe = {}
+                def _on(v, default=False):
+                    if isinstance(v, bool):
+                        return v
+                    if v is None:
+                        return default
+                    s = str(v).strip().lower()
+                    return s in ("1", "true", "yes", "on", "enabled") if s else default
+                _cf_on = _on(_cfg_pe.get("cf_proxy_enabled"), False)
+                _pe_on = _cf_on or _on(_cfg_pe.get("proxy_enabled"), False)
+                if _pe_on and not _cf_on:
                     print(
                         "[proxy][!] 已启用代理但 acquire 未拿到节点 → 本轮中止（不直连）",
                         flush=True,
@@ -851,7 +871,28 @@ def _start_browser_once():
     except Exception as e:
         print(f"[proxy][!] 代理池选取失败: {e}", flush=True)
         try:
-            if proxy_enabled():
+            import json as _j_pe2
+            _cfg_pe2 = {}
+            try:
+                with open(
+                    os.path.join(os.path.dirname(__file__), "config.json"),
+                    "r",
+                    encoding="utf-8",
+                ) as _fp2:
+                    _cfg_pe2 = _j_pe2.load(_fp2) or {}
+            except Exception:
+                _cfg_pe2 = {}
+            def _on2(v, default=False):
+                if isinstance(v, bool):
+                    return v
+                if v is None:
+                    return default
+                s = str(v).strip().lower()
+                return s in ("1", "true", "yes", "on", "enabled") if s else default
+            _pe_on2 = _on2(_cfg_pe2.get("cf_proxy_enabled"), False) or _on2(
+                _cfg_pe2.get("proxy_enabled"), False
+            )
+            if _pe_on2:
                 raise RuntimeError(f"proxy acquire failed: {e}") from e
         except RuntimeError:
             raise
@@ -4339,14 +4380,35 @@ def main():
 
             with open(_cfgp, "r", encoding="utf-8") as _f0:
                 _c0 = _j0.load(_f0) or {}
-        _pe0 = proxy_enabled(_c0) if callable(proxy_enabled) else bool(_c0.get("proxy_enabled", True))
-        _pool_sw0 = (
-            proxy_pool_enabled(_c0)
-            if callable(proxy_pool_enabled)
-            else bool(_c0.get("proxy_pool_enabled", False))
-        )
-        _pool_n0 = len(load_proxy_pool(_c0)) if _pe0 and callable(load_proxy_pool) else 0
-        _cf0 = is_cf_proxy_mode(_c0) if callable(is_cf_proxy_mode) else False
+        def _flag_on_cfg(v, default=False):
+            if isinstance(v, bool):
+                return v
+            if v is None:
+                return default
+            s = str(v).strip().lower()
+            if s in ("1", "true", "yes", "on", "enabled"):
+                return True
+            if s in ("0", "false", "no", "off", "disabled", ""):
+                return False
+            return default
+
+        # 不依赖未导入的 proxy_enabled/load_proxy_pool；直接读 config.json
+        _cf0 = _flag_on_cfg(_c0.get("cf_proxy_enabled"), False)
+        _pe0 = _cf0 or _flag_on_cfg(_c0.get("proxy_enabled"), False)
+        _pool_sw0 = (not _cf0) and _flag_on_cfg(_c0.get("proxy_pool_enabled"), False)
+        _pool_raw = _c0.get("proxy_pool")
+        if isinstance(_pool_raw, list):
+            _pool_n0 = len([x for x in _pool_raw if str(x or "").strip()])
+        elif isinstance(_pool_raw, str):
+            _pool_n0 = len(
+                [
+                    ln
+                    for ln in _pool_raw.splitlines()
+                    if ln.strip() and not ln.strip().startswith("#")
+                ]
+            )
+        else:
+            _pool_n0 = 0
         _px0 = str(_c0.get("proxy") or "").strip()
         _bpx0 = str(_c0.get("browser_proxy") or "").strip()
         _diag0 = _c0.get("_proxy_diag") if isinstance(_c0.get("_proxy_diag"), dict) else {}
