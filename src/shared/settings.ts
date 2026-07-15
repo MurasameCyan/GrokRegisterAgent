@@ -128,6 +128,10 @@ export interface AppSettings {
   enableNsfw: boolean;
   /** mint 成功后导出 sub2api accounts（可选） */
   sub2apiExportEnabled: boolean;
+  /** 每成功 N 次重启浏览器（0=仅失败/首轮）；默认 5 */
+  browserRecycleEvery: number;
+  /** 收码失败换邮箱最大次数（1～10，默认 3） */
+  maxMailRetry: number;
   /**
    * @deprecated 已移除自定义 Auth 目录 UI；始终使用 DATA_DIR/auth。
    * 字段保留兼容旧 settings.json，读写时忽略。
@@ -280,6 +284,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   cloudflareAuthMode: 'x-admin-auth',
   enableNsfw: false,
   sub2apiExportEnabled: false,
+  browserRecycleEvery: 5,
+  maxMailRetry: 3,
   authDir: '',
   cpaRemotePushEnabled: false,
   pushAuthToCpa: false,

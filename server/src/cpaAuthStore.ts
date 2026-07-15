@@ -13,6 +13,11 @@ import { readBotFlagFromAuthRecord, readBotFlagFromToken } from './jwtBotFlag.js
 import { proxiedRequest } from './httpClient.js';
 import { broadcastAppEvent } from './appEvents.js';
 import type { ReloginStage } from '@shared/runEvents.js';
+import {
+  loadAccountTags,
+  lookupNsfwTag,
+  nsfwStatusFromTag
+} from './accountTags.js';
 
 export interface CpaAuthItem {
   filename: string;
@@ -45,6 +50,13 @@ export interface CpaAuthItem {
   probeAt?: string | null;
   /** 号池同邮箱是否有密码（重登前置） */
   poolHasPassword?: boolean;
+  /** NSFW：true 已开 / false 尝试失败 / null 未尝试 */
+  nsfwEnabled?: boolean | null;
+  nsfwAttempted?: boolean;
+  nsfwAt?: string | null;
+  nsfwError?: string | null;
+  /** ok | fail | none */
+  nsfwStatus?: 'ok' | 'fail' | 'none';
 }
 
 /** 规范化 SSO cookie / JWT 文本后做 SHA-256 hex */
@@ -335,6 +347,7 @@ export async function listCpaAuth(): Promise<{ dir: string; items: CpaAuthItem[]
     return { dir, items: [] };
   }
   const poolPw = await buildPoolPasswordMap();
+  const accountTags = loadAccountTags();
   const names = await fsp.readdir(dir);
   const items: CpaAuthItem[] = [];
   for (const name of names) {
@@ -378,6 +391,33 @@ export async function listCpaAuth(): Promise<{ dir: string; items: CpaAuthItem[]
       const poolHasPassword = emailStr
         ? Boolean(poolPw.get(emailStr.trim().toLowerCase()))
         : false;
+      // NSFW：auth JSON 字段优先，否则侧车 account_tags
+      let nsfwEnabled: boolean | null = null;
+      let nsfwAttempted = false;
+      let nsfwAt: string | null = null;
+      let nsfwError: string | null = null;
+      if (data.nsfw_attempted === true || data.nsfwAttempted === true) {
+        nsfwAttempted = true;
+        nsfwEnabled = data.nsfw_enabled === true || data.nsfwEnabled === true;
+        nsfwAt = String(data.nsfw_at || data.nsfwAt || '').trim() || null;
+        nsfwError = String(data.nsfw_error || data.nsfwError || '').trim() || null;
+      } else {
+        const side = nsfwStatusFromTag(
+          lookupNsfwTag(accountTags, {
+            email: emailStr,
+            ssoHash: ssoHash || undefined
+          })
+        );
+        nsfwEnabled = side.nsfwEnabled;
+        nsfwAttempted = side.nsfwAttempted;
+        nsfwAt = side.nsfwAt || null;
+        nsfwError = side.nsfwError || null;
+      }
+      const nsfwStatus: 'ok' | 'fail' | 'none' = !nsfwAttempted
+        ? 'none'
+        : nsfwEnabled
+          ? 'ok'
+          : 'fail';
       items.push({
         filename: name,
         path: full,
@@ -396,6 +436,11 @@ export async function listCpaAuth(): Promise<{ dir: string; items: CpaAuthItem[]
         probeHttp,
         probeAt,
         poolHasPassword,
+        nsfwEnabled,
+        nsfwAttempted,
+        nsfwAt,
+        nsfwError,
+        nsfwStatus,
         ...flags
       });
     } catch {

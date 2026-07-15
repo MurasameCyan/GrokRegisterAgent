@@ -59,6 +59,13 @@ export interface AccountRecord {
   createdAt: string;
   /** 最近一次 SSO 验活结果（可选，服务端持久化） */
   ssoCheck?: AccountSsoCheck;
+  /** NSFW 侧车：true 已开 / false 失败 / null 未尝试 */
+  nsfwEnabled?: boolean | null;
+  nsfwAttempted?: boolean;
+  nsfwAt?: string;
+  nsfwError?: string;
+  /** ok | fail | none */
+  nsfwStatus?: 'ok' | 'fail' | 'none';
 }
 
 /** Auth 重登阶段（WebSocket 推送，UI 显示登录中/mint/激活） */

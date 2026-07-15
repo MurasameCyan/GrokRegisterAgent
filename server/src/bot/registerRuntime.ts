@@ -276,6 +276,18 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
   } else {
     config.sub2api_export_enabled = false;
   }
+  {
+    const re = Number(
+      (settings as { browserRecycleEvery?: number }).browserRecycleEvery ?? 5
+    );
+    if (Number.isFinite(re) && re >= 0) {
+      config.browser_recycle_every = Math.max(0, Math.min(100, Math.floor(re)));
+    }
+    const mr = Number((settings as { maxMailRetry?: number }).maxMailRetry ?? 3);
+    if (Number.isFinite(mr) && mr >= 1) {
+      config.max_mail_retry = Math.max(1, Math.min(10, Math.floor(mr)));
+    }
+  }
 
   // 固定 DATA_DIR/auth，不再使用自定义 authDir
   delete config.auth_dir;

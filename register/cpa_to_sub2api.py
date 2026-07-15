@@ -67,7 +67,7 @@ def convert_cpa_file(
     account = cpa_xai_to_sub2api_account(cpa, source="cpa_xai")
     doc = build_sub2api_document([account])
     reg_dir = Path(__file__).resolve().parent
-    out_dir = Path(out_dir or (reg_dir / "sub2api_exports")).expanduser().resolve()
+    out_dir = Path(out_dir or (reg_dir / "data" / "sub2api")).expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     out_file = out_dir / f"sub2api-{cpa_path.stem}.json"
     out_file.write_text(
@@ -119,7 +119,9 @@ def export_after_cpa_result(
         return {"ok": False, "error": "missing cpa path"}
 
     reg_dir = Path(__file__).resolve().parent
-    out_dir = Path(cfg.get("sub2api_export_dir") or (reg_dir / "sub2api_exports"))
+    # 默认 data/sub2api（相对 register/）
+    raw_out = cfg.get("sub2api_export_dir") or "data/sub2api"
+    out_dir = Path(str(raw_out))
     if not out_dir.is_absolute():
         out_dir = (reg_dir / out_dir).resolve()
     cpa_dir = Path(
@@ -146,7 +148,7 @@ def export_after_cpa_result(
         cfg.get("sub2api_combined_file") or (out_dir / "sub2api-accounts.json")
     )
     if not combined_path.is_absolute():
-        combined_path = (reg_dir / combined_path).resolve()
+        combined_path = (out_dir / combined_path.name).resolve()
     try:
         rebuild_combined(cpa_dir, combined_path)
         log(f"[sub2api] combined -> {combined_path}")

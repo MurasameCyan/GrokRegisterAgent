@@ -129,6 +129,13 @@ export interface CpaAuthItem {
    * false/undefined 时前端应禁止点重登，避免开浏览器后才失败。
    */
   poolHasPassword?: boolean;
+  /** NSFW：true 已开 / false 尝试失败 / null 未尝试 */
+  nsfwEnabled?: boolean | null;
+  nsfwAttempted?: boolean;
+  nsfwAt?: string | null;
+  nsfwError?: string | null;
+  /** ok | fail | none */
+  nsfwStatus?: 'ok' | 'fail' | 'none';
 }
 
 export interface CpaAuthListResult {
@@ -265,6 +272,18 @@ export interface RendererApi {
   startRegister(args?: RegisterStartArgs): Promise<{ runId: string }>;
   stopRegister(runId?: string, opts?: { stopAll?: boolean }): Promise<{ ok: boolean; stopped?: string[] }>;
   getStatus(): Promise<RunStatus>;
+  getAuthQueueMetrics?(): Promise<{
+    ok?: boolean;
+    pending?: number;
+    queue_size?: number;
+    done_ok?: number;
+    done_fail?: number;
+    workers?: number;
+    queue_max?: number;
+    updated_at?: number;
+    updated_iso?: string;
+    stale?: boolean;
+  }>;
   listRegisterJobs(): Promise<RegisterJobsListResult>;
   getRegisterJobStatus(runId: string): Promise<RunStatus>;
   focusRegisterJob(runId: string | null): Promise<{ ok: boolean; runId: string | null }>;

@@ -21,6 +21,7 @@ import { Switch } from '@renderer/components/ui/Switch';
 import { PaginationBar } from '@renderer/components/ui/PaginationBar';
 import { AccountDetailDrawer } from '@renderer/components/domain/AccountDetailDrawer';
 import { BotFlagBadge } from '@renderer/components/domain/BotFlagBadge';
+import { NsfwBadge } from '@renderer/components/domain/NsfwBadge';
 import { useClientPagination } from '@renderer/hooks/useClientPagination';
 import { useAccountsStore } from '@renderer/store/accountsStore';
 import { useRunStore } from '@renderer/store/runStore';
@@ -1395,6 +1396,17 @@ function AccountCard({
         <div className="flex shrink-0 flex-col items-end gap-1">
           <AuthConvertedBadge converted={authConverted} channel={authChannel} />
           <SsoBadge result={ssoResult} />
+          <NsfwBadge
+            status={
+              account.nsfwStatus ??
+              (account.nsfwAttempted
+                ? account.nsfwEnabled
+                  ? 'ok'
+                  : 'fail'
+                : 'none')
+            }
+            error={account.nsfwError}
+          />
           <span
             title={
               flagFrom === 'auth'

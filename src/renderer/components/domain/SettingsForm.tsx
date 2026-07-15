@@ -209,7 +209,7 @@ function ProxyPoolPreview({
                   size="sm"
                   variant="ghost"
                   className="h-7 shrink-0 px-2 text-danger"
-                  disabled={busy}
+                  disabled={loading}
                   onClick={() => onRemoveOne(e.proxy)}
                   title="从池中删除此条"
                 >
@@ -221,7 +221,7 @@ function ProxyPoolPreview({
                 size="sm"
                 variant="ghost"
                 className="h-7 shrink-0 px-2"
-                disabled={loading || busy}
+                disabled={loading}
                 onClick={() => onProbeOne(e.proxy)}
               >
                 {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : '测活'}
@@ -1700,99 +1700,107 @@ export function SettingsForm() {
           }
         />
         <CardBody className="space-y-3">
-          <ToggleRow
-            label="自动转换 Auth"
-            hint="注册只交 SSO 到授权队列：延迟后后台执行 SSO 推送 / mint / Auth 推送，不阻塞注册"
-            checked={draft.autoAuthExport}
-            onChange={(v) => update('autoAuthExport', v)}
-          />
+          <div className="grid gap-3 sm:grid-cols-2">
+            <ToggleRow
+              label="自动转换 Auth"
+              hint="注册只交 SSO 到授权队列：延迟后后台 SSO 推送 / mint / Auth 推送，不阻塞注册"
+              checked={draft.autoAuthExport}
+              onChange={(v) => update('autoAuthExport', v)}
+            />
+            <ToggleRow
+              label="自动转换 sub2api"
+              hint="mint 成功后写 data/sub2api/；默认关"
+              checked={!!draft.sub2apiExportEnabled}
+              onChange={(v) => update('sub2apiExportEnabled', v)}
+            />
+          </div>
           {draft.autoAuthExport !== false && (
             <>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Field
-                label="转换延迟下限（秒）"
-                hint="拿到 SSO 后至少等待再 mint，默认 60"
-              >
-                <Input
-                  type="number"
-                  min={0}
-                  max={3600}
-                  value={draft.autoAuthDelayMinSec ?? 60}
-                  onChange={(e) => {
-                    const n = Number(e.target.value);
-                    update(
-                      'autoAuthDelayMinSec',
-                      Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 60
-                    );
-                  }}
-                />
-              </Field>
-              <Field
-                label="转换延迟上限（秒）"
-                hint="与下限组成随机等待，默认 120（1～2 分钟）"
-              >
-                <Input
-                  type="number"
-                  min={0}
-                  max={7200}
-                  value={draft.autoAuthDelayMaxSec ?? 120}
-                  onChange={(e) => {
-                    const n = Number(e.target.value);
-                    update(
-                      'autoAuthDelayMaxSec',
-                      Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 120
-                    );
-                  }}
-                />
-              </Field>
-            </div>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Field
-                label="授权队列 Worker"
-                hint="并发 mint/推送数，1～8，默认 2；高并发注册时提高吞吐"
-              >
-                <Input
-                  type="number"
-                  min={1}
-                  max={8}
-                  value={draft.authExportWorkers ?? 2}
-                  onChange={(e) => {
-                    const n = Number(e.target.value);
-                    update(
-                      'authExportWorkers',
-                      Number.isFinite(n)
-                        ? Math.max(1, Math.min(8, Math.floor(n)))
-                        : 2
-                    );
-                  }}
-                />
-              </Field>
-              <Field
-                label="队列上限（背压）"
-                hint="0=2×Worker；满则入队等待，防堆积崩"
-              >
-                <Input
-                  type="number"
-                  min={0}
-                  max={64}
-                  value={draft.authExportQueueMax ?? 0}
-                  onChange={(e) => {
-                    const n = Number(e.target.value);
-                    update(
-                      'authExportQueueMax',
-                      Number.isFinite(n)
-                        ? Math.max(0, Math.min(64, Math.floor(n)))
-                        : 0
-                    );
-                  }}
-                />
-              </Field>
-            </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field
+                  label="转换延迟下限（秒）"
+                  hint="拿到 SSO 后至少等待再 mint，默认 60"
+                >
+                  <Input
+                    type="number"
+                    min={0}
+                    max={3600}
+                    value={draft.autoAuthDelayMinSec ?? 60}
+                    onChange={(e) => {
+                      const n = Number(e.target.value);
+                      update(
+                        'autoAuthDelayMinSec',
+                        Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 60
+                      );
+                    }}
+                  />
+                </Field>
+                <Field
+                  label="转换延迟上限（秒）"
+                  hint="与下限组成随机等待，默认 120（1～2 分钟）"
+                >
+                  <Input
+                    type="number"
+                    min={0}
+                    max={7200}
+                    value={draft.autoAuthDelayMaxSec ?? 120}
+                    onChange={(e) => {
+                      const n = Number(e.target.value);
+                      update(
+                        'autoAuthDelayMaxSec',
+                        Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 120
+                      );
+                    }}
+                  />
+                </Field>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field
+                  label="授权队列 Worker"
+                  hint="并发 mint/推送数，1～8，默认 2；高并发注册时提高吞吐"
+                >
+                  <Input
+                    type="number"
+                    min={1}
+                    max={8}
+                    value={draft.authExportWorkers ?? 2}
+                    onChange={(e) => {
+                      const n = Number(e.target.value);
+                      update(
+                        'authExportWorkers',
+                        Number.isFinite(n)
+                          ? Math.max(1, Math.min(8, Math.floor(n)))
+                          : 2
+                      );
+                    }}
+                  />
+                </Field>
+                <Field
+                  label="队列上限（背压）"
+                  hint="0=2×Worker；满则入队等待，防堆积崩"
+                >
+                  <Input
+                    type="number"
+                    min={0}
+                    max={64}
+                    value={draft.authExportQueueMax ?? 0}
+                    onChange={(e) => {
+                      const n = Number(e.target.value);
+                      update(
+                        'authExportQueueMax',
+                        Number.isFinite(n)
+                          ? Math.max(0, Math.min(64, Math.floor(n)))
+                          : 0
+                      );
+                    }}
+                  />
+                </Field>
+              </div>
             </>
           )}
           <Field
             label="CPA Mint 模式"
-            hint="A=PKCE；B=Device；C=double 同时产出两份不同通道 auth，分别测活（互不影响，不会因另一份而失效）。mint 后无 grok-4.5 不进 CPA"
+            hint="A=PKCE；B=Device；C=double 同时产出两份不同通道 auth，分别测活。mint 后无 grok-4.5 不进 CPA"
           >
             <select
               className={SELECT_CLASS}
@@ -1814,17 +1822,53 @@ export function SettingsForm() {
             </select>
           </Field>
           <ToggleRow
-            label="开启 NSFW（可选）"
-            hint="mint 成功后尝试打开 NSFW；失败不挡主流程"
+            label="开启 NSFW"
+            hint="授权队列 mint 后用 SSO 尝试 gRPC always_show_nsfw_content；成败均写 tag，不影响授权流水线"
             checked={!!draft.enableNsfw}
             onChange={(v) => update('enableNsfw', v)}
           />
-          <ToggleRow
-            label="导出 sub2api（可选）"
-            hint="mint 成功后写 sub2api_exports/；默认关"
-            checked={!!draft.sub2apiExportEnabled}
-            onChange={(v) => update('sub2apiExportEnabled', v)}
-          />
+          <div className="grid gap-3 sm:grid-cols-2">
+            <Field
+              label="每 N 成功重启浏览器"
+              hint="长跑防泄漏；0=仅失败/首轮强制重启，默认 5"
+            >
+              <Input
+                type="number"
+                min={0}
+                max={100}
+                value={draft.browserRecycleEvery ?? 5}
+                onChange={(e) => {
+                  const n = Number(e.target.value);
+                  update(
+                    'browserRecycleEvery',
+                    Number.isFinite(n)
+                      ? Math.max(0, Math.min(100, Math.floor(n)))
+                      : 5
+                  );
+                }}
+              />
+            </Field>
+            <Field
+              label="收码失败换邮箱次数"
+              hint="验证码超时/邮箱失败时换邮箱重试上限，默认 3"
+            >
+              <Input
+                type="number"
+                min={1}
+                max={10}
+                value={draft.maxMailRetry ?? 3}
+                onChange={(e) => {
+                  const n = Number(e.target.value);
+                  update(
+                    'maxMailRetry',
+                    Number.isFinite(n)
+                      ? Math.max(1, Math.min(10, Math.floor(n)))
+                      : 3
+                  );
+                }}
+              />
+            </Field>
+          </div>
           <ToggleRow
             label="测活死号自动删除"
             hint="默认关。开启后 Auth 测活遇 401/402/403 才删除本地 Auth 文件；关闭则仅标记死号"

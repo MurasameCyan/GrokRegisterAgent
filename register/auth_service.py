@@ -31,7 +31,7 @@ from sso_to_auth import (
     upload_cpa_auth_remote,
     write_cpa_auth,
 )
-from cpa_probe import probe_and_cleanup, probe_models
+from cpa_probe import probe_and_cleanup, probe_models, probe_mini_response
 
 LogFn = Callable[[str], None]
 
@@ -218,13 +218,56 @@ def _write_and_probe_one(
             f"[auth] channel={channel} ⚠ models 探针失败，暂不按假活拦截: "
             f"{models_probe.get('error') or models_probe.get('status')}"
         )
-    # 回写 has_grok_45 到本地文件
+
+    # 10: mini chat 探针（POST /responses）；失败不单独判死，写入结果供观测
+    chat_probe: dict[str, Any] | None = None
+    if models_ok and has_g45 and not fake_alive:
+        try:
+            chat_probe = probe_mini_response(
+                str(token.get("access_token") or ""),
+                base_url=str(payload.get("base_url") or DEFAULT_BASE_URL),
+                proxy=proxy or "",
+                headers=headers if isinstance(headers, dict) else None,
+            )
+            payload["chat_probe_ok"] = bool(chat_probe.get("ok"))
+            payload["chat_probe_status"] = chat_probe.get("status")
+            log(
+                f"[auth] channel={channel} chat probe ok={chat_probe.get('ok')} "
+                f"status={chat_probe.get('status')} "
+                f"text={(chat_probe.get('text') or '')[:40]!r}"
+            )
+            # 可选硬门槛：config require_chat_probe=true 时 chat 失败也挡 CPA
+            require_chat = False
+            try:
+                conf_path = Path(__file__).resolve().parent / "config.json"
+                if conf_path.is_file():
+                    conf = json.loads(conf_path.read_text(encoding="utf-8"))
+                    require_chat = bool(
+                        conf.get("require_chat_probe")
+                        or conf.get("requireChatProbe")
+                    )
+            except Exception:
+                require_chat = False
+            if require_chat and not chat_probe.get("ok"):
+                fake_alive = True
+                log(
+                    f"[auth] channel={channel} ✘ chat 探针失败且 require_chat_probe=true，"
+                    f"按假活处理: {chat_probe.get('error')}"
+                )
+        except Exception as ce:
+            chat_probe = {"ok": False, "error": str(ce)[:200]}
+            log(f"[auth] channel={channel} chat probe skip: {ce}")
+
+    # 回写 has_grok_45 / chat 到本地文件
     try:
         if path.is_file():
             doc = json.loads(path.read_text(encoding="utf-8"))
             if isinstance(doc, dict):
                 doc["has_grok_45"] = has_g45
                 doc["model_ids"] = payload["model_ids"]
+                if chat_probe is not None:
+                    doc["chat_probe_ok"] = bool(chat_probe.get("ok"))
+                    doc["chat_probe_status"] = chat_probe.get("status")
                 path.write_text(
                     json.dumps(doc, ensure_ascii=False, indent=2) + "\n",
                     encoding="utf-8",
@@ -235,14 +278,15 @@ def _write_and_probe_one(
     remote_result: dict[str, Any] | None = None
     if fake_alive:
         log(
-            f"[auth] channel={channel} ✘ 无 grok-4.5，跳过 CPA 推送（假活 token）"
-            f" err={models_probe.get('error') or 'not listed'}"
+            f"[auth] channel={channel} ✘ 无 grok-4.5/chat，跳过 CPA 推送（假活 token）"
+            f" err={models_probe.get('error') or (chat_probe or {}).get('error') or 'not listed'}"
         )
         remote_result = {
             "ok": False,
             "skipped": True,
-            "error": "require_grok_45: token ok but grok-4.5 not listed",
+            "error": "require_grok_45/chat: fake-alive gate",
             "models": models_probe,
+            "chat": chat_probe,
         }
     elif not skip_remote:
         r_url = (remote_url or "").strip()
@@ -303,6 +347,7 @@ def _write_and_probe_one(
         "probe_alive": bool(alive) and not dead and not fake_alive,
         "has_grok_45": has_g45,
         "models_probe": models_probe,
+        "chat_probe": chat_probe,
         "deleted": bool(probe.get("deleted")) or not still,
         "referrer": ref,
         "remote": remote_result,

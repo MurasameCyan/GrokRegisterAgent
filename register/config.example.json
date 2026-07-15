@@ -29,8 +29,10 @@
     "_comment_auto_auth_delay": "拿到 SSO 后随机延迟再后台流水线（SSO推送/mint/Auth推送），不阻塞注册",
     "_comment_register_plans": "A/B/C 可单独开关；全开则 A→B→C 顺序兜底",
     "enable_nsfw": false,
+    "browser_recycle_every": 5,
+    "max_mail_retry": 3,
     "sub2api_export_enabled": false,
-    "sub2api_export_dir": "sub2api_exports",
+    "sub2api_export_dir": "data/sub2api",
     "proxy": "",
     "browser_proxy": "",
     "api": {

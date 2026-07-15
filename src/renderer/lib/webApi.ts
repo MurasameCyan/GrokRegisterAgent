@@ -129,6 +129,19 @@ const webApi: RendererApi = {
     });
   },
   getStatus: () => http('GET', '/api/run/status'),
+  getAuthQueueMetrics: () =>
+    http<{
+      ok?: boolean;
+      pending?: number;
+      queue_size?: number;
+      done_ok?: number;
+      done_fail?: number;
+      workers?: number;
+      queue_max?: number;
+      updated_at?: number;
+      updated_iso?: string;
+      stale?: boolean;
+    }>('GET', '/api/auth-queue/metrics'),
   listRegisterJobs: () => http('GET', '/api/run/jobs'),
   getRegisterJobStatus: (runId) =>
     http('GET', `/api/run/jobs/${encodeURIComponent(runId)}`),

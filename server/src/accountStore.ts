@@ -236,7 +236,33 @@ export async function appendAccount(record: AccountRecord): Promise<void> {
 
 export async function listAccounts(): Promise<AccountRecord[]> {
   const all = await readAll();
-  return all.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  // 合并 NSFW 侧车 tag（email / sso_hash）
+  let withTags = all;
+  try {
+    const { loadAccountTags, lookupNsfwTag, nsfwStatusFromTag, ssoHashHex } =
+      await import('./accountTags.js');
+    const tags = loadAccountTags();
+    withTags = all.map((a) => {
+      const side = nsfwStatusFromTag(
+        lookupNsfwTag(tags, {
+          email: a.email,
+          sso: a.sso,
+          ssoHash: a.sso ? ssoHashHex(a.sso) : undefined
+        })
+      );
+      return {
+        ...a,
+        nsfwEnabled: side.nsfwEnabled,
+        nsfwAttempted: side.nsfwAttempted,
+        nsfwAt: side.nsfwAt,
+        nsfwError: side.nsfwError,
+        nsfwStatus: side.nsfwStatus
+      } as AccountRecord;
+    });
+  } catch {
+    /* tags optional */
+  }
+  return withTags.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
 /** 按 id 批量删除号池账号（仅写 accounts.json，不删 SSO 历史 txt） */

@@ -1610,11 +1610,19 @@ return true;
 
 
 
+class AccountRetryNeeded(Exception):
+    """收码/邮箱阶段可换邮箱重试（不消耗整轮代理降级逻辑）。"""
+
+    def __init__(self, message: str = "account retry needed", *, reason: str = "mail"):
+        super().__init__(message)
+        self.reason = reason
+
+
 def fill_code_and_submit(email, dev_token, timeout=60):
     # 复用 `email_register.py` 里的验证码轮询逻辑，等待邮件到达后自动填写 OTP。
     code = get_oai_code(dev_token, email)
     if not code:
-        raise Exception("获取验证码失败")
+        raise AccountRetryNeeded("获取验证码失败", reason="code_timeout")
 
     _step_pause(180, 550)
     deadline = time.time() + timeout
@@ -3820,26 +3828,92 @@ def run_single_registration(
 ):
     # 单轮流程：打开注册页 -> 完成注册 -> 触发生日门(可选) -> 获取 sso -> 写 txt。
     # plan="a"：本项目主流程；plan="b"：Plan B 兜底（FlowPilot 人机等待/模拟点击/CF 拦截）
+    # 收码失败：换邮箱最多 max_mail_retry 次（AccountRetryNeeded），不整轮失败。
     plan_mode = "b" if str(plan or "a").lower() in ("b", "plan_b", "plan-b", "2") else "a"
     if plan_mode == "b":
         print("[plan-b] ═══ Plan B 兜底注册开始 ═══")
-    open_signup_page()
-    if plan_mode == "b":
-        try:
-            from plan_b import detect_cf_security_block, human_pause_major
 
-            human_pause_major(600, 1400)
-            blk = detect_cf_security_block(page)
-            if blk:
-                raise Exception(f"CF 安全拦截({blk})，Plan B 放弃")
+    max_mail_retry = 3
+    try:
+        import json as _json_mod
+        from runtime_gc import load_max_mail_retry
+
+        conf_mail = {}
+        try:
+            with open(
+                os.path.join(os.path.dirname(__file__), "config.json"),
+                "r",
+                encoding="utf-8",
+            ) as _cf:
+                conf_mail = _json_mod.load(_cf) or {}
+        except Exception:
+            conf_mail = {}
+        max_mail_retry = load_max_mail_retry(conf_mail)
+    except Exception:
+        max_mail_retry = 3
+
+    email = ""
+    dev_token = ""
+    profile = None
+    last_mail_err: Exception | None = None
+    for mail_try in range(1, max_mail_retry + 1):
+        try:
+            if mail_try == 1:
+                open_signup_page()
+            else:
+                print(
+                    f"[*] 收码/邮箱重试 {mail_try}/{max_mail_retry} · 重新打开注册页…",
+                    flush=True,
+                )
+                try:
+                    open_signup_page()
+                except Exception as oe:
+                    # 已在注册页时 open 可能失败，继续填邮箱
+                    print(f"[Warn] 重试开页: {oe}", flush=True)
+            if plan_mode == "b" and mail_try == 1:
+                try:
+                    from plan_b import detect_cf_security_block, human_pause_major
+
+                    human_pause_major(600, 1400)
+                    blk = detect_cf_security_block(page)
+                    if blk:
+                        raise Exception(f"CF 安全拦截({blk})，Plan B 放弃")
+                except Exception as e:
+                    if "CF 安全拦截" in str(e):
+                        raise
+                    print(f"[plan-b] 开页预检跳过: {e}")
+            email, dev_token = fill_email_and_submit()
+            fill_code_and_submit(email, dev_token)
+            print(f"[*] 填写注册资料并提交（Plan {plan_mode.upper()}）…")
+            profile = fill_profile_and_submit(mode=plan_mode)
+            last_mail_err = None
+            break
+        except AccountRetryNeeded as re:
+            last_mail_err = re
+            print(
+                f"[*] 可换邮箱重试（{mail_try}/{max_mail_retry}）: {re}",
+                flush=True,
+            )
+            if mail_try >= max_mail_retry:
+                raise Exception(
+                    f"收码失败已达 max_mail_retry={max_mail_retry}: {re}"
+                ) from re
+            continue
         except Exception as e:
-            if "CF 安全拦截" in str(e):
-                raise
-            print(f"[plan-b] 开页预检跳过: {e}")
-    email, dev_token = fill_email_and_submit()
-    fill_code_and_submit(email, dev_token)
-    print(f"[*] 填写注册资料并提交（Plan {plan_mode.upper()}）…")
-    profile = fill_profile_and_submit(mode=plan_mode)
+            # 获取邮箱失败也可换邮箱重试
+            msg = str(e)
+            if "获取邮箱失败" in msg or "创建邮箱失败" in msg or "获取验证码失败" in msg:
+                last_mail_err = e
+                print(
+                    f"[*] 邮箱阶段失败，换邮箱重试（{mail_try}/{max_mail_retry}）: {e}",
+                    flush=True,
+                )
+                if mail_try >= max_mail_retry:
+                    raise
+                continue
+            raise
+    if profile is None:
+        raise Exception(f"邮箱/收码阶段失败: {last_mail_err or 'unknown'}")
     # 注册完成后等浏览器跑完 SSO 重定向链落到 grok.com 并登录——grok.com 域的
     # 会话 cookie（含 cf_clearance / sso / sso-rw）此时才会真正写下来。
     if not wait_for_grok_com_landing():
@@ -3866,7 +3940,8 @@ def run_single_registration(
             except Exception:
                 proxy_for_auth = _browser_proxy or ""
 
-            # 浏览器 UA / CF cookie 随任务带走，队列里 SSO→g2 可用
+            # 浏览器 UA / CF cookie 随任务带走（队列 SSO→g2 / NSFW 用）
+            # #9：稳定提取 cf_clearance（多域、多 API、document.cookie 兜底）
             ua_hint = ""
             cf_hint = ""
             try:
@@ -3875,22 +3950,88 @@ def run_single_registration(
                         ua_hint = str(page.run_js("return navigator.userAgent") or "")
                     except Exception:
                         pass
+                    cf_map: dict[str, str] = {}
+                    want = ("cf_clearance", "__cf_bm", "sso-rw", "sso")
+
+                    def _ingest(name: str, value: str) -> None:
+                        n = str(name or "").strip()
+                        v = str(value or "").strip()
+                        if not n or not v:
+                            return
+                        key = n.lower()
+                        if key in want and key not in cf_map:
+                            cf_map[key] = f"{n}={v}"
+
+                    # 1) page.cookies() 各种形态
                     try:
                         cookies = page.cookies()
                         if isinstance(cookies, dict):
-                            items = [{"name": k, "value": v} for k, v in cookies.items()]
+                            for k, v in cookies.items():
+                                _ingest(str(k), str(v))
                         else:
-                            items = list(cookies or [])
-                        cf_parts = []
-                        for c in items:
-                            if not isinstance(c, dict):
-                                continue
-                            n = str(c.get("name") or "")
-                            if n.lower() in ("cf_clearance", "__cf_bm", "sso-rw"):
-                                cf_parts.append(f"{n}={c.get('value') or ''}")
-                        cf_hint = "; ".join(cf_parts)
+                            for c in list(cookies or []):
+                                if isinstance(c, dict):
+                                    _ingest(
+                                        str(c.get("name") or c.get("Name") or ""),
+                                        str(c.get("value") or c.get("Value") or ""),
+                                    )
                     except Exception:
                         pass
+                    # 2) browser / tab cookies 再扫（Drission 不同版本）
+                    try:
+                        br = getattr(page, "browser", None) or browser
+                        if br is not None:
+                            for getter in (
+                                lambda: br.cookies(),
+                                lambda: br.get_cookies(),
+                                lambda: page.get_cookies(),
+                            ):
+                                try:
+                                    raw = getter()
+                                except Exception:
+                                    continue
+                                if isinstance(raw, dict):
+                                    for k, v in raw.items():
+                                        _ingest(str(k), str(v))
+                                elif isinstance(raw, list):
+                                    for c in raw:
+                                        if isinstance(c, dict):
+                                            _ingest(
+                                                str(c.get("name") or ""),
+                                                str(c.get("value") or ""),
+                                            )
+                    except Exception:
+                        pass
+                    # 3) document.cookie 兜底（当前域）
+                    try:
+                        doc_ck = str(
+                            page.run_js("return document.cookie || ''") or ""
+                        )
+                        for part in doc_ck.split(";"):
+                            part = part.strip()
+                            if "=" not in part:
+                                continue
+                            n, v = part.split("=", 1)
+                            _ingest(n, v)
+                    except Exception:
+                        pass
+                    # 优先顺序输出：cf_clearance 必须在前
+                    ordered = []
+                    for k in want:
+                        if k in cf_map:
+                            ordered.append(cf_map[k])
+                    cf_hint = "; ".join(ordered)
+                    if "cf_clearance=" in cf_hint.lower():
+                        print(
+                            f"[*] 入队 CF cookie 已提取 len={len(cf_hint)} "
+                            f"（含 cf_clearance）",
+                            flush=True,
+                        )
+                    else:
+                        print(
+                            "[Warn] 入队未拿到 cf_clearance（NSFW/g2 可能被 CF 拦）",
+                            flush=True,
+                        )
             except Exception:
                 pass
 
@@ -4026,6 +4167,45 @@ def main():
     success_count = 0
     fail_count = 0
     collected_sso: list = []
+    recycle_every = 5
+    try:
+        import json as _json_mod
+        from runtime_gc import load_recycle_every, cleanup_runtime_memory, clear_temp_profiles
+
+        conf_rt = {}
+        try:
+            with open(
+                os.path.join(os.path.dirname(__file__), "config.json"),
+                "r",
+                encoding="utf-8",
+            ) as _rf:
+                conf_rt = _json_mod.load(_rf) or {}
+        except Exception:
+            conf_rt = {}
+        recycle_every = load_recycle_every(conf_rt)
+        try:
+            # 启动自检（不阻断）
+            from optimization_checks import main as _opt_main
+
+            print("[*] 启动自检 optimization_checks…", flush=True)
+            _code = _opt_main()
+            if _code != 0:
+                print("[Warn] 自检有 FAIL 项，继续运行", flush=True)
+        except Exception as oe:
+            print(f"[Warn] 自检跳过: {oe}", flush=True)
+        try:
+            from tab_pool import TabPool
+
+            TabPool.init(_new_chromium_options, log_callback=lambda m: print(m, flush=True))
+            print("[*] TabPool 已就绪（线程级浏览器隔离）", flush=True)
+        except Exception as te:
+            print(f"[Warn] TabPool 初始化跳过: {te}", flush=True)
+        cleanup_runtime_memory(log=lambda m: print(m, flush=True), force=True)
+        clear_temp_profiles(log=lambda m: print(m, flush=True))
+    except Exception as ge:
+        print(f"[Warn] runtime_gc 初始化: {ge}", flush=True)
+
+    force_browser_recycle = True  # 首轮必须新起浏览器
     try:
         while True:
             if args.count > 0 and current_round >= args.count:
@@ -4033,16 +4213,71 @@ def main():
 
             current_round += 1
             print(f"")
-            # 先拉起浏览器并打出本轮代理/特征，再打「第 N 轮」分隔线，方便对照
-            try:
-                stop_browser()
-            except Exception:
-                pass
-            start_browser()
+            # 首轮 / 失败后 / 每 N 成功：完整 quit+restart；否则 clear_session 复用进程
+            do_full_restart = force_browser_recycle or browser is None
+            if do_full_restart:
+                try:
+                    stop_browser()
+                except Exception:
+                    pass
+                try:
+                    from tab_pool import TabPool
+
+                    TabPool.release_tab()
+                except Exception:
+                    pass
+                start_browser()
+                force_browser_recycle = False
+            else:
+                # 复用：清 cookie/storage，不退出 Chromium（TabPool 接口 + 全局 page）
+                cleared = False
+                try:
+                    if page is not None:
+                        try:
+                            page.get("about:blank")
+                        except Exception:
+                            pass
+                        for js in (
+                            "try{localStorage.clear()}catch(e){}",
+                            "try{sessionStorage.clear()}catch(e){}",
+                        ):
+                            try:
+                                page.run_js(js)
+                            except Exception:
+                                pass
+                        try:
+                            page.set.cookies.clear()
+                        except Exception:
+                            try:
+                                page.run_js(
+                                    "document.cookie.split(';').forEach(c=>{document.cookie=c.replace(/^ +/,'').replace(/=.*/,'=;expires='+new Date().toUTCString()+';path=/')})"
+                                )
+                            except Exception:
+                                pass
+                        cleared = True
+                        print("[*] 浏览器会话已清理（复用进程）", flush=True)
+                    try:
+                        from tab_pool import TabPool
+
+                        TabPool.clear_session()
+                    except Exception:
+                        pass
+                except Exception as ce:
+                    print(f"[Warn] clear_session 失败，改为重启: {ce}", flush=True)
+                    cleared = False
+                if not cleared:
+                    try:
+                        stop_browser()
+                    except Exception:
+                        pass
+                    start_browser()
             # start_browser 内已打指纹；仅首轮详打一次（避免双份）
             log_runtime_fingerprint(page, force=False)
             # 不打印「本轮代理」（省日志；代理异常时仍有降级/切换行）
-            print(f"─── 第 {current_round}/{total} 轮 ────────────────────────")
+            print(
+                f"─── 第 {current_round}/{total} 轮 ────────────────────────"
+                f"（recycle_every={recycle_every} restart={do_full_restart}）"
+            )
 
             # 注册方案：Plan A/B/C 可单独开关；已开则按 A→B→C 顺序兜底
             try:
@@ -4210,6 +4445,34 @@ def main():
                         bump_proxy_register_success(_browser_proxy, delta=1)
                 except Exception as be:
                     print(f"[Warn] 代理成功计数回调异常: {be}")
+                # P2/3：成功后 GC；每 N 成功强制下轮重启浏览器
+                try:
+                    from runtime_gc import on_register_success
+
+                    gr = on_register_success(
+                        recycle_every=recycle_every,
+                        log=lambda m: print(m, flush=True),
+                    )
+                    if gr.get("need_browser_recycle"):
+                        force_browser_recycle = True
+                        print(
+                            f"[gc] 下轮将强制重启浏览器（成功累计达 recycle_every={recycle_every}）",
+                            flush=True,
+                        )
+                except Exception as ge:
+                    print(f"[Warn] GC 回调: {ge}", flush=True)
+
+            if result is None:
+                # 失败也做轻量 GC，下轮重启浏览器
+                force_browser_recycle = True
+                try:
+                    from runtime_gc import cleanup_runtime_memory
+
+                    cleanup_runtime_memory(
+                        log=lambda m: print(m, flush=True), force=False
+                    )
+                except Exception:
+                    pass
 
             if args.count == 0 or current_round < args.count:
                 time.sleep(0.5)

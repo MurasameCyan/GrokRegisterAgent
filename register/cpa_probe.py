@@ -29,6 +29,85 @@ def _opener(proxy: str = ""):
     return urllib.request.build_opener(*handlers) if handlers else urllib.request.build_opener()
 
 
+def probe_mini_response(
+    access_token: str,
+    *,
+    base_url: str = DEFAULT_BASE_URL,
+    proxy: str = "",
+    timeout: float = 60.0,
+    headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """POST /responses 迷你对话测活（model=grok-4.5，要求可调通）。
+
+    返回: ok, status, text?, model?, error?
+    """
+    access = str(access_token or "").strip()
+    if not access:
+        return {"ok": False, "status": 0, "error": "missing access_token", "text": ""}
+    base = str(base_url or DEFAULT_BASE_URL).rstrip("/")
+    url = f"{base}/responses"
+    payload = {
+        "model": "grok-4.5",
+        "stream": False,
+        "input": "Reply with exactly MINT_OK",
+        "reasoning": {"effort": "low"},
+    }
+    hdrs: dict[str, str] = {
+        "Authorization": f"Bearer {access}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        **DEFAULT_CLIENT_HEADERS,
+    }
+    if isinstance(headers, dict):
+        for k, v in headers.items():
+            if v is None:
+                continue
+            key = str(k)
+            if key.lower() in ("authorization", "content-type"):
+                continue
+            hdrs[key] = str(v)
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers=hdrs,
+        method="POST",
+    )
+    opener = _opener(proxy)
+    try:
+        with opener.open(req, timeout=timeout) as resp:
+            body = json.loads(resp.read().decode("utf-8", errors="replace") or "{}")
+            texts: list[str] = []
+            for item in body.get("output") or []:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") == "message":
+                    for c in item.get("content") or []:
+                        if isinstance(c, dict) and c.get("type") == "output_text":
+                            texts.append(str(c.get("text") or ""))
+            # 兼容部分代理直接返回 output_text / choices
+            if not texts and isinstance(body.get("output_text"), str):
+                texts.append(body["output_text"])
+            text = "\n".join(texts).strip()
+            return {
+                "ok": True,
+                "status": getattr(resp, "status", 200) or 200,
+                "model": body.get("model"),
+                "text": text,
+                "usage": body.get("usage"),
+                "error": None,
+            }
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8", errors="replace")[:800] if e.fp else ""
+        return {
+            "ok": False,
+            "status": int(e.code or 0),
+            "error": raw or f"HTTP {e.code}",
+            "text": "",
+        }
+    except Exception as e:
+        return {"ok": False, "status": 0, "error": str(e)[:300], "text": ""}
+
+
 def probe_models(
     access_token: str,
     *,

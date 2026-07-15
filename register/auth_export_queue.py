@@ -193,7 +193,7 @@ def queue_stats() -> dict[str, int]:
             qsize = _q.qsize()
     except Exception:
         qsize = 0
-    return {
+    stats = {
         "pending": max(0, _pending),
         "queue_size": qsize,
         "done_ok": _done_ok,
@@ -201,6 +201,13 @@ def queue_stats() -> dict[str, int]:
         "workers": _worker_count,
         "queue_max": _queue_max,
     }
+    try:
+        from auth_queue_metrics import write_metrics
+
+        write_metrics(stats)
+    except Exception:
+        pass
+    return stats
 
 
 def _run_sso_push_g2(
@@ -255,31 +262,108 @@ def _maybe_nsfw_and_sub2api(
     conf: dict[str, Any],
     proxy: str,
     log: LogFn,
+    sso: str = "",
+    cloudflare_cookies: str = "",
 ) -> None:
-    """P3：mint 成功后可选开 NSFW + 导出 sub2api。"""
+    """P3：mint 成功后可选开 NSFW + 导出 sub2api。
+
+    NSFW 使用会话 SSO cookie（gRPC UpdateUserFeatureControls），不是 CPA access_token。
+    """
     if not mint_result or not mint_result.get("ok"):
         return
-    # NSFW：对主 access 试一次（从写好的 auth 文件读 token）
+    # NSFW：始终可尝试（enable_nsfw 开时）；成败不抛、不挡队列；写 tag + auth 字段
     if _truthy(conf.get("enable_nsfw") or conf.get("enableNsfw")):
         try:
-            from nsfw_toggle import enable_nsfw_for_token
+            from nsfw_toggle import enable_nsfw_for_sso
+            from account_tags import set_nsfw_tag, patch_auth_file_nsfw
 
+            sso_val = (sso or "").strip()
+            email_val = str(mint_result.get("email") or "").strip()
             paths = mint_result.get("paths") or (
                 [mint_result.get("path")] if mint_result.get("path") else []
             )
+            if not sso_val:
+                for p in paths:
+                    if not p:
+                        continue
+                    try:
+                        doc = json.loads(Path(str(p)).read_text(encoding="utf-8"))
+                        sso_val = str(doc.get("sso") or "").strip()
+                        if not email_val:
+                            email_val = str(doc.get("email") or "").strip()
+                        if sso_val:
+                            break
+                    except Exception:
+                        continue
+            cf = ""
+            raw_cf = (cloudflare_cookies or "").strip()
+            if "cf_clearance=" in raw_cf:
+                for part in raw_cf.split(";"):
+                    part = part.strip()
+                    if part.lower().startswith("cf_clearance="):
+                        cf = part.split("=", 1)[-1].strip()
+                        break
+            elif raw_cf and "=" not in raw_cf:
+                cf = raw_cf
+            nsfw_ok = False
+            nsfw_err = ""
+            nsfw_steps = None
+            if sso_val:
+                try:
+                    r = enable_nsfw_for_sso(
+                        sso_val,
+                        cf_clearance=cf,
+                        proxy=proxy or "",
+                        log=log,
+                    )
+                    nsfw_ok = bool(r.get("ok"))
+                    nsfw_err = str(r.get("error") or "")
+                    nsfw_steps = r.get("steps")
+                    if nsfw_ok:
+                        log(f"[auth-queue] ✔ NSFW 已开启 · {r.get('message')}")
+                    else:
+                        log(f"[auth-queue] ✘ NSFW 未开启（不影响授权）: {nsfw_err}")
+                except Exception as ne:
+                    nsfw_err = str(ne)[:300]
+                    log(f"[auth-queue] ✘ NSFW 异常（不影响授权）: {nsfw_err}")
+            else:
+                nsfw_err = "no sso"
+                log("[auth-queue] NSFW 跳过：无 SSO cookie（tag=fail）")
+            # 侧车 tag（SSO/邮箱）
+            try:
+                set_nsfw_tag(
+                    enabled=nsfw_ok,
+                    email=email_val,
+                    sso=sso_val,
+                    error=nsfw_err,
+                    steps=nsfw_steps,
+                )
+            except Exception as te:
+                log(f"[auth-queue] nsfw tag write skip: {te}")
+            # 写回每个 auth 文件
             for p in paths:
                 if not p:
                     continue
                 try:
-                    doc = json.loads(Path(str(p)).read_text(encoding="utf-8"))
-                    at = str(doc.get("access_token") or "")
-                    if at:
-                        enable_nsfw_for_token(at, proxy=proxy or "", log=log)
-                        break
+                    patch_auth_file_nsfw(p, enabled=nsfw_ok, error=nsfw_err)
                 except Exception:
-                    continue
+                    pass
+            mint_result["nsfw_enabled"] = nsfw_ok
+            mint_result["nsfw_attempted"] = True
+            mint_result["nsfw_error"] = nsfw_err if not nsfw_ok else ""
         except Exception as e:
-            log(f"[auth-queue] nsfw skip: {e}")
+            log(f"[auth-queue] nsfw skip（不影响授权）: {e}")
+            try:
+                from account_tags import set_nsfw_tag
+
+                set_nsfw_tag(
+                    enabled=False,
+                    email=str(mint_result.get("email") or ""),
+                    sso=sso or "",
+                    error=str(e)[:300],
+                )
+            except Exception:
+                pass
     # sub2api 导出
     try:
         from cpa_to_sub2api import export_after_cpa_result
@@ -298,6 +382,7 @@ def _run_mint_and_auth_push(
     push_cpa: bool,
     log: LogFn,
     password: str = "",
+    cloudflare_cookies: str = "",
 ) -> dict[str, Any]:
     try:
         from auth_service import sso_to_cpa_auth
@@ -332,9 +417,16 @@ def _run_mint_and_auth_push(
                     log(
                         "[auth-queue] ⚠ 已开 Auth→CPA 自动推送，但未配置 cpa_remote_url/key 或跳过"
                     )
-            # P3：可选 NSFW + sub2api（失败不挡主流程）
+            # P3：可选 NSFW + sub2api（失败不挡主流程；NSFW 用 SSO 非 access_token）
             conf = _load_conf()
-            _maybe_nsfw_and_sub2api(r, conf=conf, proxy=proxy, log=log)
+            _maybe_nsfw_and_sub2api(
+                r,
+                conf=conf,
+                proxy=proxy,
+                log=log,
+                sso=sso,
+                cloudflare_cookies=cloudflare_cookies or "",
+            )
             return r
         # 可选：SSO 失败时密码路径 browser Device 兜底（P2）
         err = (r or {}).get("error") or "mint failed"
@@ -454,6 +546,7 @@ def _process_job(job: dict[str, Any]) -> None:
             mint_mode=mint_mode,
             push_cpa=do_cpa,
             password=password,
+            cloudflare_cookies=cf,
             log=_log,
         )
         if not mint_r.get("ok"):
@@ -487,6 +580,10 @@ def _worker_loop() -> None:
         finally:
             with _lock:
                 _pending = max(0, _pending - 1)
+            try:
+                queue_stats()
+            except Exception:
+                pass
             _q.task_done()
 
 
@@ -598,6 +695,7 @@ def enqueue_sso_to_auth(
         }
     with _lock:
         _pending += 1
+    st = queue_stats()
     _log(
         f"[auth-queue] 已入队授权流水线 email={email or '-'} "
         f"delay={delay}s（{lo}～{hi}） "
@@ -616,6 +714,7 @@ def enqueue_sso_to_auth(
         "flags": flags,
         "workers": _worker_count,
         "queue_max": _queue_max,
+        "stats": st,
     }
 
 

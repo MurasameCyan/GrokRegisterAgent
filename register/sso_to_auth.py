@@ -613,13 +613,20 @@ def upload_cpa_auth_remote(
     management_key: str,
     record: dict,
     timeout: int = 30,
+    retries: int = 3,
+    retry_backoff_sec: float = 1.5,
 ) -> str:
     """通过 CPA Management API 上传 auth 文件到远程实例。
 
     POST /v0/management/auth-files?name=<file.json>
     Header: Authorization: Bearer <management_key>
     Body: raw JSON auth record
+
+    retries: 网络/5xx 重试次数（默认 3）；4xx 除 408/429 外不重试。
+    timeout / retries 可被 config.json: cpa_remote_timeout / cpa_remote_retries 覆盖。
     """
+    import time
+    from pathlib import Path as _Path
     import requests as _requests
 
     base = str(base_url or "").strip().rstrip("/")
@@ -632,24 +639,63 @@ def upload_cpa_auth_remote(
     if base.endswith("/v1"):
         base = base[:-3].rstrip("/")
 
+    # 配置覆盖
+    conf_path = _Path(__file__).resolve().parent / "config.json"
+    try:
+        conf = json.loads(conf_path.read_text(encoding="utf-8"))
+        if conf.get("cpa_remote_timeout") is not None:
+            timeout = int(conf.get("cpa_remote_timeout") or timeout)
+        if conf.get("cpa_remote_retries") is not None:
+            retries = int(conf.get("cpa_remote_retries") or retries)
+        if conf.get("cpa_remote_retry_backoff_sec") is not None:
+            retry_backoff_sec = float(
+                conf.get("cpa_remote_retry_backoff_sec") or retry_backoff_sec
+            )
+    except Exception:
+        pass
+    timeout = max(5, min(int(timeout or 30), 180))
+    retries = max(1, min(int(retries or 3), 8))
+    retry_backoff_sec = max(0.2, min(float(retry_backoff_sec or 1.5), 30.0))
+
     name = cpa_auth_filename(record)
     url = f"{base}/v0/management/auth-files"
-    resp = _requests.post(
-        url,
-        params={"name": name},
-        headers={
-            "Authorization": f"Bearer {key}",
-            "Content-Type": "application/json",
-        },
-        data=json.dumps(record, ensure_ascii=False).encode("utf-8"),
-        timeout=timeout,
+    body_bytes = json.dumps(record, ensure_ascii=False).encode("utf-8")
+    last_err: Exception | None = None
+    for attempt in range(1, retries + 1):
+        try:
+            resp = _requests.post(
+                url,
+                params={"name": name},
+                headers={
+                    "Authorization": f"Bearer {key}",
+                    "Content-Type": "application/json",
+                },
+                data=body_bytes,
+                timeout=timeout,
+            )
+            if resp.status_code < 400:
+                return name
+            body = (resp.text or "").strip()
+            if len(body) > 300:
+                body = body[:300] + "..."
+            code = int(resp.status_code or 0)
+            # 4xx 除 408/429 不重试
+            if 400 <= code < 500 and code not in (408, 429):
+                raise RuntimeError(
+                    f"远程上传失败 HTTP {code}: {body or resp.reason}"
+                )
+            last_err = RuntimeError(
+                f"远程上传失败 HTTP {code}: {body or resp.reason}"
+            )
+        except RuntimeError:
+            raise
+        except Exception as e:
+            last_err = e
+        if attempt < retries:
+            time.sleep(retry_backoff_sec * attempt)
+    raise RuntimeError(
+        f"远程上传失败（已重试 {retries} 次）: {last_err}"
     )
-    if resp.status_code >= 400:
-        body = (resp.text or "").strip()
-        if len(body) > 300:
-            body = body[:300] + "..."
-        raise RuntimeError(f"远程上传失败 HTTP {resp.status_code}: {body or resp.reason}")
-    return name
 
 
 def write_auth_json(path: Path, auth_key: str, entry: dict) -> None:

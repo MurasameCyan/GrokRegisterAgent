@@ -215,6 +215,46 @@ app.get('/api/system/update-check', async (_req, res) => {
   res.json(await checkForUpdate());
 });
 
+/** 授权队列 metrics（register/data/auth_queue_metrics.json） */
+app.get('/api/auth-queue/metrics', async (_req, res) => {
+  try {
+    const { loadSettings } = await import('./settingsStore.js');
+    const { resolveRegisterRuntime } = await import('./bot/registerRuntime.js');
+    const { existsSync, readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const settings = await loadSettings();
+    const rt = resolveRegisterRuntime(settings);
+    const candidates: string[] = [];
+    if (rt?.registerDir) {
+      candidates.push(join(rt.registerDir, 'data', 'auth_queue_metrics.json'));
+      candidates.push(join(rt.registerDir, 'auth_queue_metrics.json'));
+    }
+    candidates.push(join(process.cwd(), 'register', 'data', 'auth_queue_metrics.json'));
+    for (const p of candidates) {
+      if (!existsSync(p)) continue;
+      try {
+        const data = JSON.parse(readFileSync(p, 'utf-8')) as Record<string, unknown>;
+        res.json({ ok: true, path: p, ...data });
+        return;
+      } catch {
+        /* next */
+      }
+    }
+    res.json({
+      ok: true,
+      pending: 0,
+      queue_size: 0,
+      done_ok: 0,
+      done_fail: 0,
+      workers: 0,
+      queue_max: 0,
+      stale: true
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: (err as Error).message });
+  }
+});
+
 app.get('/api/run/status', async (_req, res) => {
   res.json(registerBot.getStatus());
 });
