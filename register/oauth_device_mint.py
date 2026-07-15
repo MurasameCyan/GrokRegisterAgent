@@ -1,69 +1,33 @@
 # -*- coding: utf-8 -*-
 """
 Device Flow mint（mode=B）：SSO cookie → access/refresh。
-源自 grok-regkit cpa_xai/oauth_device + protocol_mint 精简版。
-注意：部分环境 access_token 无 referrer claim，cli-chat-proxy 可能 403；
-与 Auth Code+PKCE（mode=A）并存，由 cpa_mint_mode 选择。
+
+对齐 7sso2auth / regkit：
+- client_id = b1a00492-…（grok-build），禁止用 "app"（会 400 client_id is required）
+- approve 阶段带 referrer=grok-build，服务端才把 claim 签进 access_token
 """
 from __future__ import annotations
 
-import json
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
 from typing import Any, Callable, Optional
 
-CLIENT_ID = "app"
+CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828"
 ISSUER = "https://auth.x.ai"
 DEVICE_CODE_URL = f"{ISSUER}/oauth2/device/code"
 TOKEN_URL = f"{ISSUER}/oauth2/token"
-SCOPE = "openid offline_access"
 VERIFY_URL = f"{ISSUER}/oauth2/device/verify"
 APPROVE_URL = f"{ISSUER}/oauth2/device/approve"
+SCOPE = (
+    "openid profile email offline_access grok-cli:access "
+    "api:access conversations:read conversations:write"
+)
+GROK_REFERRER = "grok-build"
 
 LogFn = Callable[[str], None]
 
 
 def _noop(_: str) -> None:
     return None
-
-
-def _post_form(
-    url: str,
-    form: dict[str, str],
-    *,
-    timeout: float = 30.0,
-    proxy: str = "",
-    headers: Optional[dict[str, str]] = None,
-) -> tuple[int, Any]:
-    data = urllib.parse.urlencode(form).encode("utf-8")
-    hdrs = {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Accept": "application/json",
-        "User-Agent": "GrokRegisterAgent-device-mint/1.0",
-    }
-    if headers:
-        hdrs.update(headers)
-    req = urllib.request.Request(url, data=data, method="POST", headers=hdrs)
-    handlers: list = []
-    if proxy:
-        handlers.append(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
-    opener = urllib.request.build_opener(*handlers) if handlers else urllib.request.build_opener()
-    try:
-        with opener.open(req, timeout=timeout) as resp:
-            body = resp.read().decode("utf-8", errors="replace")
-            status = getattr(resp, "status", 200) or 200
-            try:
-                return int(status), json.loads(body)
-            except json.JSONDecodeError:
-                return int(status), body
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace")
-        try:
-            return int(e.code), json.loads(body)
-        except json.JSONDecodeError:
-            return int(e.code), body
 
 
 def mint_tokens_device_flow(
@@ -82,16 +46,46 @@ def mint_tokens_device_flow(
     if not sso:
         return {"ok": False, "error": "empty sso", "mode": "device"}
 
+    try:
+        from curl_cffi import requests as cf_requests
+    except ImportError as e:
+        return {"ok": False, "error": f"curl_cffi required: {e}", "mode": "device"}
+
+    proxies = {"http": proxy, "https": proxy} if proxy else None
+    s = cf_requests.Session()
+    if proxies:
+        s.proxies = proxies
+    for domain in (".x.ai", "accounts.x.ai", "auth.x.ai"):
+        s.cookies.set("sso", sso, domain=domain)
+        s.cookies.set("sso-rw", sso, domain=domain)
+
+    # 探活 SSO
+    try:
+        r = s.get("https://accounts.x.ai/", impersonate="chrome120", timeout=15)
+        if "sign-in" in str(r.url) or "sign-up" in str(r.url):
+            return {"ok": False, "error": "sso invalid (sign-in redirect)", "mode": "device"}
+    except Exception as e:
+        return {"ok": False, "error": f"sso probe: {e}", "mode": "device"}
+
     lg("[mint-B] device code…")
-    status, body = _post_form(
-        DEVICE_CODE_URL,
-        {"client_id": CLIENT_ID, "scope": SCOPE},
-        proxy=proxy,
-    )
-    if status != 200 or not isinstance(body, dict):
+    try:
+        r = s.post(
+            DEVICE_CODE_URL,
+            data={"client_id": CLIENT_ID, "scope": SCOPE},
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Accept": "application/json",
+            },
+            impersonate="chrome120",
+            timeout=20,
+        )
+        body = r.json() if r.text else {}
+    except Exception as e:
+        return {"ok": False, "error": f"device code: {e}", "mode": "device"}
+    if r.status_code != 200 or not isinstance(body, dict):
         return {
             "ok": False,
-            "error": f"device code HTTP {status}: {body!r}"[:200],
+            "error": f"device code HTTP {r.status_code}: {body!r}"[:220],
             "mode": "device",
         }
     device_code = str(body.get("device_code") or "").strip()
@@ -104,80 +98,65 @@ def mint_tokens_device_flow(
     ).strip()
     if not device_code or not user_code:
         return {"ok": False, "error": "device code missing fields", "mode": "device"}
+    lg(f"[mint-B] user_code={user_code}")
 
-    # curl_cffi 带 SSO 走 verify/approve（更像浏览器）
     try:
-        from curl_cffi import requests as cf_requests
-
-        sess = cf_requests.Session(impersonate="chrome131")
-        proxies = {"http": proxy, "https": proxy} if proxy else None
-        cookie = f"sso={sso}; sso-rw={sso}"
-        headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-            ),
-            "Cookie": cookie,
-            "Accept": "application/json, text/plain, */*",
-            "Origin": "https://accounts.x.ai",
-            "Referer": "https://accounts.x.ai/",
-        }
         lg("[mint-B] GET verification_uri_complete…")
-        sess.get(vcomplete, headers=headers, proxies=proxies, timeout=30, allow_redirects=True)
+        s.get(vcomplete, impersonate="chrome120", timeout=20, allow_redirects=True)
         lg("[mint-B] POST device/verify…")
-        vr = sess.post(
+        vr = s.post(
             VERIFY_URL,
-            data={"user_code": user_code, "client_id": CLIENT_ID},
-            headers={**headers, "Content-Type": "application/x-www-form-urlencoded"},
-            proxies=proxies,
-            timeout=30,
+            data={"user_code": user_code},
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            impersonate="chrome120",
+            timeout=20,
+            allow_redirects=True,
         )
-        lg(f"[mint-B] verify status={vr.status_code}")
-        lg("[mint-B] POST device/approve…")
-        ar = sess.post(
+        if "consent" not in str(vr.url):
+            # 部分部署 verify 后 URL 不含 consent 字样仍可 approve
+            lg(f"[mint-B] verify status={vr.status_code} url={str(vr.url)[:80]}")
+        lg("[mint-B] POST device/approve (referrer=grok-build)…")
+        ar = s.post(
             APPROVE_URL,
             data={
                 "user_code": user_code,
-                "client_id": CLIENT_ID,
-                "scope": SCOPE,
+                "action": "allow",
+                "principal_type": "User",
+                "principal_id": "",
+                # 关键：approve 带 referrer 才签进 access_token
+                "referrer": GROK_REFERRER,
             },
-            headers={**headers, "Content-Type": "application/x-www-form-urlencoded"},
-            proxies=proxies,
-            timeout=30,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            impersonate="chrome120",
+            timeout=20,
+            allow_redirects=True,
         )
-        lg(f"[mint-B] approve status={ar.status_code}")
-    except ImportError:
-        lg("[mint-B] curl_cffi 缺失，verify/approve 可能失败")
-        # 降级：仅 cookie 头 form post
-        _post_form(
-            VERIFY_URL,
-            {"user_code": user_code, "client_id": CLIENT_ID},
-            proxy=proxy,
-            headers={"Cookie": f"sso={sso}"},
-        )
-        _post_form(
-            APPROVE_URL,
-            {"user_code": user_code, "client_id": CLIENT_ID, "scope": SCOPE},
-            proxy=proxy,
-            headers={"Cookie": f"sso={sso}"},
-        )
+        lg(f"[mint-B] approve status={ar.status_code} url={str(ar.url)[:80]}")
     except Exception as e:
         return {"ok": False, "error": f"verify/approve: {e}", "mode": "device"}
 
-    # poll token
     lg("[mint-B] poll token…")
-    deadline = time.time() + min(float(poll_timeout), float(expires_in))
+    deadline = time.time() + min(float(poll_timeout), float(expires_in), 180.0)
     while time.time() < deadline:
-        st, tb = _post_form(
-            TOKEN_URL,
-            {
-                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-                "device_code": device_code,
-                "client_id": CLIENT_ID,
-            },
-            proxy=proxy,
-        )
-        if st == 200 and isinstance(tb, dict) and tb.get("access_token"):
+        try:
+            tr = s.post(
+                TOKEN_URL,
+                data={
+                    "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                    "device_code": device_code,
+                    "client_id": CLIENT_ID,
+                },
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Accept": "application/json",
+                },
+                impersonate="chrome120",
+                timeout=20,
+            )
+            tb = tr.json() if tr.text else {}
+        except Exception as e:
+            return {"ok": False, "error": f"poll: {e}", "mode": "device"}
+        if tr.status_code == 200 and isinstance(tb, dict) and tb.get("access_token"):
             lg("[mint-B] token ok")
             return {
                 "ok": True,
@@ -188,9 +167,7 @@ def mint_tokens_device_flow(
                 "expires_in": tb.get("expires_in"),
                 "raw": tb,
             }
-        err = ""
-        if isinstance(tb, dict):
-            err = str(tb.get("error") or "")
+        err = str((tb or {}).get("error") or "") if isinstance(tb, dict) else ""
         if err in ("authorization_pending", "slow_down"):
             time.sleep(interval + (2 if err == "slow_down" else 0))
             continue

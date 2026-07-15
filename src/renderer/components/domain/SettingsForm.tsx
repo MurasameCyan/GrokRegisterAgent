@@ -150,8 +150,6 @@ function ProxyPoolPreview({
   probingKey,
   failCount,
   onProbeOne,
-  onProbeAll,
-  onRemoveFailed,
   onRemoveOne
 }: {
   entries: ProxyPoolEntry[];
@@ -159,50 +157,16 @@ function ProxyPoolPreview({
   probingKey: string | null;
   failCount: number;
   onProbeOne: (proxy: string) => void;
-  onProbeAll: () => void;
-  onRemoveFailed: () => void;
+  /** 批量删除/全部测活仅用折叠条顶部按钮，此处不再重复 */
   onRemoveOne: (proxy: string) => void;
 }) {
   if (entries.length === 0) return null;
-  const busy = probingKey !== null;
   return (
     <div className="mt-3 space-y-2 rounded-xl border border-border/60 bg-muted/40 p-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-[12px] text-muted-foreground">
-          已识别 {entries.length} 条
-          {failCount > 0 ? ` · 失败 ${failCount}` : ''}
-          （并发测活 · # 标签已解码）
-        </p>
-        <div className="flex flex-wrap items-center gap-2">
-          {failCount > 0 && (
-            <Button
-              type="button"
-              size="sm"
-              variant="danger"
-              disabled={busy}
-              onClick={onRemoveFailed}
-              title="从代理池文本中删除全部测活失败项"
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-              删除失败 ({failCount})
-            </Button>
-          )}
-          <Button
-            type="button"
-            size="sm"
-            variant="secondary"
-            disabled={busy || entries.length === 0}
-            onClick={onProbeAll}
-          >
-            {probingKey === '__all__' ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <Activity className="h-3.5 w-3.5" />
-            )}
-            全部测活
-          </Button>
-        </div>
-      </div>
+      <p className="text-[12px] text-muted-foreground">
+        已识别 {entries.length} 条
+        {failCount > 0 ? ` · 失败 ${failCount}` : ''}
+      </p>
       <ul className="max-h-56 space-y-1.5 overflow-y-auto">
         {entries.map((e) => {
           const probe = probes[e.proxy] || { status: 'idle' as const };
@@ -1052,7 +1016,9 @@ export function SettingsForm() {
               hint={
                 provider === 'duckmail' || provider === 'yyds'
                   ? 'Bearer Token（写入 mail_admin_auth）'
-                  : 'Temp Email 管理员密码（X-Admin-Auth）'
+                  : draft.cloudflareAuthMode === 'none'
+                    ? '匿名模式可不填'
+                    : 'Temp Email 管理员密码 / API Key（随鉴权模式）'
               }
               error={errors['mail.adminAuth']}
             >
@@ -1063,6 +1029,24 @@ export function SettingsForm() {
               />
             </Field>
           </div>
+          {isCloudflare ? (
+            <Field
+              label="Cloudflare 鉴权模式"
+              hint="admin=x-admin-auth+/admin/new_address；none=匿名+/api/new_address。调试: register/cf_mail_debug.py"
+            >
+              <select
+                className={SELECT_CLASS}
+                value={draft.cloudflareAuthMode || 'x-admin-auth'}
+                onChange={(e) => update('cloudflareAuthMode', e.target.value)}
+              >
+                <option value="x-admin-auth">x-admin-auth（默认管理密码）</option>
+                <option value="none">none（匿名 API）</option>
+                <option value="bearer">bearer（Authorization）</option>
+                <option value="x-api-key">x-api-key</option>
+                <option value="query-key">query-key（?key=）</option>
+              </select>
+            </Field>
+          ) : null}
 
           {/* 域名：仅 Cloudflare 显示域名池；其他方案可选单域名提示 */}
           {isCloudflare ? (
@@ -1380,13 +1364,7 @@ export function SettingsForm() {
                       </div>
                       {pendingPoolOpen && (
                         <div className="space-y-2 border-t border-border/50 px-3.5 pb-3.5 pt-3">
-                          <p className="text-[12px] text-muted-foreground">
-                            网页导入、测活失败、注册页不可达等会落在此池。
-                            <strong className="font-medium text-foreground">
-                              仅「可用池」参与注册
-                            </strong>
-                            ；三条件（代理连通 + xAI + CF）全过才迁入可用。已取消出口 IP 探测。
-                          </p>
+
                           <textarea
                             ref={pendingPoolRef}
                             className={cn(TEXTAREA_CLASS, 'min-h-[120px] font-mono text-[13px]')}
@@ -1405,8 +1383,6 @@ export function SettingsForm() {
                               probingKey={probingKey}
                               failCount={failedProxies.length}
                               onProbeOne={probeOne}
-                              onProbeAll={probeAll}
-                              onRemoveFailed={() => void removeFailed('pending')}
                               onRemoveOne={(p) => void removeOne(p, 'pending')}
                             />
                           )}
@@ -1496,10 +1472,7 @@ export function SettingsForm() {
                       </div>
                       {alivePoolOpen && (
                         <div className="space-y-2 border-t border-border/50 px-3.5 pb-3.5 pt-3">
-                          <p className="text-[12px] text-muted-foreground">
-                            注册机<strong className="font-medium text-foreground">只用本池</strong>
-                            。注册成功会给对应条目累加绿色「成功 N」。失败时可能降回「待定池」。已取消出口 IP 探测。
-                          </p>
+
                           <textarea
                             className={TEXTAREA_CLASS}
                             value={draft.proxyPoolAlive || ''}
@@ -1729,13 +1702,97 @@ export function SettingsForm() {
         <CardBody className="space-y-3">
           <ToggleRow
             label="自动转换 Auth"
-            hint="注册成功后授权码换 token，写出 xai-*.json 到 DATA_DIR/auth。远程 CPA/grok2api 见「推送设置」"
+            hint="注册只交 SSO 到授权队列：延迟后后台执行 SSO 推送 / mint / Auth 推送，不阻塞注册"
             checked={draft.autoAuthExport}
             onChange={(v) => update('autoAuthExport', v)}
           />
+          {draft.autoAuthExport !== false && (
+            <>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field
+                label="转换延迟下限（秒）"
+                hint="拿到 SSO 后至少等待再 mint，默认 60"
+              >
+                <Input
+                  type="number"
+                  min={0}
+                  max={3600}
+                  value={draft.autoAuthDelayMinSec ?? 60}
+                  onChange={(e) => {
+                    const n = Number(e.target.value);
+                    update(
+                      'autoAuthDelayMinSec',
+                      Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 60
+                    );
+                  }}
+                />
+              </Field>
+              <Field
+                label="转换延迟上限（秒）"
+                hint="与下限组成随机等待，默认 120（1～2 分钟）"
+              >
+                <Input
+                  type="number"
+                  min={0}
+                  max={7200}
+                  value={draft.autoAuthDelayMaxSec ?? 120}
+                  onChange={(e) => {
+                    const n = Number(e.target.value);
+                    update(
+                      'autoAuthDelayMaxSec',
+                      Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 120
+                    );
+                  }}
+                />
+              </Field>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field
+                label="授权队列 Worker"
+                hint="并发 mint/推送数，1～8，默认 2；高并发注册时提高吞吐"
+              >
+                <Input
+                  type="number"
+                  min={1}
+                  max={8}
+                  value={draft.authExportWorkers ?? 2}
+                  onChange={(e) => {
+                    const n = Number(e.target.value);
+                    update(
+                      'authExportWorkers',
+                      Number.isFinite(n)
+                        ? Math.max(1, Math.min(8, Math.floor(n)))
+                        : 2
+                    );
+                  }}
+                />
+              </Field>
+              <Field
+                label="队列上限（背压）"
+                hint="0=2×Worker；满则入队等待，防堆积崩"
+              >
+                <Input
+                  type="number"
+                  min={0}
+                  max={64}
+                  value={draft.authExportQueueMax ?? 0}
+                  onChange={(e) => {
+                    const n = Number(e.target.value);
+                    update(
+                      'authExportQueueMax',
+                      Number.isFinite(n)
+                        ? Math.max(0, Math.min(64, Math.floor(n)))
+                        : 0
+                    );
+                  }}
+                />
+              </Field>
+            </div>
+            </>
+          )}
           <Field
             label="CPA Mint 模式"
-            hint="A=PKCE；B=Device；C=double 同时产出两份不同通道 auth，分别测活（互不影响，不会因另一份而失效）"
+            hint="A=PKCE；B=Device；C=double 同时产出两份不同通道 auth，分别测活（互不影响，不会因另一份而失效）。mint 后无 grok-4.5 不进 CPA"
           >
             <select
               className={SELECT_CLASS}
@@ -1756,6 +1813,18 @@ export function SettingsForm() {
               </option>
             </select>
           </Field>
+          <ToggleRow
+            label="开启 NSFW（可选）"
+            hint="mint 成功后尝试打开 NSFW；失败不挡主流程"
+            checked={!!draft.enableNsfw}
+            onChange={(v) => update('enableNsfw', v)}
+          />
+          <ToggleRow
+            label="导出 sub2api（可选）"
+            hint="mint 成功后写 sub2api_exports/；默认关"
+            checked={!!draft.sub2apiExportEnabled}
+            onChange={(v) => update('sub2apiExportEnabled', v)}
+          />
           <ToggleRow
             label="测活死号自动删除"
             hint="默认关。开启后 Auth 测活遇 401/402/403 才删除本地 Auth 文件；关闭则仅标记死号"
@@ -1889,7 +1958,7 @@ export function SettingsForm() {
       <Card collapsible defaultCollapsed>
         <CardHeader
           title="推送设置"
-          description="每个目标分「允许推送」与「自动推送」。允许=可手动推/展开连接；自动=注册成功后推送（开自动会同时开允许）。SSO/Auth 的 g2 互不联动。"
+          description="每个目标分「允许推送」与「自动推送」。允许=可手动推；自动=授权队列延迟后推送（与 Auth 转换同一队列，不挡注册）。SSO/Auth 的 g2 互不联动。"
           right={
             <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-muted text-muted-foreground">
               <KeyRound className="h-4 w-4" aria-hidden />

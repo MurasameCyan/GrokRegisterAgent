@@ -1914,6 +1914,35 @@ return '';
     return ""
 
 
+def _inject_turnstile_token(token: str) -> bool:
+    """将已有 Turnstile token 写回隐藏 input（二次复用）。"""
+    token = str(token or "").strip()
+    if not token:
+        return False
+    try:
+        return bool(
+            page.run_js(
+                """
+const token = arguments[0];
+const challengeInput = document.querySelector('input[name="cf-turnstile-response"]');
+if (!challengeInput) return false;
+const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+if (nativeSetter) {
+  nativeSetter.call(challengeInput, token);
+} else {
+  challengeInput.value = token;
+}
+challengeInput.dispatchEvent(new Event('input', { bubbles: true }));
+challengeInput.dispatchEvent(new Event('change', { bubbles: true }));
+return String(challengeInput.value || '').trim() === String(token || '').trim();
+                """,
+                token,
+            )
+        )
+    except Exception:
+        return False
+
+
 def _turnstile_widget_state():
     """
     观察 Turnstile 当前状态。
@@ -2860,27 +2889,32 @@ return value ? 'ready' : 'pending';
                 turnstile_attempted = True
                 turnstile_token = getTurnstileToken(timeout=remain)
                 if turnstile_token:
-                    synced = page.run_js(
-                        """
-const token = arguments[0];
-const challengeInput = document.querySelector('input[name="cf-turnstile-response"]');
-if (!challengeInput) {
-    return false;
-}
-const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
-if (nativeSetter) {
-    nativeSetter.call(challengeInput, token);
-} else {
-    challengeInput.value = token;
-}
-challengeInput.dispatchEvent(new Event('input', { bubbles: true }));
-challengeInput.dispatchEvent(new Event('change', { bubbles: true }));
-return String(challengeInput.value || '').trim() === String(token || '').trim();
-                        """,
-                        turnstile_token,
-                    )
-                    if synced:
+                    if _inject_turnstile_token(turnstile_token):
                         print("[*] Turnstile 响应已同步到最终注册表单。")
+
+        # P1：提交前若 token 被清空/卡住，二次复用已有 token 或再取一次
+        if turnstile_state == "pending" or turnstile_state == "not-found":
+            pass
+        else:
+            # ready 时也校验页面是否仍持有 token
+            cur = _read_turnstile_token()
+            if cur:
+                turnstile_token = cur
+        if not _read_turnstile_token() and turnstile_token:
+            print("[*] 页面 Turnstile token 丢失，二次注入已有 token…")
+            _inject_turnstile_token(turnstile_token)
+        elif not _read_turnstile_token() and time.time() + 8 < deadline:
+            # 卡住：soft reset + 再取一次
+            print("[*] 提交前 Turnstile 仍空，soft reset 后二次获取…")
+            try:
+                _soft_reset_turnstile()
+            except Exception:
+                pass
+            extra = getTurnstileToken(timeout=min(25, max(8, deadline - time.time() - 2)))
+            if extra:
+                turnstile_token = extra
+                _inject_turnstile_token(extra)
+                print("[*] Turnstile 二次复用完成。")
 
         time.sleep(0.6 if not plan_b else 0.9)
 
@@ -3101,9 +3135,11 @@ def wait_for_grok_com_landing(timeout: int = 90) -> bool:
     # 之前的版本在重定向链跑完之前就已经在 wait_for_sso_cookie 拿到 accounts.x.ai 的
     # sso 抢跑返回，warm-up 接着用硬跳 (page.get) 去 grok.com，结果落在未登录状态。
     # 这里显式等到 URL 真正变成 grok.com 且页面进入登录态再返回。
+    # P1：最终页 CF/Turnstile 卡住时 soft reset + 二次 token 复用。
     global page
     deadline = time.time() + timeout
     last_url = ""
+    cf_retry = 0
     while time.time() < deadline:
         try:
             refresh_active_page()
@@ -3111,6 +3147,37 @@ def wait_for_grok_com_landing(timeout: int = 90) -> bool:
             if current_url != last_url:
                 print(f"[*] 等待重定向到 grok.com，当前: {current_url}")
                 last_url = current_url
+
+            # 最终页仍停在 accounts.x.ai 且出现 Turnstile / CF 挑战
+            stuck_cf = False
+            try:
+                st = _turnstile_widget_state() if "accounts.x.ai" in current_url else {}
+                if st.get("failure") or st.get("collapsedOnly"):
+                    stuck_cf = True
+                if not stuck_cf and "accounts.x.ai" in current_url:
+                    body_cf = page.run_js(
+                        r"""
+const t = (document.body && (document.body.innerText || document.body.textContent) || '');
+return /checking your browser|just a moment|cf-browser-verification|turnstile|verify you are human/i.test(t)
+  || !!document.querySelector('iframe[src*="challenges.cloudflare.com"], input[name="cf-turnstile-response"]');
+"""
+                    )
+                    stuck_cf = bool(body_cf)
+            except Exception:
+                stuck_cf = False
+            if stuck_cf and cf_retry < 3 and time.time() + 12 < deadline:
+                cf_retry += 1
+                print(f"[*] 最终页疑似 CF/Turnstile 卡住，二次复用 #{cf_retry}…")
+                try:
+                    _soft_reset_turnstile()
+                except Exception:
+                    pass
+                tok = getTurnstileToken(timeout=min(20, max(8, deadline - time.time() - 5)))
+                if tok:
+                    _inject_turnstile_token(tok)
+                    print(f"[*] 最终页 Turnstile 二次复用完成 len={len(tok)}")
+                time.sleep(1.2)
+                continue
 
             if "grok.com" in current_url:
                 logged_in = bool(page.run_js(r"""
@@ -3787,61 +3854,19 @@ def run_single_registration(
         profile = {**profile, "plan": plan_mode}
     append_sso_to_txt(sso_value, output_path, email=email, password=password)
 
-    # SSO → CPA auth（data/auth/xai-<email>.json）；失败不阻断本轮成功
-    auth_status = {"attempted": False, "ok": False}
-    if _auto_auth_export and sso_to_cpa_auth is not None and sso_value:
-        auth_status["attempted"] = True
+    # 授权流水线全部移交后台队列：SSO 推送 / Auth 转换 / Auth 推送
+    # 注册主流程只落盘 SSO，不阻塞下一轮
+    auth_status = {"attempted": False, "ok": False, "queued": False}
+    grok2api_status = {"attempted": False, "ok": False, "queued": False}
+    if sso_value:
         try:
             proxy_for_auth = ""
             try:
                 proxy_for_auth = next_proxy(_browser_proxy) or _browser_proxy or ""
             except Exception:
                 proxy_for_auth = _browser_proxy or ""
-            auth_status = sso_to_cpa_auth(
-                sso=sso_value,
-                email=email,
-                proxy=proxy_for_auth,
-                log=lambda m: print(m),
-            )
-            auth_status["attempted"] = True
-        except Exception as e:
-            print(f"[Warn] SSO→auth 导出异常（不影响 sso 落盘）: {e}")
-            auth_status = {"attempted": True, "ok": False, "error": str(e)}
 
-    # grok2api 推送（移植自 grok-register-web；失败不阻断）
-    grok2api_status = {"attempted": False, "ok": False}
-    if sso_value:
-        try:
-            from grok2api_client import (
-                load_grok2api_settings_from_config,
-                upload_registered_sso,
-            )
-
-            g2_settings = load_grok2api_settings_from_config()
-            # 合并扁平 config 字段
-            try:
-                with open(
-                    os.path.join(os.path.dirname(__file__), "config.json"),
-                    "r",
-                    encoding="utf-8",
-                ) as _gf:
-                    _gconf = _json_mod.load(_gf)
-                for _gk in (
-                    "grok2api_auto_upload",
-                    "push_sso_to_grok2api",
-                    "push_auth_to_grok2api",
-                    "push_auth_to_cpa",
-                    "grok2api_url",
-                    "grok2api_username",
-                    "grok2api_password",
-                    "grok2api_upload_mode",
-                ):
-                    if _gk in _gconf and _gk not in g2_settings:
-                        g2_settings[_gk] = _gconf[_gk]
-            except Exception:
-                pass
-
-            # 尽量附带浏览器 UA / CF cookie（web egress 上下文）
+            # 浏览器 UA / CF cookie 随任务带走，队列里 SSO→g2 可用
             ua_hint = ""
             cf_hint = ""
             try:
@@ -3869,32 +3894,64 @@ def run_single_registration(
             except Exception:
                 pass
 
-            grok2api_status["attempted"] = True
-            up = upload_registered_sso(
-                g2_settings,
-                sso_value,
-                email=email or "",
+            from auth_export_queue import enqueue_authorization
+
+            mint_mode = ""
+            try:
+                with open(
+                    os.path.join(os.path.dirname(__file__), "config.json"),
+                    "r",
+                    encoding="utf-8",
+                ) as _mf:
+                    mint_mode = str(_json_mod.load(_mf).get("cpa_mint_mode") or "").strip()
+            except Exception:
+                mint_mode = ""
+
+            q = enqueue_authorization(
+                sso=sso_value,
+                email=email,
+                password=password,
+                proxy=proxy_for_auth,
+                mint_mode=mint_mode,
                 user_agent=ua_hint,
                 cloudflare_cookies=cf_hint,
-                log=lambda m: print(m),
+                log=lambda m: print(m, flush=True),
             )
-            if up is None:
-                grok2api_status = {"attempted": False, "ok": False, "skipped": True}
+            flags = q.get("flags") or {}
+            auth_status = {
+                "attempted": bool(flags.get("auto_auth")),
+                "ok": bool(q.get("queued") or q.get("skipped")),
+                "queued": bool(q.get("queued")),
+                "delay_sec": q.get("delay_sec"),
+                "pending": q.get("pending"),
+                "mint_mode": q.get("mint_mode"),
+                "error": q.get("error"),
+            }
+            grok2api_status = {
+                "attempted": bool(flags.get("sso_g2")),
+                "ok": bool(q.get("queued") or q.get("skipped")),
+                "queued": bool(q.get("queued")),
+                "deferred": True,
+            }
+            if q.get("queued"):
+                print(
+                    f"[*] 授权已入队后台 · {q.get('delay_sec')}s 后执行"
+                    f"（SSO推送/Auth转换/Auth推送）· email={email or '-'}",
+                    flush=True,
+                )
+            elif q.get("skipped"):
+                print(
+                    f"[*] 授权未入队（自动转换与 SSO 推送均关）· email={email or '-'}",
+                    flush=True,
+                )
             else:
-                grok2api_status = {
-                    "attempted": True,
-                    "ok": True,
-                    "mode": up.get("mode"),
-                    "result": {
-                        k: up.get(k)
-                        for k in ("import", "conversion", "mode")
-                        if k in up
-                    },
-                }
-                print(f"[*] grok2api 上传成功 mode={up.get('mode')}")
+                print(f"[Warn] 授权入队失败: {q.get('error')}", flush=True)
+                auth_status["ok"] = False
+                grok2api_status["ok"] = False
         except Exception as e:
-            print(f"[Warn] grok2api 上传失败（不影响 sso 落盘）: {e}")
-            grok2api_status = {"attempted": True, "ok": False, "error": str(e)[:300]}
+            print(f"[Warn] 授权入队异常（不影响 sso 落盘）: {e}", flush=True)
+            auth_status = {"attempted": True, "ok": False, "queued": False, "error": str(e)}
+            grok2api_status = {"attempted": False, "ok": False, "error": str(e)[:200]}
 
     if extract_numbers:
         extract_visible_numbers()
@@ -4159,6 +4216,35 @@ def main():
 
     finally:
         stop_browser()
+        # 后台 SSO→Auth 队列：等待已入队任务完成（含延迟），避免进程退出丢任务
+        try:
+            from auth_export_queue import queue_stats, wait_queue_idle
+
+            st = queue_stats()
+            if st.get("pending", 0) > 0 or st.get("queue_size", 0) > 0:
+                # 最长等 delay_max + mint 余量（默认约 3 分钟量级；可配置更长）
+                try:
+                    from auth_export_queue import load_delay_range
+
+                    _lo, _hi = load_delay_range()
+                    wait_cap = float(_hi) + 180.0
+                except Exception:
+                    wait_cap = 300.0
+                print(
+                    f"[auth-queue] 注册结束，等待后台转换队列"
+                    f"（pending≈{st.get('pending')} · 最长 {wait_cap:.0f}s）…",
+                    flush=True,
+                )
+                ok = wait_queue_idle(timeout=wait_cap)
+                st2 = queue_stats()
+                print(
+                    f"[auth-queue] 队列{'已清空' if ok else '超时仍有剩余'}"
+                    f" · ok={st2.get('done_ok')} fail={st2.get('done_fail')}"
+                    f" pending≈{st2.get('pending')}",
+                    flush=True,
+                )
+        except Exception as qe:
+            print(f"[Warn] 等待 auth 队列异常: {qe}", flush=True)
         print(f"")
         print(f"══════════════════════════════════════")
         print(f"  注册机运行结束")

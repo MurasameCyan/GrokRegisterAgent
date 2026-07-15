@@ -15,7 +15,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from cpa_schema import DEFAULT_BASE_URL, GROK_CLIENT_VERSION
+from cpa_schema import DEFAULT_BASE_URL, DEFAULT_CLIENT_HEADERS, GROK_CLIENT_VERSION
 
 # 与 cehuo.py 默认 delete-statuses 一致
 DEFAULT_DEAD_STATUSES = frozenset({401, 402, 403})
@@ -27,6 +27,79 @@ def _opener(proxy: str = ""):
     if p:
         handlers.append(urllib.request.ProxyHandler({"http": p, "https": p}))
     return urllib.request.build_opener(*handlers) if handlers else urllib.request.build_opener()
+
+
+def probe_models(
+    access_token: str,
+    *,
+    base_url: str = DEFAULT_BASE_URL,
+    proxy: str = "",
+    timeout: float = 30.0,
+    headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """GET /models：要求列表含 grok-4.5，否则视为假活 token。
+
+    返回: ok, has_grok_45, model_ids, status, error?
+    """
+    access = str(access_token or "").strip()
+    if not access:
+        return {
+            "ok": False,
+            "has_grok_45": False,
+            "model_ids": [],
+            "status": 0,
+            "error": "missing access_token",
+        }
+    base = str(base_url or DEFAULT_BASE_URL).rstrip("/")
+    url = f"{base}/models"
+    hdrs: dict[str, str] = {
+        "Authorization": f"Bearer {access}",
+        "Accept": "application/json",
+        **DEFAULT_CLIENT_HEADERS,
+    }
+    if isinstance(headers, dict):
+        for k, v in headers.items():
+            if v is None:
+                continue
+            key = str(k)
+            if key.lower() in ("authorization", "content-type"):
+                continue
+            hdrs[key] = str(v)
+    req = urllib.request.Request(url, headers=hdrs, method="GET")
+    opener = _opener(proxy)
+    try:
+        with opener.open(req, timeout=timeout) as resp:
+            body = json.loads(resp.read().decode("utf-8", errors="replace") or "{}")
+            ids = [
+                str(x.get("id") or "")
+                for x in (body.get("data") or [])
+                if isinstance(x, dict)
+            ]
+            has = any(i == "grok-4.5" for i in ids)
+            return {
+                "ok": True,
+                "status": getattr(resp, "status", 200) or 200,
+                "model_ids": ids,
+                "has_grok_45": has,
+                "error": None if has else "token ok but grok-4.5 not listed",
+            }
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8", errors="replace")[:500] if e.fp else ""
+        return {
+            "ok": False,
+            "status": int(e.code or 0),
+            "model_ids": [],
+            "has_grok_45": False,
+            "error": raw or f"HTTP {e.code}",
+        }
+    except Exception as e:
+        return {
+            "ok": False,
+            "status": 0,
+            "model_ids": [],
+            "has_grok_45": False,
+            "error": str(e)[:300],
+        }
 
 
 def probe_cpa_auth(

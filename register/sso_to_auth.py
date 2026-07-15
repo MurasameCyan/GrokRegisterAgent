@@ -19,6 +19,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import secrets
 import sys
 import time
@@ -53,8 +54,20 @@ SCOPES = (
 GROK_TOKEN_UA = (
     f"grok-pager/{GROK_VERSION} grok-shell/{GROK_VERSION} (linux; x86_64)"
 )
-# consent 提交用的 Next.js Server Action ID（grokRegister-cpa-main）
+# consent 提交用的 Next.js Server Action ID（会随前端部署变化；运行时从 HTML 发现）
 NEXT_ACTION_ID = "4005315a1d7e426de592990bb54bb37471f39dd6d2"
+_NEXT_ACTION_RE = re.compile(
+    r'createServerReference\)\("([a-f0-9]{40,44})"[^)]*submitOAuth2Consent',
+    re.I,
+)
+_NEXT_ACTION_RE2 = re.compile(
+    r'createServerReference\)\("([a-f0-9]{40,44})"',
+    re.I,
+)
+_NEXT_ACTION_RE3 = re.compile(
+    r'next-action["\'\s:=]+([a-f0-9]{40,})',
+    re.I,
+)
 
 CPA_GROK_HEADERS = dict(DEFAULT_CLIENT_HEADERS)
 CPA_PROBE_MODEL = "grok-4.5"
@@ -152,7 +165,8 @@ def _gen_pkce() -> tuple[str, str, str, str]:
 
 def _parse_consent_code(body: str) -> str | None:
     """从 consent 提交的 text/x-component 响应里解析出 authorization code。"""
-    for line in body.split("\n"):
+    text = body or ""
+    for line in text.split("\n"):
         start = line.find("{")
         if start < 0:
             continue
@@ -164,7 +178,52 @@ def _parse_consent_code(body: str) -> str | None:
             if data.get("success") is False:
                 return None
             return data.get("code")
+    m = re.search(r'"code"\s*:\s*"([^"]+)"', text)
+    if m:
+        return m.group(1)
+    m = re.search(r"code=([A-Za-z0-9._~\-]+)", text)
+    if m and "error" not in m.group(0).lower():
+        return m.group(1)
     return None
+
+
+def _discover_next_action(
+    html: str,
+    fallback: str = NEXT_ACTION_ID,
+    *,
+    session: Any = None,
+) -> str:
+    """从 consent 页 HTML/JS chunk 发现 submitOAuth2Consent 的 action id。"""
+    html = html or ""
+    for rx in (_NEXT_ACTION_RE, _NEXT_ACTION_RE2, _NEXT_ACTION_RE3):
+        m = rx.search(html)
+        if m:
+            return m.group(1)
+    # 尝试拉取页面引用的 next static chunk（action id 常在 JS 里）
+    if session is not None:
+        try:
+            for m in re.finditer(
+                r'src=["\']([^"\']+_next/static/chunks/[^"\']+\.js)["\']',
+                html,
+                re.I,
+            ):
+                src = m.group(1)
+                if src.startswith("/"):
+                    src = "https://accounts.x.ai" + src
+                if not src.startswith("http"):
+                    continue
+                try:
+                    jr = session.get(src, impersonate="chrome", timeout=12)
+                    body = str(jr.text or "")
+                    for rx in (_NEXT_ACTION_RE, _NEXT_ACTION_RE2):
+                        mm = rx.search(body)
+                        if mm:
+                            return mm.group(1)
+                except Exception:
+                    continue
+        except Exception:
+            pass
+    return fallback
 
 
 def access_token_referrer(access_token: str) -> str:
@@ -238,6 +297,23 @@ def sso_to_token(sso_cookie: str, proxy: str = "", log=print) -> dict | None:
         return None
 
     # 2) 提交 consent（allow），拿 authorization code
+    # 固定 Next-Action 会随 x.ai 前端部署失效 → 404 Server action not found
+    page_html = ""
+    try:
+        page_html = str(getattr(r, "text", None) or "")
+    except Exception:
+        page_html = ""
+    action_id = _discover_next_action(page_html, NEXT_ACTION_ID)
+    if action_id != NEXT_ACTION_ID:
+        log(f"  🔑 consent next-action discovered={action_id[:16]}…")
+    else:
+        log(f"  🔑 consent next-action fallback={action_id[:16]}…")
+
+    router_tree = (
+        '["",{"children":["(app)",{"children":["(auth)",{"children":["oauth2",'
+        '{"children":["consent",{"children":["__PAGE__",{}]}]}]}]}]},'
+        '"$undefined","$undefined",16]'
+    )
     consent_payload = json.dumps(
         [
             {
@@ -253,23 +329,52 @@ def sso_to_token(sso_cookie: str, proxy: str = "", log=print) -> dict | None:
                 "principalId": "",
                 "referrer": GROK_REFERRER,
             }
-        ]
+        ],
+        separators=(",", ":"),
     )
+    consent_headers = {
+        "Content-Type": "text/plain;charset=UTF-8",
+        "Accept": "text/x-component",
+        "Origin": "https://accounts.x.ai",
+        "Referer": final_url,
+        "Next-Action": action_id,
+        "next-action": action_id,
+        "next-router-state-tree": urllib.parse.quote(router_tree, safe=""),
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Dest": "empty",
+    }
     try:
         r = s.post(
             final_url,
             data=consent_payload,
-            headers={
-                "Content-Type": "text/plain;charset=UTF-8",
-                "Accept": "text/x-component",
-                "Origin": "https://accounts.x.ai",
-                "Referer": final_url,
-                "Next-Action": NEXT_ACTION_ID,
-            },
+            headers=consent_headers,
             impersonate="chrome",
-            timeout=15,
+            timeout=20,
             allow_redirects=True,
         )
+        # 404 Server action not found：再拉一次 consent HTML 重新发现 action
+        if r.status_code == 404 or "Server action not found" in str(r.text or ""):
+            log("  ⚠ consent action 失效，重新抓取 consent 页…")
+            try:
+                r2 = s.get(final_url, impersonate="chrome", timeout=15, allow_redirects=True)
+                action_id = _discover_next_action(
+                    str(r2.text or ""), action_id, session=s
+                )
+                consent_headers["Next-Action"] = action_id
+                consent_headers["next-action"] = action_id
+                log(f"  🔑 retry next-action={action_id[:16]}…")
+                r = s.post(
+                    final_url,
+                    data=consent_payload,
+                    headers=consent_headers,
+                    impersonate="chrome",
+                    timeout=20,
+                    allow_redirects=True,
+                )
+            except Exception as e2:
+                log(f"  ❌ consent 重试异常: {e2}")
+                return None
     except Exception as e:
         log(f"  ❌ consent 异常: {e}")
         return None
@@ -277,6 +382,19 @@ def sso_to_token(sso_cookie: str, proxy: str = "", log=print) -> dict | None:
         log(f"  ❌ consent HTTP {r.status_code}: {str(r.text)[:200]}")
         return None
     code = _parse_consent_code(str(r.text))
+    if not code:
+        # 重定向 Location 里带 code
+        loc = ""
+        try:
+            loc = str(r.headers.get("location") or r.headers.get("Location") or "")
+        except Exception:
+            pass
+        if "code=" in loc:
+            code = urllib.parse.parse_qs(urllib.parse.urlparse(loc).query).get("code", [None])[0]
+        if not code and "code=" in str(r.url):
+            code = urllib.parse.parse_qs(urllib.parse.urlparse(str(r.url)).query).get(
+                "code", [None]
+            )[0]
     if not code:
         log(f"  ❌ consent 未返回 code: {str(r.text)[:200]}")
         return None

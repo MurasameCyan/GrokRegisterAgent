@@ -105,8 +105,29 @@ export interface AppSettings {
   browserPath: string;
   /** 注册时随机浏览器/请求指纹（UA、语言、时区、分辨率等） */
   randomFingerprint: boolean;
-  /** 注册成功后自动 SSO→CPA auth 导出 */
+  /** 注册成功后自动 SSO→CPA auth 导出（后台队列，延迟后执行） */
   autoAuthExport: boolean;
+  /**
+   * 拿到 SSO 后延迟再 mint 的下限（秒）。默认 60。
+   * 与 autoAuthDelayMaxSec 组成随机等待，提高 auth 存活率。
+   */
+  autoAuthDelayMinSec: number;
+  /** 延迟上限（秒）。默认 120。 */
+  autoAuthDelayMaxSec: number;
+  /** 授权队列 worker 数（1～8，默认 2） */
+  authExportWorkers: number;
+  /**
+   * 授权队列上限；0=2×workers。满则入队阻塞/背压。
+   */
+  authExportQueueMax: number;
+  /**
+   * Cloudflare 临时邮箱鉴权：none | x-admin-auth | bearer | x-api-key | query-key
+   */
+  cloudflareAuthMode: string;
+  /** mint 成功后尝试开启 NSFW（可选，失败不挡主流程） */
+  enableNsfw: boolean;
+  /** mint 成功后导出 sub2api accounts（可选） */
+  sub2apiExportEnabled: boolean;
   /**
    * @deprecated 已移除自定义 Auth 目录 UI；始终使用 DATA_DIR/auth。
    * 字段保留兼容旧 settings.json，读写时忽略。
@@ -252,6 +273,13 @@ export const DEFAULT_SETTINGS: AppSettings = {
   browserPath: '',
   randomFingerprint: true,
   autoAuthExport: true,
+  autoAuthDelayMinSec: 60,
+  autoAuthDelayMaxSec: 120,
+  authExportWorkers: 2,
+  authExportQueueMax: 0,
+  cloudflareAuthMode: 'x-admin-auth',
+  enableNsfw: false,
+  sub2apiExportEnabled: false,
   authDir: '',
   cpaRemotePushEnabled: false,
   pushAuthToCpa: false,
@@ -874,8 +902,21 @@ export function validateSettings(s: AppSettings): Record<string, string> {
     !Number.isInteger(s.turnstileAutoWaitMax) ||
     s.turnstileAutoWaitMax < 30 ||
     s.turnstileAutoWaitMax > 180
-  )
+  ) {
     errors.turnstileAutoWaitMax = '人机验证自动等待上限须在 30 到 180 秒之间';
+  }
+  {
+    const dMin = Number(s.autoAuthDelayMinSec);
+    const dMax = Number(s.autoAuthDelayMaxSec);
+    if (!Number.isFinite(dMin) || dMin < 0 || dMin > 3600) {
+      errors.autoAuthDelayMinSec = '转换延迟下限须在 0～3600 秒';
+    }
+    if (!Number.isFinite(dMax) || dMax < 0 || dMax > 7200) {
+      errors.autoAuthDelayMaxSec = '转换延迟上限须在 0～7200 秒';
+    } else if (Number.isFinite(dMin) && dMax < dMin) {
+      errors.autoAuthDelayMaxSec = '转换延迟上限不能小于下限';
+    }
+  }
   if (!s.mail.apiBase.trim()) errors['mail.apiBase'] = '请填写邮件后端地址';
   if (!s.mail.adminAuth.trim()) errors['mail.adminAuth'] = '请填写邮件后端管理密码';
   if (!hasDomain(s)) {

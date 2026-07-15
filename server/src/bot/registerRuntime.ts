@@ -222,6 +222,60 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
     settings.randomFingerprint === undefined ? true : !!settings.randomFingerprint;
   config.auto_auth_export =
     settings.autoAuthExport === undefined ? true : !!settings.autoAuthExport;
+  // 拿到 SSO 后随机延迟再 mint（秒），后台队列，不阻塞注册
+  {
+    let dMin = Number(
+      (settings as { autoAuthDelayMinSec?: number }).autoAuthDelayMinSec ?? 60
+    );
+    let dMax = Number(
+      (settings as { autoAuthDelayMaxSec?: number }).autoAuthDelayMaxSec ?? 120
+    );
+    if (!Number.isFinite(dMin)) dMin = 60;
+    if (!Number.isFinite(dMax)) dMax = 120;
+    dMin = Math.max(0, Math.min(Math.floor(dMin), 3600));
+    dMax = Math.max(dMin, Math.min(Math.floor(dMax), 7200));
+    config.auto_auth_delay_min_sec = dMin;
+    config.auto_auth_delay_max_sec = dMax;
+  }
+  // 授权队列并发 / 背压（P0）
+  {
+    const authWorkers = Number(
+      (settings as { authExportWorkers?: number }).authExportWorkers ?? 2
+    );
+    if (Number.isFinite(authWorkers) && authWorkers >= 1) {
+      config.auth_export_workers = Math.max(1, Math.min(8, Math.floor(authWorkers)));
+    }
+    const authQMax = Number(
+      (settings as { authExportQueueMax?: number }).authExportQueueMax ?? 0
+    );
+    if (Number.isFinite(authQMax) && authQMax > 0) {
+      config.auth_export_queue_max = Math.max(1, Math.min(64, Math.floor(authQMax)));
+    }
+  }
+  // CF 邮箱鉴权模式
+  {
+    const cfMode = String(
+      (settings as { cloudflareAuthMode?: string }).cloudflareAuthMode ||
+        (settings as { mailAuthMode?: string }).mailAuthMode ||
+        ''
+    )
+      .trim()
+      .toLowerCase();
+    if (cfMode) {
+      config.cloudflare_auth_mode = cfMode;
+    }
+  }
+  // P3 可选
+  if ((settings as { enableNsfw?: boolean }).enableNsfw === true) {
+    config.enable_nsfw = true;
+  } else {
+    config.enable_nsfw = false;
+  }
+  if ((settings as { sub2apiExportEnabled?: boolean }).sub2apiExportEnabled === true) {
+    config.sub2api_export_enabled = true;
+  } else {
+    config.sub2api_export_enabled = false;
+  }
 
   // 固定 DATA_DIR/auth，不再使用自定义 authDir
   delete config.auth_dir;

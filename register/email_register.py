@@ -311,10 +311,81 @@ def _generate_local_part(min_len=8, max_len=13) -> str:
     )
 
 
+def _cf_auth_mode() -> str:
+    """cloudflare_temp_email 创建接口鉴权：none|x-admin-auth|bearer|x-api-key|query-key。
+
+    config: cloudflare_auth_mode / mail_auth_mode（默认 x-admin-auth 保持兼容）
+    """
+    _reload_mail_conf()
+    m = str(
+        _conf.get("cloudflare_auth_mode")
+        or _conf.get("mail_auth_mode")
+        or _conf.get("cf_auth_mode")
+        or "x-admin-auth"
+    ).strip().lower()
+    if m in ("admin", "x-admin", "admin-auth"):
+        return "x-admin-auth"
+    if m in ("", "password", "admin_password"):
+        return "x-admin-auth"
+    if m in ("none", "anonymous", "anon", "public"):
+        return "none"
+    if m in ("bearer", "authorization", "jwt"):
+        return "bearer"
+    if m in ("x-api-key", "apikey", "api-key", "api_key"):
+        return "x-api-key"
+    if m in ("query-key", "query", "query_key", "key"):
+        return "query-key"
+    return m
+
+
+def _cf_create_path(auth_mode: str) -> str:
+    """创建路径：admin 模式用 /admin/new_address；匿名/public 用 /api/new_address。"""
+    raw = str(
+        _conf.get("cloudflare_create_path")
+        or _conf.get("mail_create_path")
+        or ""
+    ).strip()
+    if raw:
+        return raw if raw.startswith("/") else f"/{raw}"
+    if auth_mode == "none":
+        return "/api/new_address"
+    return "/admin/new_address"
+
+
+def build_cf_auth_headers(
+    auth_mode: str,
+    api_key: str,
+    *,
+    content_type: bool = True,
+) -> dict[str, str]:
+    """按鉴权模式构造 Cloudflare 临时邮箱请求头。"""
+    headers: dict[str, str] = {}
+    if content_type:
+        headers["Content-Type"] = "application/json"
+    key = (api_key or "").strip()
+    mode = (auth_mode or "none").strip().lower()
+    if not key or mode in ("none", "anonymous", "anon", "public"):
+        return headers
+    if mode == "x-admin-auth":
+        headers["x-admin-auth"] = key
+    elif mode in ("x-api-key", "apikey", "api-key", "api_key"):
+        headers["X-API-Key"] = key
+    elif mode in ("bearer", "authorization"):
+        headers["Authorization"] = f"Bearer {key}"
+    # query-key 不写 header，由 URL 参数携带
+    return headers
+
+
 def create_temp_email() -> Tuple[str, str, str]:
     """
-    通过 admin 接口创建一个新地址。
-    后端返回 {jwt, address, password}，jwt 即用于读邮件的 Bearer。
+    创建 cloudflare_temp_email 地址。
+
+    鉴权模式（cloudflare_auth_mode）:
+      - x-admin-auth（默认）：POST /admin/new_address + x-admin-auth
+      - none：POST /api/new_address 匿名（无需密钥）
+      - bearer / x-api-key / query-key：兼容其它 Worker 配置
+
+    返回 {jwt, address, password}，jwt 即用于读邮件的 Bearer。
     域名：优先邮箱域名池轮换，否则用 MAIL_DOMAIN。
     """
     # 每轮创建前热读邮件配置 + 池（支持 UI 改完立刻生效）
@@ -329,14 +400,22 @@ def create_temp_email() -> Tuple[str, str, str]:
             "mail_api_base 未设置。请填 cloudflare_temp_email 的 **Worker API 根地址**"
             "（不是前端 Pages 域名），例如 https://xxx.workers.dev"
         )
-    if not MAIL_ADMIN_AUTH:
-        raise Exception("mail_admin_auth 未设置，无法创建邮箱地址")
 
-    headers = {"x-admin-auth": MAIL_ADMIN_AUTH, "Content-Type": "application/json"}
+    auth_mode = _cf_auth_mode()
+    api_key = MAIL_ADMIN_AUTH.strip()
+    if auth_mode not in ("none", "anonymous", "anon", "public") and not api_key:
+        raise Exception(
+            f"mail_admin_auth 未设置（cloudflare_auth_mode={auth_mode} 需要密钥）"
+        )
+
+    create_path = _cf_create_path(auth_mode)
+    headers = build_cf_auth_headers(auth_mode, api_key, content_type=True)
     session, use_cffi = _create_session()
-    create_url = f"{MAIL_API_BASE}/admin/new_address"
-    print(f"[*] 邮件 API: {MAIL_API_BASE} → POST /admin/new_address")
-    print(f"[*] email_register build: pool-idx+domain-log")
+    base_url = f"{MAIL_API_BASE.rstrip('/')}{create_path}"
+    print(
+        f"[*] 邮件 API: {MAIL_API_BASE} → POST {create_path} "
+        f"auth_mode={auth_mode}"
+    )
 
     # 域名池状态（便于确认轮换是否生效）
     try:
@@ -351,7 +430,6 @@ def create_temp_email() -> Tuple[str, str, str]:
                 f"next_idx={_idx} → {', '.join(_doms[:8])}{'…' if len(_doms) > 8 else ''}"
             )
         else:
-            # 再直接读 config 一眼，避免 pools 未加载
             _raw_pool = _conf.get("mail_domains") or _conf.get("mail_domain_pool")
             print(
                 f"[*] 邮箱域名: 单域名 {MAIL_DOMAIN or '(未设置)'} "
@@ -364,23 +442,52 @@ def create_temp_email() -> Tuple[str, str, str]:
     for _ in range(5):
         local = _generate_local_part()
         domain = next_mail_domain(MAIL_DOMAIN) or MAIL_DOMAIN
-        if not domain:
+        # 匿名 /api/new_address 可不指定 domain（由 Worker 分配）
+        is_admin = create_path.rstrip("/").lower().endswith("/admin/new_address")
+        if is_admin and not domain:
             raise Exception("mail_domain / mail_domains 未设置，无法创建邮箱地址")
+        if is_admin:
+            payload: dict[str, Any] = {
+                "name": local,
+                "domain": domain,
+                "enablePrefix": False,
+            }
+        else:
+            payload = {}
+            if domain:
+                payload["domain"] = domain
+            # 部分部署允许自定义 name
+            if _truthy_conf("cloudflare_create_with_name"):
+                payload["name"] = local
+                payload["enablePrefix"] = True
+
+        create_url = base_url
+        if auth_mode in ("query-key", "query", "query_key", "key") and api_key:
+            sep = "&" if "?" in create_url else "?"
+            create_url = f"{create_url}{sep}key={api_key}"
+
         try:
             res = _do_request(
-                session, use_cffi, "post",
+                session,
+                use_cffi,
+                "post",
                 create_url,
-                json={"name": local, "domain": domain, "enablePrefix": False},
+                json=payload,
                 headers=headers,
                 timeout=15,
             )
             if res.status_code in (200, 201):
                 data = res.json()
                 jwt = data.get("jwt")
-                address = data.get("address") or f"{local}@{domain}"
+                address = data.get("address") or (
+                    f"{local}@{domain}" if domain else ""
+                )
                 password = data.get("password", "")
                 if jwt and address:
-                    print(f"[*] 邮箱创建成功: {address}（domain={domain}）")
+                    print(
+                        f"[*] 邮箱创建成功: {address}"
+                        f"（domain={domain or '-'} mode={auth_mode}）"
+                    )
                     return address, password, jwt
                 last_err = f"响应缺少 jwt/address: {data}"
             else:
@@ -391,11 +498,13 @@ def create_temp_email() -> Tuple[str, str, str]:
                 if res.status_code == 405:
                     last_err += (
                         " | 提示: 405 多为 API 地址填成了前端/Pages 或错误路径；"
-                        "应填 Worker 根地址，且路径为 /admin/new_address（POST）"
+                        "admin 用 /admin/new_address，匿名用 /api/new_address"
                     )
                 if res.status_code in (401, 403):
-                    last_err += " | 提示: 管理密码 x-admin-auth 可能不对"
-                # 地址冲突就换个 local 再试
+                    last_err += (
+                        f" | 提示: 鉴权失败 auth_mode={auth_mode}，"
+                        "可改 cloudflare_auth_mode=none|x-admin-auth|bearer|x-api-key"
+                    )
                 if res.status_code in (400, 409):
                     continue
                 break
@@ -403,6 +512,15 @@ def create_temp_email() -> Tuple[str, str, str]:
             last_err = f"{e} | url={create_url}"
 
     raise Exception(f"创建邮箱失败: {last_err}")
+
+
+def _truthy_conf(key: str) -> bool:
+    v = _conf.get(key)
+    if v is True:
+        return True
+    if v is False or v is None:
+        return False
+    return str(v).lower() in ("1", "true", "yes", "on")
 
 
 def fetch_emails(jwt: str, limit: int = 20) -> List[Dict[str, Any]]:

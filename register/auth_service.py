@@ -31,7 +31,7 @@ from sso_to_auth import (
     upload_cpa_auth_remote,
     write_cpa_auth,
 )
-from cpa_probe import probe_and_cleanup
+from cpa_probe import probe_and_cleanup, probe_models
 
 LogFn = Callable[[str], None]
 
@@ -145,8 +145,12 @@ def _write_and_probe_one(
     management_key: str,
     delete_on_dead: bool,
     log: LogFn,
+    require_grok_45: bool = True,
 ) -> dict[str, Any]:
-    """单通道：写 auth + 可选远程 + probe。两通道文件名用 channel 后缀区分。"""
+    """单通道：写 auth + has_grok_45 门禁 + 可选远程 + probe。
+
+    require_grok_45=True（默认）：GET /models 无 grok-4.5 则不推 CPA，ok=False（假活不入池）。
+    """
     ref = access_token_referrer(token.get("access_token") or "")
     if ref:
         log(f"[auth] channel={channel} access_token referrer={ref}")
@@ -191,8 +195,56 @@ def _write_and_probe_one(
     path = write_cpa_auth(out_dir, payload, channel=channel)
     log(f"[auth] wrote {path} channel={channel}")
 
+    # P0：假活门禁 — 无 grok-4.5 不推 CPA
+    models_probe = probe_models(
+        str(token.get("access_token") or ""),
+        base_url=str(payload.get("base_url") or DEFAULT_BASE_URL),
+        proxy=proxy or "",
+        headers=headers if isinstance(headers, dict) else None,
+    )
+    has_g45 = bool(models_probe.get("has_grok_45"))
+    models_ok = bool(models_probe.get("ok"))
+    # 仅当 /models 成功且明确无 grok-4.5 时判假活；网络失败不误杀
+    fake_alive = bool(require_grok_45) and models_ok and not has_g45
+    payload["has_grok_45"] = has_g45
+    payload["model_ids"] = list(models_probe.get("model_ids") or [])
+    log(
+        f"[auth] channel={channel} models probe ok={models_ok} "
+        f"has_grok_45={has_g45} status={models_probe.get('status')} "
+        f"ids={models_probe.get('model_ids')}"
+    )
+    if require_grok_45 and not models_ok:
+        log(
+            f"[auth] channel={channel} ⚠ models 探针失败，暂不按假活拦截: "
+            f"{models_probe.get('error') or models_probe.get('status')}"
+        )
+    # 回写 has_grok_45 到本地文件
+    try:
+        if path.is_file():
+            doc = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(doc, dict):
+                doc["has_grok_45"] = has_g45
+                doc["model_ids"] = payload["model_ids"]
+                path.write_text(
+                    json.dumps(doc, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+    except Exception:
+        pass
+
     remote_result: dict[str, Any] | None = None
-    if not skip_remote:
+    if fake_alive:
+        log(
+            f"[auth] channel={channel} ✘ 无 grok-4.5，跳过 CPA 推送（假活 token）"
+            f" err={models_probe.get('error') or 'not listed'}"
+        )
+        remote_result = {
+            "ok": False,
+            "skipped": True,
+            "error": "require_grok_45: token ok but grok-4.5 not listed",
+            "models": models_probe,
+        }
+    elif not skip_remote:
         r_url = (remote_url or "").strip()
         r_key = (management_key or "").strip()
         if not r_url or not r_key:
@@ -214,6 +266,14 @@ def _write_and_probe_one(
         delete_on_dead=bool(delete_on_dead),
         mint_soft_retry=True,
     )
+    # 假活：默认保留本地文件便于排查；仅 delete_on_dead=True 时删除
+    if fake_alive and delete_on_dead and path.is_file():
+        try:
+            path.unlink(missing_ok=True)
+            probe["deleted"] = True
+            probe["action"] = "dead"
+        except Exception:
+            pass
     log(
         f"[auth] channel={channel} probe action={probe.get('action')} "
         f"http={probe.get('http_status')} deleted={probe.get('deleted')} "
@@ -224,8 +284,15 @@ def _write_and_probe_one(
     )
     dead = probe.get("action") == "dead"
     still = path.is_file()
+    # 明确无 grok-4.5 → ok=False（不进 CPA）；models 网络失败不按假活判死
+    ok = bool(still) and not (dead and not still) and not fake_alive
+    err = None
+    if fake_alive:
+        err = "require_grok_45: token ok but grok-4.5 not listed"
+    elif dead:
+        err = f"cpa probe dead HTTP {probe.get('http_status')}"
     return {
-        "ok": bool(still) and not (dead and not still),
+        "ok": ok,
         "channel": channel,
         "email": payload.get("email") or email,
         "path": str(path) if still else "",
@@ -233,14 +300,14 @@ def _write_and_probe_one(
         "sub": payload.get("sub") or "",
         "agent_id": (headers or {}).get("x-grok-agent-id", ""),
         "probe": probe,
-        "probe_alive": bool(alive) and not dead,
+        "probe_alive": bool(alive) and not dead and not fake_alive,
+        "has_grok_45": has_g45,
+        "models_probe": models_probe,
         "deleted": bool(probe.get("deleted")) or not still,
         "referrer": ref,
         "remote": remote_result,
         "mint_mode": channel,
-        "error": (
-            f"cpa probe dead HTTP {probe.get('http_status')}" if dead else None
-        ),
+        "error": err,
     }
 
 
@@ -355,6 +422,7 @@ def sso_to_cpa_auth(
     delete_on_dead: bool = False,
     mint_mode: str = "",
     page: Any = None,
+    require_grok_45: bool = True,
     log: LogFn | None = None,
 ) -> dict[str, Any]:
     """SSO cookie → mint → data/auth/xai-<email>[-channel].json [+ 远程推送]
@@ -370,6 +438,7 @@ def sso_to_cpa_auth(
     若 sso 为 wrapper JWT，先 ensure_session_sso materialize。
 
     delete_on_dead: mint 后 probe 为 401/402/403 时是否删除本地文件（默认 False）。
+    require_grok_45: True 时 GET /models 无 grok-4.5 则不推 CPA、ok=False。
     """
     log = log or _noop
     sso = _normalize_sso_token(sso or "")
@@ -443,6 +512,7 @@ def sso_to_cpa_auth(
                     remote_url=remote_url,
                     management_key=management_key,
                     delete_on_dead=delete_on_dead,
+                    require_grok_45=require_grok_45,
                     log=log,
                 )
                 channels_out.append(one)
@@ -459,7 +529,7 @@ def sso_to_cpa_auth(
 
         ok_chs = [c for c in channels_out if c.get("ok") and c.get("path")]
         alive_chs = [c for c in ok_chs if c.get("probe_alive")]
-        # 任一通道写出成功即总体 ok；优先 pkce 作为主 path
+        # 任一通道写出成功且过 grok-4.5 门禁即总体 ok；优先 pkce
         primary = next(
             (c for c in ok_chs if c.get("channel") == "pkce"),
             ok_chs[0] if ok_chs else None,
@@ -486,6 +556,7 @@ def sso_to_cpa_auth(
             "sub": (primary or {}).get("sub") or "",
             "agent_id": (primary or {}).get("agent_id") or "",
             "probe": (primary or {}).get("probe"),
+            "has_grok_45": (primary or {}).get("has_grok_45"),
             "referrer": (primary or {}).get("referrer"),
             "remote": (primary or {}).get("remote"),
             "mint_mode": "double",
@@ -525,15 +596,67 @@ def sso_to_cpa_auth(
         remote_url=remote_url,
         management_key=management_key,
         delete_on_dead=delete_on_dead,
+        require_grok_45=require_grok_45,
         log=log,
     )
     one["mint_mode"] = used_mode
     if one.get("error") and not one.get("path"):
         one["ok"] = False
     elif one.get("error") and one.get("path"):
-        # probe dead 但文件可能仍在（delete_on_dead=False）
+        # probe dead / 无 grok-4.5 但文件可能仍在
         one["ok"] = False
     return one
+
+
+def tokens_to_cpa_auth(
+    *,
+    access_token: str,
+    refresh_token: str,
+    id_token: str | None = None,
+    expires_in: Any = None,
+    email: str = "",
+    sso: str = "",
+    proxy: str = "",
+    auth_dir: str | Path | None = None,
+    random_fingerprint: bool = True,
+    remote_url: str = "",
+    management_key: str = "",
+    skip_remote: bool = False,
+    delete_on_dead: bool = False,
+    require_grok_45: bool = True,
+    mint_channel: str = "browser_device",
+    log: LogFn | None = None,
+) -> dict[str, Any]:
+    """已有 access/refresh token → 写 CPA auth + has_grok_45 门禁 + 可选推送。
+
+    供 browser Device mint / 外部 token 导入复用。
+    """
+    log = log or _noop
+    access_token = str(access_token or "").strip()
+    if not access_token:
+        return {"ok": False, "error": "empty access_token"}
+    out_dir = Path(auth_dir) if auth_dir else default_auth_dir()
+    token = {
+        "access_token": access_token,
+        "refresh_token": str(refresh_token or "").strip(),
+        "id_token": id_token,
+        "expires_in": expires_in,
+    }
+    return _write_and_probe_one(
+        token=token,
+        sso=sso or "",
+        email=email,
+        out_dir=out_dir,
+        channel=str(mint_channel or "browser_device"),
+        proxy=proxy or "",
+        random_fingerprint=random_fingerprint,
+        skip_remote=skip_remote,
+        remote_url=remote_url,
+        management_key=management_key,
+        delete_on_dead=delete_on_dead,
+        require_grok_45=require_grok_45,
+        log=log,
+    )
 
 
 def refresh_access_token(

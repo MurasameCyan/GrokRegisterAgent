@@ -182,6 +182,16 @@ function merge(partial: unknown): AppSettings {
         : DEFAULT_SETTINGS.randomFingerprint,
     autoAuthExport:
       typeof p.autoAuthExport === 'boolean' ? p.autoAuthExport : DEFAULT_SETTINGS.autoAuthExport,
+    autoAuthDelayMinSec: (() => {
+      const n = Number((p as AppSettings).autoAuthDelayMinSec);
+      if (!Number.isFinite(n)) return DEFAULT_SETTINGS.autoAuthDelayMinSec;
+      return Math.max(0, Math.min(Math.floor(n), 3600));
+    })(),
+    autoAuthDelayMaxSec: (() => {
+      const n = Number((p as AppSettings).autoAuthDelayMaxSec);
+      if (!Number.isFinite(n)) return DEFAULT_SETTINGS.autoAuthDelayMaxSec;
+      return Math.max(0, Math.min(Math.floor(n), 7200));
+    })(),
     authDir: typeof p.authDir === 'string' ? p.authDir : DEFAULT_SETTINGS.authDir,
     // CPA 远程推送：新字段 pushAuthToCpa；兼容 cpaRemotePushEnabled / 旧 URL
     cpaRemotePushEnabled:
