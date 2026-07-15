@@ -118,6 +118,20 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
     .trim()
     .replace(/^@+/, '');
 
+  // 邮箱提供方：cloudflare | duckmail | yyds
+  const mailProvider = String(
+    (settings as { mailProvider?: string }).mailProvider || 'cloudflare'
+  )
+    .trim()
+    .toLowerCase();
+  if (mailProvider === 'duckmail' || mailProvider === 'duck') {
+    config.mail_provider = 'duckmail';
+  } else if (mailProvider === 'yyds' || mailProvider === 'yydsmail') {
+    config.mail_provider = 'yyds';
+  } else {
+    config.mail_provider = 'cloudflare';
+  }
+
   // 域名池开关：开=写入 mail_domains；关=只用 mail_domain
   // 兼容：若未显式开池但 mailDomains 有内容，仍写入池（避免 UI 开了却未持久化开关）
   const domainsText = String(settings.mailDomains || '').trim();
@@ -236,6 +250,32 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
   // Plan A 失败后 Plan B 兜底一次（默认开）
   config.register_plan_b_enabled = settings.registerPlanBEnabled !== false;
 
+  // 注册主路径：browser（默认）| hybrid（Plan-C）
+  const regMode = String(
+    (settings as { registerMode?: string }).registerMode || 'browser'
+  )
+    .trim()
+    .toLowerCase();
+  config.register_mode = regMode === 'hybrid' ? 'hybrid' : 'browser';
+
+  // SSO→CPA mint：pkce | device | auto
+  const mintMode = String(
+    (settings as { cpaMintMode?: string }).cpaMintMode || 'pkce'
+  )
+    .trim()
+    .toLowerCase();
+  if (mintMode === 'device' || mintMode === 'device_flow' || mintMode === 'b') {
+    config.cpa_mint_mode = 'device';
+  } else if (
+    mintMode === 'auto' ||
+    mintMode === 'c' ||
+    mintMode === 'pkce_then_device'
+  ) {
+    config.cpa_mint_mode = 'auto';
+  } else {
+    config.cpa_mint_mode = 'pkce';
+  }
+
   // 推送：允许(push*) 与 自动(autoPush*) 分离；注册成功只跟自动走
   const allowSsoG2 = settings.pushSsoToGrok2api === true;
   const autoSsoG2 =
@@ -283,7 +323,10 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
     console.log(
       `[writeConfig] proxy_pool=${nPool} proxy=${config.proxy ? 'set' : 'empty'} ` +
         `browser_proxy=${config.browser_proxy ? 'set' : 'empty'} ` +
-        `mail_domains=${nDom} prefer_local_forward=${!!config.proxy_prefer_local_forward} ` +
+        `mail_domains=${nDom} mail_provider=${config.mail_provider || 'cloudflare'} ` +
+        `register_mode=${config.register_mode || 'browser'} ` +
+        `cpa_mint_mode=${config.cpa_mint_mode || 'pkce'} ` +
+        `prefer_local_forward=${!!config.proxy_prefer_local_forward} ` +
         `ip_interval=${config.proxy_ip_interval_sec || 0}s ` +
         `cpa_remote=${config.cpa_remote_url ? 'set' : 'off'}`
     );

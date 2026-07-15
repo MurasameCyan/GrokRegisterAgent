@@ -40,6 +40,92 @@ def _noop(msg: str) -> None:
     return None
 
 
+def _read_cpa_mint_mode() -> str:
+    """从环境 / config.json 读 cpa_mint_mode：pkce|device|auto。"""
+    env = (
+        os.environ.get("CPA_MINT_MODE")
+        or os.environ.get("cpa_mint_mode")
+        or ""
+    ).strip().lower()
+    if env in ("pkce", "a", "auth_code"):
+        return "pkce"
+    if env in ("device", "b", "device_flow"):
+        return "device"
+    if env in ("auto", "c", "pkce_then_device"):
+        return "auto"
+    conf_path = Path(__file__).resolve().parent / "config.json"
+    try:
+        conf = json.loads(conf_path.read_text(encoding="utf-8"))
+        m = str(conf.get("cpa_mint_mode") or conf.get("mint_mode") or "").strip().lower()
+        if m in ("pkce", "a", "auth_code"):
+            return "pkce"
+        if m in ("device", "b", "device_flow"):
+            return "device"
+        if m in ("auto", "c", "pkce_then_device"):
+            return "auto"
+    except Exception:
+        pass
+    return "pkce"
+
+
+def _mint_tokens(
+    sso: str,
+    *,
+    proxy: str = "",
+    mint_mode: str = "",
+    log: LogFn | None = None,
+) -> tuple[dict[str, Any] | None, str]:
+    """按 mint_mode 换 token。
+
+    返回 (token_dict|None, mode_used)。
+    mode: pkce | device
+    """
+    log = log or _noop
+    mode = (mint_mode or _read_cpa_mint_mode() or "pkce").strip().lower()
+    if mode in ("a", "auth_code"):
+        mode = "pkce"
+    if mode in ("b", "device_flow"):
+        mode = "device"
+    if mode in ("c", "pkce_then_device"):
+        mode = "auto"
+
+    def _via_pkce() -> dict[str, Any] | None:
+        log("[auth] mint mode=pkce (Auth Code+PKCE)…")
+        return sso_to_token(sso, proxy=proxy or "", log=log)
+
+    def _via_device() -> dict[str, Any] | None:
+        log("[auth] mint mode=device (Device Flow)…")
+        try:
+            from oauth_device_mint import mint_tokens_device_flow
+        except ImportError as e:
+            log(f"[auth] oauth_device_mint 不可用: {e}")
+            return None
+        r = mint_tokens_device_flow(sso, proxy=proxy or "", log=log)
+        if not r or not r.get("ok"):
+            log(f"[auth] device mint 失败: {(r or {}).get('error') or 'unknown'}")
+            return None
+        return {
+            "access_token": r.get("access_token") or "",
+            "refresh_token": r.get("refresh_token") or "",
+            "id_token": r.get("id_token"),
+            "expires_in": r.get("expires_in"),
+        }
+
+    if mode == "device":
+        t = _via_device()
+        return t, "device"
+    if mode == "auto":
+        t = _via_pkce()
+        if t and t.get("access_token"):
+            return t, "pkce"
+        log("[auth] pkce 失败，fallback device…")
+        t = _via_device()
+        return t, "device" if t else "auto"
+    # 默认 pkce
+    t = _via_pkce()
+    return t, "pkce"
+
+
 def _normalize_grok_pager_headers(headers: dict | None) -> dict[str, str]:
     """将旧 grok-shell 头升级为 grok-pager，保留 x-grok-agent-id。
 
@@ -149,9 +235,19 @@ def sso_to_cpa_auth(
     management_key: str = "",
     skip_remote: bool = False,
     delete_on_dead: bool = False,
+    mint_mode: str = "",
+    page: Any = None,
     log: LogFn | None = None,
 ) -> dict[str, Any]:
-    """SSO cookie → Auth Code+PKCE → data/auth/xai-<email>.json [+ 远程推送]
+    """SSO cookie → mint → data/auth/xai-<email>.json [+ 远程推送]
+
+    mint_mode:
+      - pkce（默认 A）：Auth Code+PKCE，referrer=grok-build
+      - device（B）：Device Flow（regkit）
+      - auto（C）：先 A 失败再 B
+      - 空：读 config/env cpa_mint_mode
+
+    若 sso 为 wrapper JWT，先 ensure_session_sso materialize。
 
     产出文件可在最新 CPA 中手动登录使用：关闭认证文件设置中的
     「使用官方 API（using_api）」即可，无需手改 headers。
@@ -159,20 +255,44 @@ def sso_to_cpa_auth(
     delete_on_dead: mint 后 probe 为 401/402/403 时是否删除本地文件（默认 False）。
     """
     log = log or _noop
-    sso = (sso or "").strip()
+    sso = _normalize_sso_token(sso or "")
     if not sso:
         return {"ok": False, "error": "empty sso"}
     out_dir = Path(auth_dir) if auth_dir else default_auth_dir()
-    log(f"[auth] SSO→CPA mint (Auth Code+PKCE) email={email or '-'} dir={out_dir}")
-    token = sso_to_token(sso, proxy=proxy or "", log=log)
-    if not token:
-        return {"ok": False, "error": "sso_to_token failed", "email": email}
+
+    # wrapper JWT → 会话 sso（hybrid/CreateAccount 常见）
+    try:
+        from sso_materialize import ensure_session_sso, is_wrapper_sso
+
+        if is_wrapper_sso(sso):
+            log("[auth] SSO 疑似 wrapper，尝试 materialize…")
+            sso = ensure_session_sso(sso, page=page, proxy=proxy or "", log=log) or sso
+            sso = _normalize_sso_token(sso)
+    except Exception as e:
+        log(f"[auth] materialize 跳过: {e}")
+
+    resolved_mode = (mint_mode or _read_cpa_mint_mode() or "pkce").strip().lower()
+    log(
+        f"[auth] SSO→CPA mint mode={resolved_mode} email={email or '-'} dir={out_dir}"
+    )
+    token, used_mode = _mint_tokens(
+        sso, proxy=proxy or "", mint_mode=resolved_mode, log=log
+    )
+    if not token or not token.get("access_token"):
+        return {
+            "ok": False,
+            "error": f"mint failed (mode={used_mode})",
+            "email": email,
+            "mint_mode": used_mode,
+        }
 
     ref = access_token_referrer(token.get("access_token") or "")
     if ref:
-        log(f"[auth] access_token referrer={ref}")
+        log(f"[auth] access_token referrer={ref} mint={used_mode}")
     else:
-        log("[auth] ⚠ access_token 无 referrer claim（cli-chat-proxy 可能 403）")
+        log(
+            f"[auth] ⚠ access_token 无 referrer claim（cli-chat-proxy 可能 403） mint={used_mode}"
+        )
 
     headers = random_client_headers(email or sso[:16]) if random_fingerprint else None
     try:
@@ -197,7 +317,7 @@ def sso_to_cpa_auth(
     payload = _ensure_payload_sso(payload, sso)
 
     path = write_cpa_auth(out_dir, payload)
-    log(f"[auth] wrote {path}")
+    log(f"[auth] wrote {path} mint={used_mode}")
 
     remote_result: dict[str, Any] | None = None
     if not skip_remote:
@@ -247,6 +367,7 @@ def sso_to_cpa_auth(
             "deleted": bool(probe.get("deleted")) or not still,
             "referrer": ref,
             "remote": remote_result,
+            "mint_mode": used_mode,
         }
     # keep / error / soft_warn：文件已写出 → mint 成功，probe 仅警告
     if probe.get("action") in ("error", "keep") or probe.get("mint_soft_warn"):
@@ -263,6 +384,7 @@ def sso_to_cpa_auth(
             or "probe keep/error",
             "referrer": ref,
             "remote": remote_result,
+            "mint_mode": used_mode,
         }
 
     return {
@@ -275,6 +397,7 @@ def sso_to_cpa_auth(
         "probe": probe,
         "referrer": ref,
         "remote": remote_result,
+        "mint_mode": used_mode,
     }
 
 

@@ -5,7 +5,14 @@
  */
 import { promises as fsp, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { type AppSettings, type PoolMode, DEFAULT_SETTINGS } from '@shared/settings';
+import {
+  type AppSettings,
+  type CpaMintMode,
+  type MailProvider,
+  type PoolMode,
+  type RegisterMode,
+  DEFAULT_SETTINGS
+} from '@shared/settings';
 
 const DATA_DIR = resolve(process.env.DATA_DIR || '/data');
 const CONFIG_PATH = join(DATA_DIR, 'config.json');
@@ -14,6 +21,38 @@ let cache: AppSettings | null = null;
 
 function asPoolMode(v: unknown, fallback: PoolMode): PoolMode {
   return v === 'random' || v === 'round_robin' ? v : fallback;
+}
+
+function asMailProvider(v: unknown, fallback: MailProvider): MailProvider {
+  const s = String(v || '')
+    .trim()
+    .toLowerCase();
+  if (s === 'duckmail' || s === 'duck') return 'duckmail';
+  if (s === 'yyds' || s === 'yydsmail') return 'yyds';
+  if (
+    s === 'cloudflare' ||
+    s === 'cf' ||
+    s === 'vmail' ||
+    s === 'temp_email' ||
+    s === 'cloudflare_temp_email'
+  ) {
+    return 'cloudflare';
+  }
+  return fallback;
+}
+
+function asRegisterMode(v: unknown, fallback: RegisterMode): RegisterMode {
+  return v === 'hybrid' ? 'hybrid' : v === 'browser' ? 'browser' : fallback;
+}
+
+function asCpaMintMode(v: unknown, fallback: CpaMintMode): CpaMintMode {
+  const s = String(v || '')
+    .trim()
+    .toLowerCase();
+  if (s === 'device' || s === 'device_flow' || s === 'b') return 'device';
+  if (s === 'auto' || s === 'c' || s === 'pkce_then_device') return 'auto';
+  if (s === 'pkce' || s === 'a' || s === 'auth_code') return 'pkce';
+  return fallback;
 }
 
 function applyEnvOverrides(s: AppSettings, source: Partial<AppSettings>): AppSettings {

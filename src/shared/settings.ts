@@ -16,6 +16,24 @@ export type ThemeMode = 'system' | 'light' | 'dark';
 /** 池轮换策略 */
 export type PoolMode = 'round_robin' | 'random';
 
+/** 临时邮箱后端：cloudflare_temp_email / DuckMail / YYDS */
+export type MailProvider = 'cloudflare' | 'duckmail' | 'yyds';
+
+/**
+ * 注册主路径：
+ * - browser：全程 Drission（默认）
+ * - hybrid：短浏览器采 token + 协议注册（Plan-C，可选）
+ */
+export type RegisterMode = 'browser' | 'hybrid';
+
+/**
+ * SSO→CPA mint 路径：
+ * - pkce：Auth Code + PKCE（mode=A，默认，referrer=grok-build）
+ * - device：Device Flow（mode=B，regkit）
+ * - auto：先 A 失败再 B（mode=C）
+ */
+export type CpaMintMode = 'pkce' | 'device' | 'auto';
+
 export interface AppSettings {
   /** 用户机器上的 Python 解释器绝对路径（高级/环境变量；UI 不暴露） */
   pythonPath: string;
@@ -34,6 +52,11 @@ export interface AppSettings {
    */
   turnstileAutoWaitMax: number;
   mail: MailSettings;
+  /**
+   * 临时邮箱提供方。写入 Python config：mail_provider
+   * cloudflare（默认）| duckmail | yyds
+   */
+  mailProvider: MailProvider;
   /**
    * 邮箱域名池（多行或逗号分隔）。开启 mailDomainPoolEnabled 时使用。
    * 写入 Python config：mail_domains
@@ -168,6 +191,16 @@ export interface AppSettings {
    */
   registerPlanBEnabled: boolean;
   /**
+   * 注册主路径：browser（默认）| hybrid（Plan-C 短浏览器+协议）。
+   * 写入 Python config：register_mode
+   */
+  registerMode: RegisterMode;
+  /**
+   * SSO→CPA mint：pkce（默认）| device | auto（A 失败再 B）。
+   * 写入 Python config：cpa_mint_mode
+   */
+  cpaMintMode: CpaMintMode;
+  /**
    * @deprecated 使用 pushSsoToGrok2api / pushAuthToGrok2api。
    * 兼容旧配置：为 true 时视为 pushSsoToGrok2api。
    */
@@ -230,6 +263,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   cpaAuthUseProxy: true,
   proxyFetchUrl: 'https://hide.mn/en/proxy-list/',
   registerPlanBEnabled: true,
+  registerMode: 'browser',
+  cpaMintMode: 'pkce',
   grok2apiAutoUpload: false,
   grok2apiUrl: '',
   grok2apiUsername: '',

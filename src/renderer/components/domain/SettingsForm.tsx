@@ -970,7 +970,7 @@ export function SettingsForm() {
       <Card collapsible defaultCollapsed>
         <CardHeader
           title="邮件后端"
-          description="请填写 Cloudflare 临时邮箱参数:"
+          description="Cloudflare Temp Email / DuckMail / YYDS"
           right={
             <div className="flex flex-wrap items-center gap-2">
               <RepoLink
@@ -982,23 +982,57 @@ export function SettingsForm() {
           }
         />
         <CardBody className="space-y-4">
+          <Field
+            label="邮箱提供方"
+            hint="cloudflare：X-Admin-Auth；duckmail/yyds：Bearer Token 填到管理密码"
+          >
+            <select
+              className={SELECT_CLASS}
+              value={draft.mailProvider || 'cloudflare'}
+              onChange={(e) =>
+                update('mailProvider', e.target.value as MailProvider)
+              }
+            >
+              <option value="cloudflare">Cloudflare Temp Email（默认）</option>
+              <option value="duckmail">DuckMail</option>
+              <option value="yyds">YYDS Mail</option>
+            </select>
+          </Field>
           {/* 连接：API + 密码 并排 */}
           <div className="grid gap-4 sm:grid-cols-2">
             <Field
               label="API 地址"
-              hint="Worker API 根地址，勿填前端 Pages 域名"
+              hint={
+                draft.mailProvider === 'duckmail'
+                  ? 'DuckMail API 根，如 https://api.duckmail.sbs'
+                  : draft.mailProvider === 'yyds'
+                    ? 'YYDS API 根地址'
+                    : 'Worker API 根地址，勿填前端 Pages 域名'
+              }
               error={errors['mail.apiBase']}
             >
               <Input
                 value={draft.mail.apiBase}
                 onChange={(e) => updateMail('apiBase', e.target.value)}
                 invalid={!!errors['mail.apiBase']}
-                placeholder="https://xxx.workers.dev"
+                placeholder={
+                  draft.mailProvider === 'cloudflare' || !draft.mailProvider
+                    ? 'https://xxx.workers.dev'
+                    : 'https://api.example.com'
+                }
               />
             </Field>
             <Field
-              label="管理密码"
-              hint="Temp Email 管理员密码（X-Admin-Auth）"
+              label={
+                draft.mailProvider === 'duckmail' || draft.mailProvider === 'yyds'
+                  ? 'API Token'
+                  : '管理密码'
+              }
+              hint={
+                draft.mailProvider === 'duckmail' || draft.mailProvider === 'yyds'
+                  ? 'Bearer Token（写入 mail_admin_auth）'
+                  : 'Temp Email 管理员密码（X-Admin-Auth）'
+              }
               error={errors['mail.adminAuth']}
             >
               <PasswordInput
@@ -1743,15 +1777,34 @@ export function SettingsForm() {
       <Card collapsible defaultCollapsed>
         <CardHeader title="注册兜底" />
         <CardBody className="space-y-3">
+          <Field
+            label="注册主路径"
+            hint="browser：全程浏览器（默认）；hybrid：Plan-C 短浏览器采 token + 协议（可选，依赖适配层）"
+          >
+            <select
+              className={SELECT_CLASS}
+              value={draft.registerMode || 'browser'}
+              onChange={(e) =>
+                update('registerMode', e.target.value as RegisterMode)
+              }
+            >
+              <option value="browser">Browser · 全程 Drission（默认）</option>
+              <option value="hybrid">Hybrid · Plan-C（短浏览器 + 协议）</option>
+            </select>
+          </Field>
           <ToggleRow
             label="启用 Plan B 兜底"
-            hint="默认开。关闭后 Plan A 失败即跳过，不再二次尝试"
+            hint="默认开。仅 browser 主路径时生效；关闭后 Plan A 失败即跳过，不再二次尝试"
             checked={draft.registerPlanBEnabled !== false}
             onChange={(v) => update('registerPlanBEnabled', v)}
           />
           <div className="space-y-1.5 rounded-xl border border-border/60 bg-muted/40 p-3 text-[12px] leading-5 text-muted-foreground">
             <p className="font-medium text-foreground">执行顺序</p>
             <ol className="list-decimal space-y-1 pl-4">
+              <li>
+                <span className="text-foreground">主路径</span>
+                ：browser 或 hybrid（设置「注册主路径」）
+              </li>
               <li>
                 <span className="text-foreground">Plan A</span>
                 ：现有临时邮 + Drission 填表 + 现有 Turnstile 处理
@@ -1761,7 +1814,7 @@ export function SettingsForm() {
                 ：重启浏览器 → 更长拟人延迟 → 等 Turnstile 自然成功 → 模拟点击提交 → CF
                 拦截则立即放弃
               </li>
-              <li>A+B 都失败：记失败、可选降级代理、进入下一账号</li>
+              <li>主路径/A+B 都失败：记失败、可选降级代理、进入下一账号</li>
             </ol>
           </div>
         </CardBody>

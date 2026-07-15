@@ -86,15 +86,164 @@ except Exception:  # pragma: no cover
 # ============================================================
 
 
+def _mail_provider() -> str:
+    _reload_mail_conf()
+    p = str(_conf.get("mail_provider") or _conf.get("email_provider") or "cloudflare").strip().lower()
+    if p in ("cf", "temp_email", "vmail", "cloudflare_temp_email"):
+        return "cloudflare"
+    if p in ("duck", "duckmail"):
+        return "duckmail"
+    if p in ("yyds", "yydsmail"):
+        return "yyds"
+    return p or "cloudflare"
+
+
 def get_email_and_token() -> Tuple[Optional[str], Optional[str]]:
     """
-    在自建邮件服务上创建一个新地址，返回 (email, jwt)。
-    jwt 用于后续轮询邮件。
+    创建临时邮箱，返回 (email, token)。
+    provider: cloudflare（默认）| duckmail | yyds
+    token 用于后续轮询验证码（CF=jwt，duck/yyds=jwt 或 account token）。
     """
+    provider = _mail_provider()
+    if provider == "duckmail":
+        email, token = _create_duckmail()
+        return email, token
+    if provider == "yyds":
+        email, token = _create_yyds()
+        return email, token
     email, _password, jwt = create_temp_email()
     if email and jwt:
         return email, jwt
     return None, None
+
+
+def _create_duckmail() -> Tuple[Optional[str], Optional[str]]:
+    """
+    DuckMail：Bearer API Token 创建地址。
+    config: mail_api_base, mail_admin_auth(token), mail_domain(可选)
+    常见：POST {base}/api/addresses 或 /mailbox
+    """
+    _reload_mail_conf()
+    base = MAIL_API_BASE.rstrip("/")
+    token = MAIL_ADMIN_AUTH.strip()
+    if not base:
+        raise Exception("duckmail: mail_api_base 未设置")
+    if not token:
+        raise Exception("duckmail: mail_admin_auth 未设置（填 DuckMail API Token）")
+    domain = next_mail_domain(MAIL_DOMAIN) or MAIL_DOMAIN
+    local = _generate_local_part()
+    session, use_cffi = _create_session()
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    # 兼容多套路径
+    payloads = []
+    if domain:
+        payloads.append({"address": f"{local}@{domain}", "domain": domain, "name": local})
+        payloads.append({"email": f"{local}@{domain}"})
+    payloads.append({"name": local})
+    paths = ("/api/addresses", "/api/mailbox", "/mailbox", "/api/v1/addresses")
+    last_err = ""
+    for path in paths:
+        url = f"{base}{path}"
+        for body in payloads:
+            try:
+                res = _do_request(
+                    session, use_cffi, "post", url, json=body, headers=headers, timeout=20
+                )
+                if res.status_code in (200, 201):
+                    data = res.json() if res.text else {}
+                    if not isinstance(data, dict):
+                        data = {}
+                    email = (
+                        data.get("address")
+                        or data.get("email")
+                        or data.get("mailbox")
+                        or (f"{local}@{domain}" if domain else "")
+                    )
+                    jwt = (
+                        data.get("token")
+                        or data.get("jwt")
+                        or data.get("access_token")
+                        or token
+                    )
+                    if email:
+                        print(f"[*] duckmail 创建成功: {email}")
+                        return str(email), str(jwt)
+                    last_err = f"HTTP {res.status_code} 无 address: {data}"
+                else:
+                    last_err = f"HTTP {res.status_code}: {(res.text or '')[:160]} | {url}"
+            except Exception as e:
+                last_err = f"{e} | {url}"
+    raise Exception(f"duckmail 创建失败: {last_err}")
+
+
+def _create_yyds() -> Tuple[Optional[str], Optional[str]]:
+    """
+    YYDS 邮箱：Bearer 创建。
+    config 同 duckmail 字段；路径兼容 /api/email/create 等。
+    """
+    _reload_mail_conf()
+    base = MAIL_API_BASE.rstrip("/")
+    token = MAIL_ADMIN_AUTH.strip()
+    if not base:
+        raise Exception("yyds: mail_api_base 未设置")
+    if not token:
+        raise Exception("yyds: mail_admin_auth 未设置")
+    domain = next_mail_domain(MAIL_DOMAIN) or MAIL_DOMAIN
+    local = _generate_local_part()
+    session, use_cffi = _create_session()
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    body_base = {"name": local}
+    if domain:
+        body_base["domain"] = domain
+        body_base["email"] = f"{local}@{domain}"
+    paths = (
+        "/api/email/create",
+        "/api/mailbox/create",
+        "/api/v1/mailbox",
+        "/api/addresses",
+    )
+    last_err = ""
+    for path in paths:
+        url = f"{base}{path}"
+        try:
+            res = _do_request(
+                session, use_cffi, "post", url, json=body_base, headers=headers, timeout=20
+            )
+            if res.status_code in (200, 201):
+                data = res.json() if res.text else {}
+                if not isinstance(data, dict):
+                    data = {}
+                # 嵌套 data
+                inner = data.get("data") if isinstance(data.get("data"), dict) else data
+                email = (
+                    inner.get("email")
+                    or inner.get("address")
+                    or inner.get("mail")
+                    or (f"{local}@{domain}" if domain else "")
+                )
+                jwt = (
+                    inner.get("token")
+                    or inner.get("jwt")
+                    or data.get("token")
+                    or token
+                )
+                if email:
+                    print(f"[*] yyds 创建成功: {email}")
+                    return str(email), str(jwt)
+                last_err = f"无 email 字段: {data}"
+            else:
+                last_err = f"HTTP {res.status_code}: {(res.text or '')[:160]} | {url}"
+        except Exception as e:
+            last_err = f"{e} | {url}"
+    raise Exception(f"yyds 创建失败: {last_err}")
 
 
 def get_oai_code(dev_token: str, email: str, timeout: int = 30) -> Optional[str]:
@@ -253,40 +402,93 @@ def create_temp_email() -> Tuple[str, str, str]:
 
 
 def fetch_emails(jwt: str, limit: int = 20) -> List[Dict[str, Any]]:
-    """获取邮件列表"""
-    try:
-        headers = {"Authorization": f"Bearer {jwt}"}
-        session, use_cffi = _create_session()
-        res = _do_request(
-            session, use_cffi, "get",
-            f"{MAIL_API_BASE}/api/mails",
-            params={"limit": limit, "offset": 0},
-            headers=headers,
-            timeout=15,
+    """获取邮件列表（cloudflare 默认路径 + duckmail/yyds 多路径兜底）。"""
+    _reload_mail_conf()
+    provider = _mail_provider()
+    headers = {"Authorization": f"Bearer {jwt}"}
+    session, use_cffi = _create_session()
+    base = MAIL_API_BASE.rstrip("/")
+    # cloudflare_temp_email 主路径优先；其它 provider 多试几条
+    paths = [
+        ("/api/mails", {"limit": limit, "offset": 0}),
+    ]
+    if provider in ("duckmail", "yyds"):
+        paths.extend(
+            [
+                ("/api/messages", {"limit": limit}),
+                ("/api/mailbox/messages", {"limit": limit}),
+                ("/api/v1/messages", {"limit": limit}),
+                ("/mails", {"limit": limit}),
+            ]
         )
-        if res.status_code == 200:
-            data = res.json()
-            return data.get("results") or []
-    except Exception:
-        pass
+    for path, params in paths:
+        try:
+            res = _do_request(
+                session,
+                use_cffi,
+                "get",
+                f"{base}{path}",
+                params=params,
+                headers=headers,
+                timeout=15,
+            )
+            if res.status_code != 200:
+                continue
+            data = res.json() if res.text else {}
+            if isinstance(data, list):
+                return [x for x in data if isinstance(x, dict)]
+            if not isinstance(data, dict):
+                continue
+            for key in ("results", "messages", "mails", "data", "items"):
+                arr = data.get(key)
+                if isinstance(arr, list) and arr:
+                    return [x for x in arr if isinstance(x, dict)]
+                if isinstance(arr, dict):
+                    inner = arr.get("results") or arr.get("items") or arr.get("list")
+                    if isinstance(inner, list) and inner:
+                        return [x for x in inner if isinstance(x, dict)]
+        except Exception:
+            continue
     return []
 
 
 def fetch_email_detail(jwt: str, msg_id: Any) -> Optional[Dict]:
-    """获取单封邮件详情（含正文）"""
-    try:
-        headers = {"Authorization": f"Bearer {jwt}"}
-        session, use_cffi = _create_session()
-        res = _do_request(
-            session, use_cffi, "get",
-            f"{MAIL_API_BASE}/api/mail/{msg_id}",
-            headers=headers,
-            timeout=15,
+    """获取单封邮件详情（含正文）；多路径兼容 duckmail/yyds。"""
+    _reload_mail_conf()
+    provider = _mail_provider()
+    headers = {"Authorization": f"Bearer {jwt}"}
+    session, use_cffi = _create_session()
+    base = MAIL_API_BASE.rstrip("/")
+    paths = [
+        f"/api/mail/{msg_id}",
+        f"/api/mails/{msg_id}",
+    ]
+    if provider in ("duckmail", "yyds"):
+        paths.extend(
+            [
+                f"/api/messages/{msg_id}",
+                f"/api/mailbox/messages/{msg_id}",
+                f"/api/v1/messages/{msg_id}",
+                f"/mails/{msg_id}",
+            ]
         )
-        if res.status_code == 200:
-            return res.json()
-    except Exception:
-        pass
+    for path in paths:
+        try:
+            res = _do_request(
+                session,
+                use_cffi,
+                "get",
+                f"{base}{path}",
+                headers=headers,
+                timeout=15,
+            )
+            if res.status_code == 200:
+                data = res.json() if res.text else None
+                if isinstance(data, dict):
+                    inner = data.get("data") if isinstance(data.get("data"), dict) else data
+                    return inner if isinstance(inner, dict) else data
+        except Exception:
+            continue
     return None
 
 

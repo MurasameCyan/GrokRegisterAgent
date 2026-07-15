@@ -3915,62 +3915,90 @@ def main():
             used_plan = "a"
             result = None
             plan_a_err: Exception | None = None
-            try:
-                print("[plan-a] 优先使用本项目主流程…")
-                result = run_single_registration(
-                    args.output, extract_numbers=args.extract_numbers, plan="a"
-                )
-                used_plan = "a"
-            except KeyboardInterrupt:
-                print("")
-                print("[Info] 收到中断信号，停止后续轮次。")
-                break
-            except Exception as e:
-                plan_a_err = e
-                print(f"[plan-a] ✘ 失败: {e}")
-                if not plan_b_enabled:
-                    print("[plan-b] 已关闭，跳过本账号")
-                else:
-                    print("[plan-b] Plan A 失败，尝试 Plan B 兜底一次…")
-                    try:
-                        stop_browser()
-                    except Exception:
-                        pass
-                    time.sleep(0.5 + secrets.randbelow(40) / 100.0)
-                    try:
-                        start_browser()
-                        log_runtime_fingerprint(page, force=False)
-                        # 不打印「本轮代理(Plan B)」
-                        result = run_single_registration(
-                            args.output,
-                            extract_numbers=args.extract_numbers,
-                            plan="b",
-                        )
-                        used_plan = "b"
-                    except KeyboardInterrupt:
-                        print("")
-                        print("[Info] 收到中断信号，停止后续轮次。")
-                        break
-                    except Exception as e2:
-                        fail_count += 1
-                        print(f"[plan-b] ✘ 兜底仍失败: {e2}")
-                        print(
-                            f"✘ 第 {current_round} 轮失败/跳过"
-                            f"（Plan A: {str(plan_a_err)[:80]} | Plan B: {str(e2)[:80]}）"
-                        )
-                        try:
-                            from pools import demote_proxy_to_pending
 
-                            if _browser_proxy:
-                                demote_proxy_to_pending(
-                                    _browser_proxy,
-                                    reason=f"A+B失败:{str(e2)[:36]}",
-                                )
-                        except Exception as de:
-                            print(f"[Warn] 失败降级回调异常: {de}")
-                        if args.count == 0 or current_round < args.count:
-                            time.sleep(0.5)
-                        continue
+            # Plan-C：register_mode=hybrid 时优先短浏览器+协议；不可用/失败则回退 browser
+            try:
+                from hybrid_register import load_register_mode, run_hybrid_registration
+
+                reg_mode = load_register_mode()
+            except Exception:
+                reg_mode = "browser"
+            if reg_mode == "hybrid":
+                try:
+                    print("[hybrid] 主路径 hybrid（Plan-C）…")
+                    hy = run_hybrid_registration(
+                        args.output, extract_numbers=args.extract_numbers
+                    )
+                    if hy and hy.get("sso"):
+                        result = hy
+                        used_plan = "hybrid"
+                    else:
+                        print("[hybrid] 未成功，回退 browser Plan A…")
+                except KeyboardInterrupt:
+                    print("")
+                    print("[Info] 收到中断信号，停止后续轮次。")
+                    break
+                except Exception as he:
+                    print(f"[hybrid] 异常，回退 browser: {he}")
+
+            # browser 主路径：Plan A → 可选 Plan B
+            if result is None:
+                try:
+                    print("[plan-a] 优先使用本项目主流程…")
+                    result = run_single_registration(
+                        args.output, extract_numbers=args.extract_numbers, plan="a"
+                    )
+                    used_plan = "a"
+                except KeyboardInterrupt:
+                    print("")
+                    print("[Info] 收到中断信号，停止后续轮次。")
+                    break
+                except Exception as e:
+                    plan_a_err = e
+                    print(f"[plan-a] ✘ 失败: {e}")
+                    if not plan_b_enabled:
+                        print("[plan-b] 已关闭，跳过本账号")
+                    else:
+                        print("[plan-b] Plan A 失败，尝试 Plan B 兜底一次…")
+                        try:
+                            stop_browser()
+                        except Exception:
+                            pass
+                        time.sleep(0.5 + secrets.randbelow(40) / 100.0)
+                        try:
+                            start_browser()
+                            log_runtime_fingerprint(page, force=False)
+                            # 不打印「本轮代理(Plan B)」
+                            result = run_single_registration(
+                                args.output,
+                                extract_numbers=args.extract_numbers,
+                                plan="b",
+                            )
+                            used_plan = "b"
+                        except KeyboardInterrupt:
+                            print("")
+                            print("[Info] 收到中断信号，停止后续轮次。")
+                            break
+                        except Exception as e2:
+                            fail_count += 1
+                            print(f"[plan-b] ✘ 兜底仍失败: {e2}")
+                            print(
+                                f"✘ 第 {current_round} 轮失败/跳过"
+                                f"（Plan A: {str(plan_a_err)[:80]} | Plan B: {str(e2)[:80]}）"
+                            )
+                            try:
+                                from pools import demote_proxy_to_pending
+
+                                if _browser_proxy:
+                                    demote_proxy_to_pending(
+                                        _browser_proxy,
+                                        reason=f"A+B失败:{str(e2)[:36]}",
+                                    )
+                            except Exception as de:
+                                print(f"[Warn] 失败降级回调异常: {de}")
+                            if args.count == 0 or current_round < args.count:
+                                time.sleep(0.5)
+                            continue
 
             if result is None:
                 fail_count += 1

@@ -1054,6 +1054,21 @@ export async function mintCpaAuthFromSso(input: {
   const deleteOnDead = settings.cpaProbeDeleteOnDead !== false;
 
   // 预检 + mint 合并为一次 Python 调用（check_sso_ban / sso2gropcpa 思路）
+  // SSO→CPA mint 路径：pkce | device | auto（来自设置）
+  const mintModeRaw = String(
+    (settings as { cpaMintMode?: string }).cpaMintMode || 'pkce'
+  )
+    .trim()
+    .toLowerCase();
+  const mintMode =
+    mintModeRaw === 'device' || mintModeRaw === 'device_flow' || mintModeRaw === 'b'
+      ? 'device'
+      : mintModeRaw === 'auto' ||
+          mintModeRaw === 'c' ||
+          mintModeRaw === 'pkce_then_device'
+        ? 'auto'
+        : 'pkce';
+
   const code = `
 import json, sys
 sys.path.insert(0, ${JSON.stringify(runtime.registerDir)})
@@ -1065,6 +1080,7 @@ proxy = sys.argv[3] if len(sys.argv) > 3 else ""
 auth_dir = sys.argv[4] if len(sys.argv) > 4 else ""
 precheck = (sys.argv[5] if len(sys.argv) > 5 else "1") != "0"
 delete_on_dead = (sys.argv[6] if len(sys.argv) > 6 else "1") != "0"
+mint_mode = sys.argv[7] if len(sys.argv) > 7 else "pkce"
 # 运行/预检强制直连，不走代理，避免浪费 IP 名额；mint 本身仍用 proxy
 if precheck:
     p = probe_sso(sso, proxy="")
@@ -1083,11 +1099,14 @@ if precheck:
 r = sso_to_cpa_auth(
     sso=sso, email=email, proxy=proxy, auth_dir=auth_dir or None,
     random_fingerprint=True, delete_on_dead=delete_on_dead,
+    mint_mode=mint_mode,
 )
 if isinstance(r, dict):
     r.setdefault("mode", "sso_mint")
     r.setdefault("verdict", "alive")
     r["skipped"] = False
+    if r.get("mint_mode"):
+        r["mode"] = "sso_mint_" + str(r.get("mint_mode"))
 print(json.dumps(r, ensure_ascii=False))
 `.trim();
 
