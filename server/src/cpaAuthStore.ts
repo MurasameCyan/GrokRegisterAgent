@@ -1065,8 +1065,9 @@ proxy = sys.argv[3] if len(sys.argv) > 3 else ""
 auth_dir = sys.argv[4] if len(sys.argv) > 4 else ""
 precheck = (sys.argv[5] if len(sys.argv) > 5 else "1") != "0"
 delete_on_dead = (sys.argv[6] if len(sys.argv) > 6 else "1") != "0"
+# 运行/预检强制直连，不走代理，避免浪费 IP 名额；mint 本身仍用 proxy
 if precheck:
-    p = probe_sso(sso, proxy=proxy)
+    p = probe_sso(sso, proxy="")
     if not p.get("alive"):
         print(json.dumps({
             "ok": False,

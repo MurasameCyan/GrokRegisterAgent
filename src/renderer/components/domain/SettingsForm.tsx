@@ -1079,13 +1079,13 @@ export function SettingsForm() {
               <div className="lg:col-span-2 grid gap-3 sm:grid-cols-2">
                 <ToggleRow
                   label="SSO 验活走代理"
-                  hint="开：SSO 验活经 HTTP 代理访问 grok；关：直连"
+                  hint="开：号池 SSO 验活经 HTTP 代理；关：直连。mint 前预检始终直连（不耗代理 IP）"
                   checked={draft.ssoCheckUseProxy !== false}
                   onChange={(v) => update('ssoCheckUseProxy', v)}
                 />
                 <ToggleRow
                   label="Auth 转换/重签/测活走代理"
-                  hint="开：mint、重签、CPA 测活经 HTTP 代理；关：直连"
+                  hint="开：mint/重签/CPA 测活经代理；关：直连。预检(probe_sso)固定直连省 IP"
                   checked={draft.cpaAuthUseProxy !== false}
                   onChange={(v) => update('cpaAuthUseProxy', v)}
                 />

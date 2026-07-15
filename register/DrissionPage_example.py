@@ -3901,11 +3901,7 @@ def main():
             start_browser()
             # start_browser 内已打指纹；仅首轮详打一次（避免双份）
             log_runtime_fingerprint(page, force=False)
-            # 轮次分隔处再标一次当前代理，便于对照日志
-            try:
-                print(f"[*] 本轮代理: {_format_proxy_for_log(_browser_proxy)}")
-            except Exception:
-                pass
+            # 不打印「本轮代理」（省日志；代理异常时仍有降级/切换行）
             print(f"─── 第 {current_round}/{total} 轮 ────────────────────────")
 
             # Plan A 优先；失败则 Plan B 兜底一次；再失败跳过下一账号
@@ -3944,12 +3940,7 @@ def main():
                     try:
                         start_browser()
                         log_runtime_fingerprint(page, force=False)
-                        try:
-                            print(
-                                f"[*] 本轮代理(Plan B): {_format_proxy_for_log(_browser_proxy)}"
-                            )
-                        except Exception:
-                            pass
+                        # 不打印「本轮代理(Plan B)」
                         result = run_single_registration(
                             args.output,
                             extract_numbers=args.extract_numbers,

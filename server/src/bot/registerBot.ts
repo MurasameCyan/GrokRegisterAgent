@@ -89,6 +89,11 @@ function isNoiseStdoutLine(msg: string): boolean {
     // ── 启动/环境调试（用户要求隐藏）──
     /注册脚本目录\s*:/,
     /注册机入口\s*:/,
+    // 本轮代理行：不推前端（代理切换仍有「已降级并切换」等业务日志）
+    /\[\*?\]\s*本轮代理\s*:/,
+    /^\*\]\s*本轮代理\s*:/,
+    /本轮代理\s*:\s*`?https?:\/\//i,
+    /本轮代理\s*\(Plan\s*B\)\s*:/i,
     /支持带密码\s*HTTP\s*代理/i,
     /扩展\/本地转发/,
     /浏览器路径\s*:/,
@@ -495,8 +500,8 @@ export class RegisterBot extends EventEmitter {
     );
     job.currentSsoFile = ssoFile;
 
-    this.log(runId, `注册脚本目录: ${registerDir}`);
-    this.log(runId, `注册机入口: ${entrypoint}`);
+    // 脚本目录/入口仅写服务端控制台，不推前端日志（用户要求隐藏）
+    console.log(`[registerBot] run=${runId} dir=${registerDir} entry=${entrypoint}`);
 
     const args = ['-u', scriptPath, '--count', String(count), '--output', ssoFile];
 
