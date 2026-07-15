@@ -25,11 +25,17 @@ def parse_proxy_url(proxy_url: str) -> dict[str, Any] | None:
       http://user:pass@host:port
       http://user:pass@host:port#备注
       socks5://user:pass@host:port
+      用户名含 base64 的 `==`（住宅代理 token 常见）
     返回: scheme, host, port, username, password, has_auth
+
+    凭据用「最后一个 @ 前」+「第一个 : 拆 user/pass」手动解析，
+    避免个别环境下 URL 解析丢认证导致 407。
     """
     raw = (proxy_url or "").strip()
     if not raw:
         return None
+    # 去掉误粘贴的反引号/引号
+    raw = raw.strip("`'\"").strip()
     # 剥 #备注
     scheme_idx = raw.find("://")
     search_from = scheme_idx + 3 if scheme_idx >= 0 else 0
@@ -38,21 +44,72 @@ def parse_proxy_url(proxy_url: str) -> dict[str, Any] | None:
         raw = raw[:hash_idx].strip()
     if not re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", raw):
         raw = "http://" + raw
-    try:
-        u = urlparse(raw)
-    except Exception:
+
+    m = re.match(r"^([a-zA-Z][a-zA-Z0-9+.-]*)://(.*)$", raw)
+    if not m:
         return None
-    host = (u.hostname or "").strip()
-    if not host:
-        return None
-    port = u.port
-    if not port:
-        port = 1080 if (u.scheme or "").lower().startswith("socks") else 8080
-    scheme = (u.scheme or "http").lower()
+    scheme = (m.group(1) or "http").lower()
     if scheme in ("socks", "socks5h"):
         scheme = "socks5"
-    username = unquote(u.username) if u.username else ""
-    password = unquote(u.password) if u.password else ""
+    rest = (m.group(2) or "").split("/")[0].split("?")[0]
+
+    username = ""
+    password = ""
+    host_port = rest
+    at = rest.rfind("@")
+    if at >= 0:
+        cred = rest[:at]
+        host_port = rest[at + 1 :]
+        colon = cred.find(":")
+        if colon >= 0:
+            username = unquote(cred[:colon])
+            password = unquote(cred[colon + 1 :])
+        else:
+            username = unquote(cred)
+            password = ""
+
+    host = ""
+    port: int | None = None
+    if host_port.startswith("["):
+        end = host_port.find("]")
+        if end < 0:
+            return None
+        host = host_port[1:end].strip()
+        p = host_port[end + 1 :]
+        if p.startswith(":"):
+            try:
+                port = int(p[1:])
+            except ValueError:
+                port = None
+    else:
+        colon = host_port.rfind(":")
+        if colon < 0:
+            host = host_port.strip()
+        else:
+            host = host_port[:colon].strip()
+            try:
+                port = int(host_port[colon + 1 :])
+            except ValueError:
+                port = None
+
+    if not host:
+        # 回退 urlparse
+        try:
+            u = urlparse(raw)
+            host = (u.hostname or "").strip()
+            if not username and u.username:
+                username = unquote(u.username)
+            if not password and u.password:
+                password = unquote(u.password)
+            if not port and u.port:
+                port = int(u.port)
+        except Exception:
+            return None
+    if not host:
+        return None
+    if not port:
+        port = 1080 if scheme.startswith("socks") else (443 if scheme == "https" else 8080)
+
     return {
         "scheme": scheme,
         "host": host,

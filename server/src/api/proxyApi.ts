@@ -83,6 +83,9 @@ function stripProxyAnnotation(raw: string): string {
 export function normalizeProxyUrl(raw: string): string {
   let s = stripProxyAnnotation(raw);
   if (!s) return '';
+  // 去掉误粘贴的反引号/尖括号/引号
+  s = s.replace(/^[`'"<\s]+/, '').replace(/[`'">\s]+$/, '').trim();
+  if (!s) return '';
   if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) {
     // 无 scheme：默认 http（住宅 HTTP 代理常见）
     // 列表里的 “HTTPS” 一般指支持 CONNECT，不是 https:// 代理协议
@@ -91,10 +94,119 @@ export function normalizeProxyUrl(raw: string): string {
   // 统一 socks 写法
   s = s.replace(/^socks5h:\/\//i, 'socks5://');
   s = s.replace(/^socks:\/\//i, 'socks5://');
+
+  // 规范化凭据：用户名含 base64 `==` 时，用手动解析再 encode 重建，
+  // 避免部分环境下 auth 丢失 → HTTP 407
+  const parsed = parseProxyCredentials(s);
+  if (parsed) {
+    return formatProxyUrl(parsed);
+  }
   return s;
 }
 
+export type ParsedProxy = {
+  scheme: string;
+  host: string;
+  port: number;
+  username: string;
+  password: string;
+  hasAuth: boolean;
+};
+
+/**
+ * 手动解析 user:pass@host:port。
+ * 不依赖 URL.username（对 `==` 会变成 %3D%3D，部分路径未 decode 会 407）。
+ * 凭据按「第一个 : 前为 user，其后整段为 pass」拆分，支持 user 含 base64。
+ */
+export function parseProxyCredentials(proxyUrl: string): ParsedProxy | null {
+  let s = stripProxyAnnotation(proxyUrl);
+  if (!s) return null;
+  s = s.replace(/^[`'"<\s]+/, '').replace(/[`'">\s]+$/, '').trim();
+  if (!s) return null;
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) s = `http://${s}`;
+  s = s.replace(/^socks5h:\/\//i, 'socks5://').replace(/^socks:\/\//i, 'socks5://');
+
+  const m = s.match(/^([a-z][a-z0-9+.-]*):\/\/(.*)$/i);
+  if (!m) return null;
+  let scheme = (m[1] || 'http').toLowerCase();
+  if (scheme === 'socks' || scheme === 'socks5h') scheme = 'socks5';
+  let rest = m[2] || '';
+  // 去掉 path/query（代理 URL 一般无 path）
+  rest = rest.split('/')[0].split('?')[0];
+
+  let user = '';
+  let pass = '';
+  let hostPort = rest;
+  const at = rest.lastIndexOf('@');
+  if (at >= 0) {
+    const cred = rest.slice(0, at);
+    hostPort = rest.slice(at + 1);
+    const colon = cred.indexOf(':');
+    if (colon >= 0) {
+      user = cred.slice(0, colon);
+      pass = cred.slice(colon + 1);
+    } else {
+      user = cred;
+      pass = '';
+    }
+    try {
+      user = decodeURIComponent(user);
+    } catch {
+      /* keep raw */
+    }
+    try {
+      pass = decodeURIComponent(pass);
+    } catch {
+      /* keep raw */
+    }
+  }
+
+  // IPv6 [host]:port 或 host:port
+  let host = '';
+  let port = 0;
+  if (hostPort.startsWith('[')) {
+    const end = hostPort.indexOf(']');
+    if (end < 0) return null;
+    host = hostPort.slice(1, end);
+    const p = hostPort.slice(end + 1);
+    port = p.startsWith(':') ? parseInt(p.slice(1), 10) : 0;
+  } else {
+    const colon = hostPort.lastIndexOf(':');
+    if (colon < 0) {
+      host = hostPort;
+      port = 0;
+    } else {
+      host = hostPort.slice(0, colon);
+      port = parseInt(hostPort.slice(colon + 1), 10);
+    }
+  }
+  host = host.trim();
+  if (!host) return null;
+  if (!port || !Number.isFinite(port) || port < 1 || port > 65535) {
+    port = scheme.startsWith('socks') ? 1080 : scheme === 'https' ? 443 : 8080;
+  }
+
+  return {
+    scheme,
+    host,
+    port,
+    username: user,
+    password: pass,
+    hasAuth: Boolean(user || pass)
+  };
+}
+
+function formatProxyUrl(p: ParsedProxy): string {
+  const auth = p.hasAuth
+    ? `${encodeURIComponent(p.username)}:${encodeURIComponent(p.password)}@`
+    : '';
+  const host = p.host.includes(':') && !p.host.startsWith('[') ? `[${p.host}]` : p.host;
+  return `${p.scheme}://${auth}${host}:${p.port}`;
+}
+
 function proxyScheme(proxyUrl: string): string {
+  const p = parseProxyCredentials(proxyUrl);
+  if (p) return p.scheme;
   try {
     return new URL(proxyUrl).protocol.replace(':', '').toLowerCase() || 'http';
   } catch {
@@ -104,6 +216,11 @@ function proxyScheme(proxyUrl: string): string {
 
 function isSocks(scheme: string): boolean {
   return scheme === 'socks' || scheme === 'socks4' || scheme === 'socks4a' || scheme === 'socks5';
+}
+
+function proxyBasicAuthHeader(user: string, pass: string): string {
+  // RFC7617：user:pass 明文再 base64；user 可含 base64 字符 ==
+  return `Basic ${Buffer.from(`${user}:${pass}`, 'utf8').toString('base64')}`;
 }
 
 /**
@@ -213,13 +330,27 @@ async function probeTargets(
 }
 
 function createAgent(proxyUrl: string): Agent {
-  const scheme = proxyScheme(proxyUrl);
+  const parsed = parseProxyCredentials(proxyUrl);
+  const scheme = parsed?.scheme || proxyScheme(proxyUrl);
+  const normalized = parsed ? formatProxyUrl(parsed) : proxyUrl;
+
   if (isSocks(scheme)) {
     // socks-proxy-agent：socks4:// user:pass@host:port / socks5://...
-    return new SocksProxyAgent(proxyUrl) as unknown as Agent;
+    // 显式带 auth URL，避免 == 用户名丢认证
+    return new SocksProxyAgent(normalized) as unknown as Agent;
   }
-  // HTTP/HTTPS 代理（含 user:pass）
-  return new HttpsProxyAgent(proxyUrl) as unknown as Agent;
+
+  // HTTP/HTTPS 代理：显式 Proxy-Authorization，兼容 user 含 `==` 的 base64 token
+  const headers: Record<string, string> = {};
+  if (parsed?.hasAuth) {
+    headers['Proxy-Authorization'] = proxyBasicAuthHeader(
+      parsed.username,
+      parsed.password
+    );
+  }
+  return new HttpsProxyAgent(normalized, {
+    headers
+  }) as unknown as Agent;
 }
 
 function withHardTimeout<T>(p: Promise<T>, ms: number, onTimeout: () => T): Promise<T> {
@@ -332,7 +463,12 @@ export async function probeProxy(
 
     let message: string;
     if (needAuth) {
-      message = `测活失败: HTTP 407 代理需要认证（写成 user:pass@ip:port）· ${parts.join(' · ')}`;
+      {
+        const cred = parseProxyCredentials(proxy);
+        message = cred?.hasAuth
+          ? `测活失败: HTTP 407 代理拒绝认证（已解析到用户名 ${cred.username.slice(0, 12)}…@${cred.host}:${cred.port}，请核对账号密码/是否过期）· ${parts.join(' · ')}`
+          : `测活失败: HTTP 407 代理需要认证（写成 user:pass@ip:port，用户名可含 base64 的 ==）· ${parts.join(' · ')}`;
+      }
     } else {
       message = `测活失败: ${missing.join(' + ')} · ${parts.join(' · ')}`;
     }

@@ -558,17 +558,16 @@ export function removeProxiesFromPoolText(raw: string, proxiesToRemove: string[]
 /** 规范化池内去重键：优先 host:port，避免 http://ip:port 与 ip:port 各算一条 */
 export function proxyDedupeKey(raw: string): string {
   const entry = parseProxyLine(raw);
-  const proxy = entry?.proxy || stripProxyComment(raw) || String(raw || '').trim();
+  let proxy = entry?.proxy || stripProxyComment(raw) || String(raw || '').trim();
   if (!proxy) return '';
-  // 去掉 scheme，统一成 host:port（含 user@）
+  // 去掉误粘贴的反引号
+  proxy = proxy.replace(/^[`'"<\s]+/, '').replace(/[`'">\s]+$/, '').trim();
+  // 去掉 scheme，统一成 user:pass@host:port（手动拆，兼容 user 含 base64 ==）
   try {
     if (/^[a-z][a-z0-9+.-]*:\/\//i.test(proxy)) {
-      const u = new URL(proxy);
-      const auth =
-        u.username || u.password
-          ? `${decodeURIComponent(u.username)}${u.password ? `:${decodeURIComponent(u.password)}` : ''}@`
-          : '';
-      return `${auth}${u.hostname}${u.port ? `:${u.port}` : ''}`;
+      const withoutScheme = proxy.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '');
+      const body = withoutScheme.split('/')[0].split('?')[0];
+      return body;
     }
   } catch {
     /* fallthrough */
