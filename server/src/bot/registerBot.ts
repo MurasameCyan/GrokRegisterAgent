@@ -600,7 +600,8 @@ export class RegisterBot extends EventEmitter {
       (/[✔✅✓]/.test(msg) || msg.includes('轮成功')) &&
       msg.includes('成功') &&
       /第\s*\d+/.test(msg) &&
-      !msg.includes('失败');
+      !msg.includes('失败') &&
+      !msg.includes('跳过');
     if (isRoundSuccess) {
       job.status.success++;
       this.push({
@@ -613,10 +614,16 @@ export class RegisterBot extends EventEmitter {
       this.recordAccount(job);
     }
 
+    // 失败/跳过均计入「失败」：Python 常用「✘ 第 N 轮跳过」不含「失败」字样
     const isRoundFail =
-      (/[✘❌✕xX]/.test(msg) || msg.includes('轮失败')) &&
-      msg.includes('失败') &&
-      /第\s*\d+/.test(msg);
+      /第\s*\d+/.test(msg) &&
+      ((/[✘❌✕]/.test(msg) ||
+        msg.includes('轮失败') ||
+        msg.includes('轮跳过') ||
+        /第\s*\d+\s*轮\s*(失败|跳过)/.test(msg)) &&
+        (msg.includes('失败') || msg.includes('跳过'))) &&
+      !msg.includes('轮成功') &&
+      !isRoundSuccess;
     if (isRoundFail) {
       job.status.failed++;
       job.pendingAccount = {};

@@ -303,8 +303,22 @@ def recover_auth_on_dead(
     trigger_http: int = 403,
     log: LogFn | None = None,
 ) -> dict[str, Any]:
-    """401/403 恢复：密码登录 → mint CPA 覆盖 path → 发英文消息 → 二次 probe。"""
-    log = log or _noop
+    """401/403 恢复：密码登录 → mint CPA 覆盖 path → 发英文消息 → 二次 probe。
+
+    log 回调会收到带 stage= 的行，供 server 解析推 WebSocket。
+    """
+    def _log(msg: str) -> None:
+        try:
+            (log or _noop)(msg)
+        except Exception:
+            pass
+
+    def _stage(stage: str, msg: str = "") -> None:
+        line = f"[relogin] stage={stage}"
+        if msg:
+            line += f" msg={msg}"
+        _log(line)
+
     from pathlib import Path
 
     from auth_service import sso_to_cpa_auth
@@ -322,16 +336,25 @@ def recover_auth_on_dead(
         "path": str(p),
     }
 
-    login = password_login_sso(email, password, proxy=proxy, log=log)
+    if not email or not password:
+        _stage("error", "recover 缺少 email/password")
+        out["error"] = "missing email or password"
+        return out
+
+    _stage("login", f"password_login {email}")
+    login = password_login_sso(email, password, proxy=proxy, log=_log)
     out["login"] = {
         "ok": bool(login.get("ok")),
         "error": login.get("error"),
     }
     if not login.get("ok") or not login.get("sso"):
-        out["error"] = login.get("error") or "password login failed"
+        err = login.get("error") or "password login failed"
+        _stage("error", str(err)[:160])
+        out["error"] = err
         return out
 
     sso = str(login["sso"])
+    _stage("mint", "SSO→CPA mint…")
     mint = sso_to_cpa_auth(
         sso=sso,
         email=email,
@@ -339,7 +362,7 @@ def recover_auth_on_dead(
         auth_dir=p.parent,
         delete_on_dead=False,
         skip_remote=True,
-        log=log,
+        log=_log,
     )
     out["mint"] = {
         "ok": bool(mint.get("ok")),
@@ -353,7 +376,9 @@ def recover_auth_on_dead(
     elif p.is_file():
         target = p
     else:
-        out["error"] = mint.get("error") or "mint failed"
+        err = mint.get("error") or "mint failed"
+        _stage("error", str(err)[:160])
+        out["error"] = err
         return out
 
     # 若 mint 写到新文件名，尽量同步覆盖原 path（保持 filename 稳定）
@@ -368,7 +393,9 @@ def recover_auth_on_dead(
                 pass
             target = p
         except Exception as e:
-            log(f"[recover_auth] overwrite failed: {e}")
+            _log(f"[recover_auth] overwrite failed: {e}")
+
+    _stage("mint", f"已写入 {target.name}")
 
     # 随机英文消息尝试激活（二次检测前 warm-up）
     prompts = (
@@ -382,6 +409,7 @@ def recover_auth_on_dead(
         "Could you reply with any short English sentence?",
     )
     prompt = secrets.choice(prompts)
+    _stage("activate", "随机英文消息激活…")
     msg_probe = probe_cpa_auth(
         target,
         proxy=proxy,
@@ -394,8 +422,10 @@ def recover_auth_on_dead(
         "http_status": msg_probe.get("http_status"),
         "summary": msg_probe.get("summary"),
     }
+    _log(f"[recover] activate: {out['message']}")
 
     # 二次正式测活（短 ping）
+    _stage("probe", "二次测活 ping")
     second = probe_cpa_auth(target, proxy=proxy, prompt="ping", max_output_tokens=1)
     out["second_probe"] = second
     out["action"] = second.get("action")
@@ -412,6 +442,9 @@ def recover_auth_on_dead(
             or second.get("summary")
             or f"HTTP {second.get('http_status')}"
         )
+        _stage("error", str(out["error"])[:160])
+    else:
+        _stage("done", "ok")
     # 重登/激活后也写回测活侧车（与 probe_and_cleanup 一致）
     try:
         from cpa_probe import persist_probe_result
@@ -425,7 +458,7 @@ def recover_auth_on_dead(
                 },
             )
     except Exception as e:
-        log(f"[recover_auth] persist probe failed: {e}")
+        _log(f"[recover_auth] persist probe failed: {e}")
     return out
 
 

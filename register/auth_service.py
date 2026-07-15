@@ -383,9 +383,9 @@ def resign_auth_file(
     raw_headers = payload.get("headers") if isinstance(payload.get("headers"), dict) else None
     headers = _normalize_grok_pager_headers(raw_headers)
 
-    # 1) refresh
+    # 1) refresh_token 换票（mode=refresh）
     if refresh:
-        log(f"[auth] resign via refresh: {p.name}")
+        log(f"[auth] mode=refresh resign start: {p.name} proxy={'yes' if proxy else 'no'}")
         token = refresh_access_token(refresh, proxy=proxy)
         if token and token.get("access_token"):
             new_refresh = token.get("refresh_token") or refresh
@@ -405,29 +405,33 @@ def resign_auth_file(
                     extra=extra,
                 )
             except Exception as e:
-                return {"ok": False, "error": f"build payload failed: {e}", "email": email}
+                return {
+                    "ok": False,
+                    "error": f"build payload failed: {e}",
+                    "email": email,
+                    "mode": "refresh",
+                }
             new_payload = _ensure_payload_sso(new_payload, sso_keep)
             tmp = p.with_suffix(p.suffix + ".tmp")
             tmp.write_text(json.dumps(new_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
             os.replace(tmp, p)
-            log(f"[auth] resign wrote (refresh) → {p}")
+            log(f"[auth] mode=refresh wrote → {p.name}")
             ref = access_token_referrer(str(token.get("access_token") or ""))
             if ref:
-                log(f"[auth] resign access_token referrer={ref}")
+                log(f"[auth] mode=refresh access_token referrer={ref}")
             else:
-                log("[auth] ⚠ resign 后 access_token 无 referrer claim（cli-chat-proxy 可能 403）")
+                log("[auth] mode=refresh ⚠ access_token 无 referrer claim（cli-chat-proxy 可能 403）")
             # 重签：强制不因 probe dead 删文件（避免「点重签后文件没了」）。
-            # 需要删死号请用「测活」且开启 cpaProbeDeleteOnDead。
-            # 即使调用方传 delete_on_dead=True，重签路径也绝不删（仅测活可删）。
             # mint_soft_retry：刚 refresh 后同样可能瞬时 403
             probe = probe_and_cleanup(
                 p, proxy=proxy or "", delete_on_dead=False, mint_soft_retry=True
             )
             log(
-                f"[auth] resign probe action={probe.get('action')} http={probe.get('http_status')} "
-                f"deleted={probe.get('deleted')} {probe.get('summary') or probe.get('error') or ''}"
+                f"[auth] mode=refresh probe action={probe.get('action')} "
+                f"http={probe.get('http_status')} deleted={probe.get('deleted')} "
+                f"{probe.get('summary') or probe.get('error') or ''}"
             )
-            # 文件已成功写出 → 重签视为成功；probe dead 仅作警告，不删文件、不丢 path
+            # 文件已成功写出 → 重签视为成功；probe dead 仅作警告
             out: dict[str, Any] = {
                 "ok": True,
                 "mode": "refresh",
@@ -448,12 +452,12 @@ def resign_auth_file(
             if push_remote:
                 out["remote"] = _try_push_remote(new_payload, log=log)
             return out
-        log(f"[auth] refresh failed: {token}")
+        log(f"[auth] mode=refresh failed, fallback sso if any: {token}")
 
-    # 2) sso re-mint
+    # 2) sso re-mint（mode=sso，Auth Code+PKCE）
     sso_v = (sso or str(payload.get("sso") or "")).strip()
     if sso_v:
-        log(f"[auth] resign via sso (Auth Code+PKCE): {p.name}")
+        log(f"[auth] mode=sso resign start: {p.name} proxy={'yes' if proxy else 'no'}")
         r = sso_to_cpa_auth(
             sso=sso_v,
             email=email,
@@ -469,6 +473,7 @@ def resign_auth_file(
         # mint 写出后若仅 probe dead，文件仍在：视为重签成功 + 警告
         if r.get("ok"):
             r["mode"] = "sso"
+            log(f"[auth] mode=sso ok: {p.name}")
             return r
         path_still = str(r.get("path") or "")
         fname_still = str(r.get("filename") or "")
@@ -479,6 +484,7 @@ def resign_auth_file(
             and probe.get("action") == "dead"
             and not r.get("deleted")
         ):
+            log(f"[auth] mode=sso wrote but probe dead: {fname_still or path_still}")
             return {
                 "ok": True,
                 "mode": "sso",
@@ -507,13 +513,16 @@ def resign_auth_file(
             out["path"] = path_still
         if fname_still:
             out["filename"] = fname_still
+        log(f"[auth] mode=sso failed: {out.get('error')}")
         return out
 
+    log(f"[auth] mode=none resign unavailable: {p.name} (no refresh_token and no sso)")
     return {
         "ok": False,
-        "error": "no refresh_token and no sso for resign",
+        "error": "no refresh_token and no sso for resign（可试密码重登 mode=password_relogin）",
         "email": email,
         "path": str(p),
+        "mode": "none",
     }
 
 

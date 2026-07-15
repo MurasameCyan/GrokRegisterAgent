@@ -119,6 +119,11 @@ export interface CpaAuthItem {
   probeAction?: string | null;
   probeHttp?: number | null;
   probeAt?: string | null;
+  /**
+   * 号池是否存在同邮箱且带密码（重登前置校验）。
+   * false/undefined 时前端应禁止点重登，避免开浏览器后才失败。
+   */
+  poolHasPassword?: boolean;
 }
 
 export interface CpaAuthListResult {
@@ -319,6 +324,24 @@ export interface RendererApi {
     concurrency?: number;
     deleteOnDead?: boolean;
   }): Promise<CpaAuthBatchResult>;
+  /**
+   * 密码重登激活：浏览器登录 → mint → 随机英文消息 → 二次测活。
+   * 单条通常 30～120s。
+   */
+  reloginCpaAuth(input: {
+    filename?: string;
+    path?: string;
+  }): Promise<
+    CpaAuthBatchResultItem & {
+      ok: boolean;
+      probeAction?: string;
+      probeHttp?: number;
+      mode?: string;
+      error?: string;
+      email?: string;
+      filename?: string;
+    }
+  >;
   /** 批量推送已有 auth 到远程 CPA（不重新 mint） */
   pushCpaAuthRemote(input: {
     filenames?: string[];

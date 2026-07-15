@@ -13,6 +13,7 @@ import {
   moveProxiesFromAliveToPending
 } from '@shared/settings';
 import type { RunEvent } from '@shared/runEvents';
+import { setAppEventBroadcast } from './appEvents.js';
 import { loadSettings, saveSettings, dataDir } from './settingsStore.js';
 import { registerBot } from './bot/registerBot.js';
 import {
@@ -409,6 +410,23 @@ app.post('/api/cpa-auth/probe-batch', async (req: Request, res: Response) => {
       deleteOnDead?: boolean;
     };
     res.json(await probeCpaAuthBatch(body));
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(400).json({ error: message });
+  }
+});
+
+/**
+ * 手动重登激活：密码登录 → mint 覆盖 → 随机英文消息 → 二次测活。
+ * 浏览器登录通常 30～120s，前端勿当「秒失败」。
+ */
+app.post('/api/cpa-auth/relogin', async (req: Request, res: Response) => {
+  try {
+    const body = (req.body ?? {}) as {
+      filename?: string;
+      path?: string;
+    };
+    res.json(await reloginCpaAuth(body));
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(400).json({ error: message });
@@ -886,6 +904,9 @@ function broadcast(event: RunEvent) {
     sendEvent(ws, event);
   }
 }
+
+// 供 cpaAuthStore 等模块推送重登进度等非注册机事件
+setAppEventBroadcast(broadcast);
 
 registerBot.on('event', (event: RunEvent) => {
   broadcast(event);

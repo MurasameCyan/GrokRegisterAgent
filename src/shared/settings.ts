@@ -128,6 +128,16 @@ export interface AppSettings {
    */
   cpaProbeDeleteSsoOnDead: boolean;
   /**
+   * 测活得到 HTTP 401 后是否自动重签（refresh → 失败则 SSO mint）。
+   * 默认 false；与「刷新401」按钮共用重签路径，不含密码重登。
+   */
+  autoResignOn401: boolean;
+  /**
+   * 批量重签 / 刷新401 并发上限（accounts.x.ai 限流）。
+   * 默认 2，范围 1～3。
+   */
+  cpaResignConcurrency: number;
+  /**
    * 同一代理 IP 两次用于注册的最小间隔（秒）。
    * 0=不限制；未到时间时队列暂停等待（优先换其它已冷却 IP）。
    * 写入 Python config：proxy_ip_interval_sec
@@ -210,6 +220,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   cpaManagementKey: '',
   cpaProbeDeleteOnDead: false,
   cpaProbeDeleteSsoOnDead: false,
+  autoResignOn401: false,
+  cpaResignConcurrency: 2,
   proxyIpIntervalSec: 0,
   skipBotFlag1OnMint: true,
   /** 号池验活默认走代理（若总开关与 proxy 已配） */

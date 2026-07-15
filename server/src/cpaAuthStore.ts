@@ -11,6 +11,8 @@ import { resolveHttpProxy } from './resolveHttpProxy.js';
 import { resolveRegisterRuntime } from './bot/registerRuntime.js';
 import { readBotFlagFromAuthRecord, readBotFlagFromToken } from './jwtBotFlag.js';
 import { proxiedRequest } from './httpClient.js';
+import { broadcastAppEvent } from './appEvents.js';
+import type { ReloginStage } from '@shared/runEvents.js';
 
 export interface CpaAuthItem {
   filename: string;
@@ -39,6 +41,8 @@ export interface CpaAuthItem {
   probeHttp?: number | null;
   /** ISO 时间，上次测活写入时刻 */
   probeAt?: string | null;
+  /** 号池同邮箱是否有密码（重登前置） */
+  poolHasPassword?: boolean;
 }
 
 /** 规范化 SSO cookie / JWT 文本后做 SHA-256 hex */
@@ -159,7 +163,11 @@ function runPythonJson(
   pythonPath: string,
   registerDir: string,
   code: string,
-  args: string[]
+  args: string[],
+  opts?: {
+    /** 流式 stderr 行（重登进度等）；不阻塞 JSON 解析 */
+    onStderrLine?: (line: string) => void;
+  }
 ): Promise<Record<string, unknown>> {
   return new Promise((resolvePromise, reject) => {
     const child = spawn(pythonPath, ['-c', code, ...args], {
@@ -169,14 +177,29 @@ function runPythonJson(
     });
     let stdout = '';
     let stderr = '';
+    let stderrBuf = '';
     child.stdout?.on('data', (d) => {
       stdout += String(d);
     });
     child.stderr?.on('data', (d) => {
-      stderr += String(d);
+      const chunk = String(d);
+      stderr += chunk;
+      if (opts?.onStderrLine) {
+        stderrBuf += chunk;
+        const parts = stderrBuf.split(/\r?\n/);
+        stderrBuf = parts.pop() ?? '';
+        for (const line of parts) {
+          const t = line.trim();
+          if (t) opts.onStderrLine(t);
+        }
+      }
     });
     child.on('error', (err) => reject(err));
     child.on('close', (codeExit) => {
+      if (opts?.onStderrLine && stderrBuf.trim()) {
+        opts.onStderrLine(stderrBuf.trim());
+        stderrBuf = '';
+      }
       const line = stdout
         .trim()
         .split('\n')
@@ -199,6 +222,57 @@ function runPythonJson(
   });
 }
 
+function emitReloginProgress(input: {
+  filename: string;
+  email?: string;
+  stage: ReloginStage;
+  message?: string;
+}): void {
+  broadcastAppEvent({
+    type: 'relogin_progress',
+    filename: input.filename,
+    email: input.email,
+    stage: input.stage,
+    message: input.message,
+    ts: Date.now()
+  });
+}
+
+/** 从 Python stderr 解析 stage=xxx */
+function parseReloginStageLine(
+  line: string
+): { stage: ReloginStage; message: string } | null {
+  const s = String(line || '').trim();
+  if (!s) return null;
+  // [relogin] stage=login msg=...
+  const m = s.match(/stage\s*=\s*(queued|checking|login|mint|activate|probe|done|error)\b/i);
+  if (m) {
+    const stage = m[1].toLowerCase() as ReloginStage;
+    const msgM = s.match(/\bmsg\s*=\s*(.+)$/i);
+    return { stage, message: msgM ? msgM[1].trim() : s };
+  }
+  // 兼容 password_login / recover 文案
+  if (/password_login|登录|login/i.test(s) && !/mint|activate|probe/i.test(s)) {
+    return { stage: 'login', message: s };
+  }
+  if (/\bmint\b|sso.?→.?cpa|SSO→CPA|Auth Code/i.test(s)) {
+    return { stage: 'mint', message: s };
+  }
+  if (/message|activate|激活|warm-?up|greeting/i.test(s)) {
+    return { stage: 'activate', message: s };
+  }
+  if (/second_probe|二次|probe|测活/i.test(s)) {
+    return { stage: 'probe', message: s };
+  }
+  if (/\[relogin\]\s*done/i.test(s)) {
+    return { stage: 'done', message: s };
+  }
+  if (/\[relogin\]\s*start/i.test(s)) {
+    return { stage: 'login', message: s };
+  }
+  return null;
+}
+
 async function readXaiAfter(path: string): Promise<{
   xai: boolean;
   xaiFilename: boolean;
@@ -214,12 +288,31 @@ async function readXaiAfter(path: string): Promise<{
   }
 }
 
+/** 号池：email(lower) → 是否有非空密码（重登前置） */
+async function buildPoolPasswordMap(): Promise<Map<string, boolean>> {
+  const map = new Map<string, boolean>();
+  try {
+    const { listAccounts } = await import('./accountStore.js');
+    const accounts = await listAccounts();
+    for (const a of accounts) {
+      const email = String(a.email || '').trim().toLowerCase();
+      if (!email) continue;
+      const has = Boolean(String(a.password || '').trim());
+      if (has || !map.has(email)) map.set(email, has || Boolean(map.get(email)));
+    }
+  } catch {
+    /* 无号池 */
+  }
+  return map;
+}
+
 export async function listCpaAuth(): Promise<{ dir: string; items: CpaAuthItem[] }> {
   const settings = await loadSettings();
   const dir = resolveAuthDir(settings.authDir);
   if (!existsSync(dir)) {
     return { dir, items: [] };
   }
+  const poolPw = await buildPoolPasswordMap();
   const names = await fsp.readdir(dir);
   const items: CpaAuthItem[] = [];
   for (const name of names) {
@@ -259,10 +352,14 @@ export async function listCpaAuth(): Promise<{ dir: string; items: CpaAuthItem[]
       }
       const probeAtRaw = String(data.probe_at || data.probeAt || '').trim();
       const probeAt = probeAtRaw || null;
+      const emailStr = String(data.email || '');
+      const poolHasPassword = emailStr
+        ? Boolean(poolPw.get(emailStr.trim().toLowerCase()))
+        : false;
       items.push({
         filename: name,
         path: full,
-        email: String(data.email || ''),
+        email: emailStr,
         sub: String(data.sub || ''),
         expired: String(data.expired || ''),
         disabled: Boolean(data.disabled),
@@ -275,6 +372,7 @@ export async function listCpaAuth(): Promise<{ dir: string; items: CpaAuthItem[]
         probeAction,
         probeHttp,
         probeAt,
+        poolHasPassword,
         ...flags
       });
     } catch {
@@ -532,9 +630,10 @@ r = resign_auth_file(path, sso=sso, proxy=proxy, push_remote=push, delete_on_dea
 print(json.dumps(r, ensure_ascii=False))
 `.trim();
 
+  const proxy = resolveHttpProxy(settings, 'cpaAuth');
   const r = await runPythonJson(runtime.pythonPath, runtime.registerDir, code, [
     resolved,
-    resolveHttpProxy(settings, 'cpaAuth'),
+    proxy,
     String(input.sso || '').trim(),
     pushRemote ? '1' : '0'
   ]);
@@ -542,9 +641,17 @@ print(json.dumps(r, ensure_ascii=False))
   const outPath = String(r.path || resolved);
   const flags = await readXaiAfter(outPath);
   const remote = parseRemoteField(r.remote);
+  const mode = r.mode ? String(r.mode) : undefined;
+  // 统一日志：mode=refresh | sso | none（password_relogin 走 relogin）
+  console.log(
+    `[cpa-auth] resign mode=${mode || '?'} file=${basename(outPath)} ` +
+      `ok=${r.ok !== false && !r.error} proxy=${proxy ? 'yes' : 'no'}` +
+      (r.error ? ` err=${String(r.error).slice(0, 120)}` : '')
+  );
   return {
     ...r,
     filename: r.filename || basename(outPath),
+    mode,
     ...flags,
     remoteOk: remote.remoteOk,
     remoteError: remote.remoteError,
@@ -579,16 +686,29 @@ export async function resignCpaAuthBatch(input: {
   if (jobs.length === 0) throw new Error('缺少 filenames 或 paths');
   if (jobs.length > 100) throw new Error('单次批量重签最多 100 个');
 
-  const concurrency = Math.min(5, Math.max(1, Number(input.concurrency) || 2));
+  const settings = await loadSettings();
+  // 并发上限：设置 cpaResignConcurrency（默认 2）硬顶 3，防 accounts.x.ai 限流
+  const confCap = Math.min(
+    3,
+    Math.max(1, Number(settings.cpaResignConcurrency) || 2)
+  );
+  const concurrency = Math.min(
+    confCap,
+    Math.max(1, Number(input.concurrency) || confCap)
+  );
   const pushRemote = input.pushRemote === true;
   const results: CpaAuthBatchResultItem[] = [];
   let idx = 0;
+  const gapMs = concurrency >= 3 ? 180 : concurrency === 2 ? 80 : 0;
 
   async function worker() {
     while (idx < jobs.length) {
       const i = idx++;
       const job = jobs[i];
       try {
+        if (gapMs > 0 && i > 0) {
+          await new Promise((r) => setTimeout(r, gapMs));
+        }
         const r = await resignCpaAuth({ ...job, pushRemote });
         const probeObj =
           r.probe && typeof r.probe === 'object'
@@ -632,6 +752,15 @@ export async function resignCpaAuthBatch(input: {
   const ok = results.filter((r) => r.ok).length;
   const remoteOk = results.filter((r) => r.remoteOk === true).length;
   const remoteFailed = results.filter((r) => r.remoteOk === false).length;
+  const modeCounts: Record<string, number> = {};
+  for (const r of results) {
+    const m = r.mode || (r.ok ? 'ok' : 'error');
+    modeCounts[m] = (modeCounts[m] || 0) + 1;
+  }
+  console.log(
+    `[cpa-auth] resign-batch total=${results.length} ok=${ok} failed=${results.length - ok} ` +
+      `concurrency=${concurrency} modes=${JSON.stringify(modeCounts)}`
+  );
   return {
     total: results.length,
     ok,
@@ -1127,7 +1256,7 @@ async function persistProbeOnAuthFile(
 
 /**
  * 手动重登激活：密码登录 → mint 覆盖 → 随机英文消息 → 二次测活 → 写回测活标签。
- * 不依赖当前 token 是否 401/403。
+ * 号池无密码时立刻失败（不启动浏览器）；进度经 WebSocket relogin_progress 推送。
  */
 export async function reloginCpaAuth(input: {
   filename?: string;
@@ -1148,6 +1277,7 @@ export async function reloginCpaAuth(input: {
   assertInsideAuthDir(resolved, dir);
   if (!existsSync(resolved)) throw new Error(`文件不存在: ${resolved}`);
 
+  const filename = basename(resolved);
   let emailHint = '';
   try {
     const raw = await fsp.readFile(resolved, 'utf-8');
@@ -1156,7 +1286,22 @@ export async function reloginCpaAuth(input: {
   } catch {
     /* ignore */
   }
-  if (!emailHint) throw new Error('Auth 文件无邮箱，无法密码重登');
+
+  emitReloginProgress({
+    filename,
+    email: emailHint || undefined,
+    stage: 'checking',
+    message: '校验邮箱与号池密码…'
+  });
+
+  if (!emailHint) {
+    emitReloginProgress({
+      filename,
+      stage: 'error',
+      message: 'Auth 文件无邮箱，无法密码重登'
+    });
+    throw new Error('Auth 文件无邮箱，无法密码重登');
+  }
 
   let password = '';
   try {
@@ -1173,30 +1318,77 @@ export async function reloginCpaAuth(input: {
     /* ignore */
   }
   if (!password) {
-    throw new Error(`号池中未找到 ${emailHint} 的密码，无法重登`);
+    const msg = `号池中未找到 ${emailHint} 的密码，无法重登（未启动浏览器）`;
+    emitReloginProgress({ filename, email: emailHint, stage: 'error', message: msg });
+    throw new Error(msg);
   }
 
   const runtime = resolveRegisterRuntime(settings);
-  if (!runtime) throw new Error('未找到注册脚本目录，无法调用 Python 重登');
+  if (!runtime) {
+    emitReloginProgress({
+      filename,
+      email: emailHint,
+      stage: 'error',
+      message: '未找到注册脚本目录'
+    });
+    throw new Error('未找到注册脚本目录，无法调用 Python 重登');
+  }
+
+  emitReloginProgress({
+    filename,
+    email: emailHint,
+    stage: 'login',
+    message: '开始密码登录（浏览器）…'
+  });
 
   const code = `
 import json, sys
 sys.path.insert(0, ${JSON.stringify(runtime.registerDir)})
 from password_login import recover_auth_on_dead
+
+def _log(msg):
+    # 进度打到 stderr，避免污染最后一行 JSON（stdout）
+    print(msg, file=sys.stderr, flush=True)
+
 path = sys.argv[1]
 email = sys.argv[2] if len(sys.argv) > 2 else ""
 password = sys.argv[3] if len(sys.argv) > 3 else ""
 proxy = sys.argv[4] if len(sys.argv) > 4 else ""
-r = recover_auth_on_dead(path, email, password, proxy=proxy, trigger_http=0)
+_log("[relogin] stage=login msg=start email=%s" % email)
+r = recover_auth_on_dead(path, email, password, proxy=proxy, trigger_http=0, log=_log)
+_log("[relogin] stage=%s msg=done ok=%s action=%s err=%s" % (
+    "done" if r.get("ok") else "error",
+    r.get("ok"), r.get("action"), (r.get("error") or "")[:120]
+))
 print(json.dumps(r, ensure_ascii=False))
 `.trim();
 
-  const r = await runPythonJson(runtime.pythonPath, runtime.registerDir, code, [
-    resolved,
-    emailHint,
-    password,
-    resolveHttpProxy(settings, 'cpaAuth')
-  ]);
+  let r: Record<string, unknown>;
+  try {
+    r = await runPythonJson(
+      runtime.pythonPath,
+      runtime.registerDir,
+      code,
+      [resolved, emailHint, password, resolveHttpProxy(settings, 'cpaAuth')],
+      {
+        onStderrLine: (line) => {
+          const parsed = parseReloginStageLine(line);
+          if (parsed) {
+            emitReloginProgress({
+              filename,
+              email: emailHint,
+              stage: parsed.stage,
+              message: parsed.message
+            });
+          }
+        }
+      }
+    );
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    emitReloginProgress({ filename, email: emailHint, stage: 'error', message: msg });
+    throw e;
+  }
 
   const second =
     r.second_probe && typeof r.second_probe === 'object'
@@ -1208,14 +1400,28 @@ print(json.dumps(r, ensure_ascii=False))
   if (existsSync(resolved)) {
     await persistProbeOnAuthFile(resolved, action, httpStatus);
   }
+  const ok = r.ok === true || action === 'ok';
+  emitReloginProgress({
+    filename,
+    email: emailHint,
+    stage: ok ? 'done' : 'error',
+    message: ok
+      ? `完成 · HTTP ${httpStatus ?? '—'}`
+      : String(r.error || action || '失败')
+  });
+  // 与重签日志统一：mode=password_relogin（非 refresh/sso）
+  console.log(
+    `[cpa-auth] resign mode=password_relogin file=${filename} ok=${ok}` +
+      (r.error ? ` err=${String(r.error).slice(0, 120)}` : '')
+  );
   return {
     ...r,
-    filename: basename(resolved),
+    filename,
     email: String(r.email || emailHint),
-    ok: r.ok === true || action === 'ok',
+    ok,
     probeAction: action,
     probeHttp: httpStatus,
-    mode: 'relogin_activate'
+    mode: 'password_relogin'
   };
 }
 

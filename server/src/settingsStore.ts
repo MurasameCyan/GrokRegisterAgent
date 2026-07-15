@@ -182,6 +182,15 @@ function merge(partial: unknown): AppSettings {
       (p as AppSettings).cpaProbeDeleteSsoOnDead,
       DEFAULT_SETTINGS.cpaProbeDeleteSsoOnDead
     ),
+    autoResignOn401: asBool(
+      (p as AppSettings).autoResignOn401,
+      DEFAULT_SETTINGS.autoResignOn401
+    ),
+    cpaResignConcurrency: (() => {
+      const n = Number((p as AppSettings).cpaResignConcurrency);
+      if (!Number.isFinite(n) || n < 1) return DEFAULT_SETTINGS.cpaResignConcurrency;
+      return Math.min(Math.floor(n), 3);
+    })(),
     proxyIpIntervalSec: (() => {
       const n = Number((p as AppSettings).proxyIpIntervalSec);
       if (!Number.isFinite(n) || n < 0) return DEFAULT_SETTINGS.proxyIpIntervalSec;

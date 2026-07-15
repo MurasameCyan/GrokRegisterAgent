@@ -61,6 +61,17 @@ export interface AccountRecord {
   ssoCheck?: AccountSsoCheck;
 }
 
+/** Auth 重登阶段（WebSocket 推送，UI 显示登录中/mint/激活） */
+export type ReloginStage =
+  | 'queued'
+  | 'checking'
+  | 'login'
+  | 'mint'
+  | 'activate'
+  | 'probe'
+  | 'done'
+  | 'error';
+
 export type RunEvent =
   | { type: 'started'; runId: string; pid: number; total: number }
   | { type: 'stdout'; runId: string; level: LogLevel; text: string; ts: number }
@@ -76,6 +87,15 @@ export type RunEvent =
       code: number | null;
       signal: string | null;
       killed: boolean;
+    }
+  /** CPA Auth 密码重登进度（不经过 registerBot） */
+  | {
+      type: 'relogin_progress';
+      filename: string;
+      email?: string;
+      stage: ReloginStage;
+      message?: string;
+      ts: number;
     };
 
 /** 测试连接的统一返回 */

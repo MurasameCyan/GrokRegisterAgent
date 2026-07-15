@@ -1705,6 +1705,38 @@ export function SettingsForm() {
             checked={draft.cpaProbeDeleteSsoOnDead === true}
             onChange={(v) => update('cpaProbeDeleteSsoOnDead', v)}
           />
+          <ToggleRow
+            label="401 自动重签"
+            hint="默认关。测活 HTTP 401 后自动 refresh→SSO 重签（不含密码重登）；建议配合代理"
+            checked={draft.autoResignOn401 === true}
+            onChange={(v) => update('autoResignOn401', v)}
+          />
+          <div className="space-y-1.5">
+            <label className="text-[12px] font-medium text-foreground">
+              重签/刷新401 并发
+            </label>
+            <input
+              type="number"
+              min={1}
+              max={3}
+              className="w-full rounded-xl border border-border bg-background px-3 py-2 text-[13px]"
+              value={
+                draft.cpaResignConcurrency == null
+                  ? 2
+                  : draft.cpaResignConcurrency
+              }
+              onChange={(e) => {
+                const n = Number(e.target.value);
+                update(
+                  'cpaResignConcurrency',
+                  Number.isFinite(n) ? Math.min(3, Math.max(1, Math.floor(n))) : 2
+                );
+              }}
+            />
+            <p className="text-[11px] text-muted-foreground">
+              1～3，默认 2。过高易触发 accounts.x.ai 限流；走代理见「Auth 转换用代理」
+            </p>
+          </div>
         </CardBody>
       </Card>
 

@@ -939,8 +939,8 @@ _EMAIL_SIGNUP_FIND_TRIES = 5
 def open_signup_page(*, find_tries: int | None = None):
     """打开注册页并点击「使用邮箱注册」。
 
-    代理/隧道不可达时：立刻 demote + next_proxy + restart_browser，
-    禁止在坏代理上连刷满 5 次再降级（否则后续流程无网络）。
+    对齐 GrokRegisterAgent4 主流程：刷新/重开找按钮，中途不狂 demote。
+    仅在「chrome-error / 明确 net 错误 / 用尽重试且未进 accounts.x.ai」时降级代理。
     """
     global page, _browser_proxy
     tries = int(find_tries if find_tries is not None else _EMAIL_SIGNUP_FIND_TRIES)
@@ -948,33 +948,73 @@ def open_signup_page(*, find_tries: int | None = None):
     last_err: Exception | str | None = None
     demoted_this_open: set[str] = set()
 
+    def _is_signup_host(url: str) -> bool:
+        u = (url or "").lower()
+        return any(
+            h in u
+            for h in (
+                "accounts.x.ai",
+                "x.ai/sign",
+                "grok.x.ai",
+                "auth.x.ai",
+            )
+        )
+
+    def _is_chrome_error_url(url: str) -> bool:
+        u = (url or "").lower()
+        return (
+            u.startswith("chrome-error://")
+            or u.startswith("chrome://")
+            or "chromewebdata" in u
+            or u in ("", "about:blank", "about:newtab")
+        )
+
     def _proxy_err_text(blob: str) -> bool:
-        b = (blob or "").lower()
-        keys = (
+        """仅识别真网络/代理故障；勿匹配业务中文里的「代理/隧道」。"""
+        raw = blob or ""
+        b = raw.lower()
+        b = b.replace("代理/隧道错误", " ").replace("代理已降级", " ")
+        hard = (
             "err_proxy",
             "err_tunnel",
             "err_socks",
-            "err_connection",
+            "err_connection_reset",
+            "err_connection_closed",
+            "err_connection_refused",
+            "err_connection_timed_out",
             "err_timed_out",
             "err_name_not_resolved",
             "err_address_unreachable",
-            "proxy",
-            "tunnel",
-            "timed out",
-            "timeout",
-            "connection refused",
-            "network",
-            "无法访问",
+            "err_ssl_protocol_error",
+            "err_ssl_version",
+            "err_empty_response",
+            "err_internet_disconnected",
+            "chrome-error://",
             "this site can't be reached",
-            "took too long",
-            "empty response",
-            "bad gateway",
-            "chrome-error",
+            "this site can’t be reached",
+            "took too long to respond",
+            "connection timed out",
+            "connection refused",
+            "proxy connection failed",
+            "tunnel connection failed",
+            "err_proxy_connection_failed",
+            "err_tunnel_connection_failed",
         )
-        return any(k in b for k in keys)
+        if any(k in b for k in hard):
+            return True
+        if "无法访问此网站" in raw or "网页无法打开" in raw:
+            return True
+        return False
+
+    def _page_is_dead(title: str, url: str, body_hint: str = "") -> bool:
+        """当前标签是否像错误页。已在 accounts.x.ai 且无硬错误 → 不算死页。"""
+        if _is_chrome_error_url(url):
+            return True
+        if _is_signup_host(url):
+            return _proxy_err_text(f"{title} {body_hint}")
+        return _proxy_err_text(f"{title} {url} {body_hint}")
 
     def _demote_and_rotate(reason: str) -> bool:
-        """降级当前代理并切换下一条；成功换到新代理返回 True。"""
         global _browser_proxy
         cur = str(_browser_proxy or "").strip()
         if not cur:
@@ -994,10 +1034,7 @@ def open_signup_page(*, find_tries: int | None = None):
                 except Exception as re:
                     print(f"[Warn] restart_browser 失败: {re}", flush=True)
                 return True
-            print(
-                f"[Warn] 代理已降级但无更多可用节点: {reason[:100]}",
-                flush=True,
-            )
+            print(f"[Warn] 代理已降级但无更多可用节点: {reason[:100]}", flush=True)
             try:
                 restart_browser()
             except Exception:
@@ -1015,7 +1052,7 @@ def open_signup_page(*, find_tries: int | None = None):
                 page.get(SIGNUP_URL)
             except Exception as ge:
                 last_err = ge
-                # 打开 URL 即失败：优先当代理问题处理
+                # 仅真 net 错误才 demote（对齐 Agent4：开页失败多数只重开标签）
                 if _browser_proxy and _proxy_err_text(str(ge)):
                     _demote_and_rotate(f"开页失败: {str(ge)[:80]}")
                     time.sleep(0.4 + secrets.randbelow(30) / 100.0)
@@ -1025,14 +1062,15 @@ def open_signup_page(*, find_tries: int | None = None):
                     page = browser.new_tab(SIGNUP_URL)
                 except Exception as ge2:
                     last_err = ge2
-                    if _browser_proxy:
+                    if _browser_proxy and _proxy_err_text(str(ge2)):
                         _demote_and_rotate(f"开页失败: {str(ge2)[:80]}")
                         time.sleep(0.4 + secrets.randbelow(30) / 100.0)
                         continue
-            _apply_stealth_patches(page)
-            time.sleep(0.8 + secrets.randbelow(50) / 100.0)
 
-            # 页内 chrome 错误 / 空页：立即降级换代理
+            _apply_stealth_patches(page)
+            # SPA 首屏：比 Agent4 略多等一会儿
+            time.sleep(1.2 + secrets.randbelow(70) / 100.0)
+
             title = ""
             url = ""
             try:
@@ -1040,15 +1078,19 @@ def open_signup_page(*, find_tries: int | None = None):
                 url = str(getattr(page, "url", None) or "")
             except Exception:
                 pass
-            if _browser_proxy and _proxy_err_text(f"{title} {url} {last_err}"):
+
+            # 仅 chrome-error / 明确错误页才中途 demote；
+            # 禁止仅因「url=accounts.x.ai 但按钮未出」降级
+            if _browser_proxy and _page_is_dead(title, url) and not _is_signup_host(url):
                 _demote_and_rotate(
-                    f"注册页不可达(attempt {attempt}): {title or url or last_err}"
+                    f"注册页不可达(attempt {attempt}): {(title or url)[:100]}"
                 )
                 time.sleep(0.5 + secrets.randbelow(40) / 100.0)
                 continue
 
             try:
-                click_email_signup_button(timeout=12 if attempt == 1 else 10)
+                btn_timeout = 16 if _is_signup_host(url) else (12 if attempt == 1 else 10)
+                click_email_signup_button(timeout=btn_timeout)
                 if attempt > 1:
                     print(f"[*] 「使用邮箱注册」第 {attempt}/{tries} 次找到并点击", flush=True)
                 return
@@ -1056,21 +1098,22 @@ def open_signup_page(*, find_tries: int | None = None):
                 last_err = e
                 err_s = str(e)
                 print(
-                    f"[Warn] 未找到「使用邮箱注册」({attempt}/{tries}): {err_s}",
+                    f"[Warn] 未找到「使用邮箱注册」({attempt}/{tries}): {err_s}"
+                    + (f" · url={url[:80]}" if url else ""),
                     flush=True,
                 )
-                # 第 1 次起：疑似代理/隧道 → 立刻降级换代理再继续
-                if _browser_proxy and (
-                    _proxy_err_text(err_s)
-                    or _proxy_err_text(f"{title} {url}")
-                    or attempt >= 2
+                # 中途：只有 chrome-error 且未进目标域才 demote（Agent4 风格：多刷新）
+                if (
+                    _browser_proxy
+                    and _is_chrome_error_url(url)
+                    and not _is_signup_host(url)
                 ):
-                    rotated = _demote_and_rotate(
-                        f"未找到邮箱注册按钮({attempt}/{tries}): {err_s[:80]}"
+                    _demote_and_rotate(
+                        f"未找到邮箱注册按钮({attempt}/{tries}): chrome-error"
                     )
-                    if rotated or attempt < tries:
-                        time.sleep(0.5 + secrets.randbelow(40) / 100.0)
-                        continue
+                    time.sleep(0.5 + secrets.randbelow(40) / 100.0)
+                    continue
+
                 if attempt < tries:
                     try:
                         if attempt >= 3:
@@ -1082,27 +1125,37 @@ def open_signup_page(*, find_tries: int | None = None):
                             page = browser.new_tab(SIGNUP_URL)
                         except Exception:
                             pass
-                    time.sleep(0.6 + secrets.randbelow(40) / 100.0)
+                    time.sleep(0.8 + secrets.randbelow(50) / 100.0)
         except Exception as outer:
             last_err = outer
             print(f"[Warn] open_signup_page 异常({attempt}/{tries}): {outer}", flush=True)
-            if _browser_proxy:
+            if _browser_proxy and _proxy_err_text(str(outer)):
                 _demote_and_rotate(f"open_signup 异常: {str(outer)[:80]}")
             time.sleep(0.4 + secrets.randbelow(30) / 100.0)
 
-    # 用尽重试：兜底 demote（若尚未）
+    # 用尽重试：仅未进 accounts.x.ai 或仍是错误页时 demote（对齐 Agent4）
     try:
         from pools import demote_proxy_to_pending
 
         cur = str(_browser_proxy or "").strip()
+        title_f = url_f = ""
+        try:
+            title_f = str(getattr(page, "title", None) or "")
+            url_f = str(getattr(page, "url", None) or "")
+        except Exception:
+            pass
         if cur and cur not in demoted_this_open:
-            demote_proxy_to_pending(cur, reason="未找到邮箱注册按钮(用尽重试)")
+            if _page_is_dead(title_f, url_f) or not _is_signup_host(url_f):
+                demote_proxy_to_pending(
+                    cur, reason="未找到邮箱注册按钮(用尽重试·疑似不可达)"
+                )
+            # 已在 accounts.x.ai 却找不到按钮：不 demote，留给页面结构/加载问题
     except Exception:
         pass
     raise Exception(
         f'未找到“使用邮箱注册”按钮（本轮已重试 {tries} 次）'
         + (f": {last_err}" if last_err else "")
-        + "；已优先降级坏代理，请确认可用池仍有连通节点"
+        + "；若日志 url 已是 accounts.x.ai，多半是页面结构/文案变化或加载慢，而非代理池"
     )
 
 
@@ -1173,10 +1226,11 @@ const target = candidates.find((node) => {
 
 if (!target) {
   // 诊断：页面是否还在加载 / 被墙空白
+  // 注意：勿单独匹配 proxy（正常页面/扩展文案也会误伤），对齐 Agent4 收紧规则
   const body = (document.body && (document.body.innerText || '')) || '';
   const title = document.title || '';
   if (!body.trim() && !title.trim()) return 'empty';
-  if (/err_|this site can.?t be reached|tunnel|proxy|blocked|access denied/i.test(body + title)) {
+  if (/err_proxy|err_tunnel|err_socks|err_connection_|err_timed_out|err_name_not_resolved|err_address_unreachable|err_ssl_|err_empty_response|chrome-error:\/\/|this site can.?t be reached|took too long to respond|connection timed out|connection refused|tunnel connection failed|proxy connection failed|无法访问此网站|网页无法打开/i.test(body + title)) {
     return 'blocked';
   }
   return false;
@@ -3771,7 +3825,7 @@ def main():
                         fail_count += 1
                         print(f"[plan-b] ✘ 兜底仍失败: {e2}")
                         print(
-                            f"✘ 第 {current_round} 轮跳过"
+                            f"✘ 第 {current_round} 轮失败/跳过"
                             f"（Plan A: {str(plan_a_err)[:80]} | Plan B: {str(e2)[:80]}）"
                         )
                         try:
