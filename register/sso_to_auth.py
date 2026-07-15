@@ -54,8 +54,11 @@ SCOPES = (
 GROK_TOKEN_UA = (
     f"grok-pager/{GROK_VERSION} grok-shell/{GROK_VERSION} (linux; x86_64)"
 )
-# consent 提交用的 Next.js Server Action ID（会随前端部署变化；运行时从 HTML 发现）
+# consent 提交用的 Next.js Server Action ID（会随前端部署变化；运行时从 HTML/JS 发现）
+# 硬编码仅作最后兜底；x.ai 前端部署后旧 id 会 404 Server action not found
 NEXT_ACTION_ID = "4005315a1d7e426de592990bb54bb37471f39dd6d2"
+# 进程内缓存：成功发现的 action id，避免每次 double/重试都扫全量 chunk
+_CACHED_NEXT_ACTION_ID: str = ""
 _NEXT_ACTION_RE = re.compile(
     r'createServerReference\)\("([a-f0-9]{40,44})"[^)]*submitOAuth2Consent',
     re.I,
@@ -67,6 +70,32 @@ _NEXT_ACTION_RE2 = re.compile(
 _NEXT_ACTION_RE3 = re.compile(
     r'next-action["\'\s:=]+([a-f0-9]{40,})',
     re.I,
+)
+# 更多打包形态：webpack/turbopack 常把 id 与函数名拆开
+_NEXT_ACTION_RE4 = re.compile(
+    r'submitOAuth2Consent[^a-zA-Z0-9]{0,80}["\']([a-f0-9]{40,44})["\']',
+    re.I,
+)
+_NEXT_ACTION_RE5 = re.compile(
+    r'["\']([a-f0-9]{40,44})["\'][^a-zA-Z0-9]{0,80}submitOAuth2Consent',
+    re.I,
+)
+_NEXT_ACTION_RE6 = re.compile(
+    r'\(\s*["\']([a-f0-9]{40,44})["\']\s*,\s*["\']?submitOAuth2Consent',
+    re.I,
+)
+_NEXT_ACTION_RE7 = re.compile(
+    r'\$ACTION_ID_([a-f0-9]{40,44})',
+    re.I,
+)
+_NEXT_ACTION_PATTERNS = (
+    _NEXT_ACTION_RE,
+    _NEXT_ACTION_RE4,
+    _NEXT_ACTION_RE5,
+    _NEXT_ACTION_RE6,
+    _NEXT_ACTION_RE2,
+    _NEXT_ACTION_RE3,
+    _NEXT_ACTION_RE7,
 )
 
 CPA_GROK_HEADERS = dict(DEFAULT_CLIENT_HEADERS)
@@ -187,43 +216,125 @@ def _parse_consent_code(body: str) -> str | None:
     return None
 
 
+def _match_next_action_in_text(text: str) -> str:
+    """在任意 HTML/JS 文本中匹配 action id；优先含 submitOAuth2Consent 的模式。"""
+    text = text or ""
+    if not text:
+        return ""
+    for rx in _NEXT_ACTION_PATTERNS:
+        m = rx.search(text)
+        if m:
+            return m.group(1)
+    return ""
+
+
+def _iter_script_srcs(html: str) -> list[str]:
+    """从 consent HTML 提取 JS chunk URL（含 _next/static 与 build-manifest）。"""
+    html = html or ""
+    found: list[str] = []
+    seen: set[str] = set()
+
+    def _add(src: str) -> None:
+        src = (src or "").strip()
+        if not src:
+            return
+        if src.startswith("//"):
+            src = "https:" + src
+        elif src.startswith("/"):
+            src = "https://accounts.x.ai" + src
+        if not src.startswith("http"):
+            return
+        if src in seen:
+            return
+        seen.add(src)
+        found.append(src)
+
+    for m in re.finditer(
+        r'(?:src|href)=["\']([^"\']+_next/static/[^"\']+\.(?:js|css))["\']',
+        html,
+        re.I,
+    ):
+        _add(m.group(1))
+    # RSC / flight payload 里常有 "static/chunks/...." 裸路径
+    for m in re.finditer(
+        r'["\'](/_next/static/[^"\']+\.js)["\']',
+        html,
+        re.I,
+    ):
+        _add(m.group(1))
+    for m in re.finditer(
+        r'["\'](static/chunks/[^"\']+\.js)["\']',
+        html,
+        re.I,
+    ):
+        _add("/_next/" + m.group(1) if not m.group(1).startswith("_next") else "/" + m.group(1))
+    # 优先含 app/page/consent/oauth 关键词的 chunk
+    def _prio(u: str) -> tuple[int, str]:
+        low = u.lower()
+        score = 0
+        for kw in ("consent", "oauth", "submit", "app-", "page-", "main-app"):
+            if kw in low:
+                score -= 1
+        return (score, u)
+
+    found.sort(key=_prio)
+    return found
+
+
 def _discover_next_action(
     html: str,
     fallback: str = NEXT_ACTION_ID,
     *,
     session: Any = None,
+    use_cache: bool = True,
+    max_chunks: int = 24,
 ) -> str:
-    """从 consent 页 HTML/JS chunk 发现 submitOAuth2Consent 的 action id。"""
+    """从 consent 页 HTML/JS chunk 发现 submitOAuth2Consent 的 action id。
+
+    硬编码 NEXT_ACTION_ID 会随 x.ai 部署失效 → 404 Server action not found。
+    必须：HTML 内匹配 → 拉 static chunks → 进程缓存 → 最后才 fallback。
+    """
+    global _CACHED_NEXT_ACTION_ID
     html = html or ""
-    for rx in (_NEXT_ACTION_RE, _NEXT_ACTION_RE2, _NEXT_ACTION_RE3):
-        m = rx.search(html)
-        if m:
-            return m.group(1)
-    # 尝试拉取页面引用的 next static chunk（action id 常在 JS 里）
+
+    hit = _match_next_action_in_text(html)
+    if hit:
+        _CACHED_NEXT_ACTION_ID = hit
+        return hit
+
     if session is not None:
         try:
-            for m in re.finditer(
-                r'src=["\']([^"\']+_next/static/chunks/[^"\']+\.js)["\']',
-                html,
-                re.I,
-            ):
-                src = m.group(1)
-                if src.startswith("/"):
-                    src = "https://accounts.x.ai" + src
-                if not src.startswith("http"):
-                    continue
+            srcs = _iter_script_srcs(html)
+            for i, src in enumerate(srcs[: max(1, int(max_chunks))]):
                 try:
                     jr = session.get(src, impersonate="chrome", timeout=12)
                     body = str(jr.text or "")
-                    for rx in (_NEXT_ACTION_RE, _NEXT_ACTION_RE2):
-                        mm = rx.search(body)
+                    # 大 chunk 优先找 submitOAuth2Consent 邻域
+                    if "submitOAuth2Consent" in body or "OAuth2Consent" in body:
+                        mm = _match_next_action_in_text(body)
                         if mm:
-                            return mm.group(1)
+                            _CACHED_NEXT_ACTION_ID = mm
+                            return mm
+                    mm = _match_next_action_in_text(body)
+                    if mm and (
+                        "submitOAuth2Consent" in body
+                        or "OAuth2Consent" in body
+                        or "createServerReference" in body
+                    ):
+                        # 无函数名时 createServerReference 可能匹配多个；仅当
+                        # 文本含 consent 相关或只有单一强匹配时采用
+                        if "consent" in body.lower() or "submitOAuth2Consent" in body:
+                            _CACHED_NEXT_ACTION_ID = mm
+                            return mm
                 except Exception:
                     continue
+                _ = i  # keep loop index used for lint silence
         except Exception:
             pass
-    return fallback
+
+    if use_cache and _CACHED_NEXT_ACTION_ID:
+        return _CACHED_NEXT_ACTION_ID
+    return fallback or NEXT_ACTION_ID
 
 
 def access_token_referrer(access_token: str) -> str:
@@ -241,6 +352,7 @@ def sso_to_token(sso_cookie: str, proxy: str = "", log=print) -> dict | None:
     为何不用 Device Flow：早期 device flow 换的 token 常无 referrer claim，
     cli-chat-proxy 会 permission-denied；authorize/consent 注入是稳定路径。
     """
+    global _CACHED_NEXT_ACTION_ID
     proxies = {"http": proxy, "https": proxy} if proxy else None
     s = requests.Session()
     if proxies:
@@ -298,16 +410,29 @@ def sso_to_token(sso_cookie: str, proxy: str = "", log=print) -> dict | None:
 
     # 2) 提交 consent（allow），拿 authorization code
     # 固定 Next-Action 会随 x.ai 前端部署失效 → 404 Server action not found
+    # 必须：首次 discover 就带 session 扫 JS chunk；404 时刷新 HTML 再试
     page_html = ""
     try:
         page_html = str(getattr(r, "text", None) or "")
     except Exception:
         page_html = ""
-    action_id = _discover_next_action(page_html, NEXT_ACTION_ID)
-    if action_id != NEXT_ACTION_ID:
+    # 关键：authorize 响应 HTML 可能是 RSC 空壳，先强制 GET 一次完整 consent
+    if len(page_html) < 800 or "submitOAuth2Consent" not in page_html:
+        try:
+            r_full = s.get(final_url, impersonate="chrome", timeout=15, allow_redirects=True)
+            if r_full.status_code < 400:
+                page_html = str(r_full.text or "") or page_html
+                final_url = str(r_full.url) or final_url
+        except Exception:
+            pass
+
+    action_id = _discover_next_action(page_html, NEXT_ACTION_ID, session=s)
+    if action_id and action_id != NEXT_ACTION_ID:
         log(f"  🔑 consent next-action discovered={action_id[:16]}…")
+    elif _CACHED_NEXT_ACTION_ID and action_id == _CACHED_NEXT_ACTION_ID:
+        log(f"  🔑 consent next-action cached={action_id[:16]}…")
     else:
-        log(f"  🔑 consent next-action fallback={action_id[:16]}…")
+        log(f"  🔑 consent next-action fallback={action_id[:16]}…（可能 404，将重试发现）")
 
     router_tree = (
         '["",{"children":["(app)",{"children":["(auth)",{"children":["oauth2",'
@@ -332,55 +457,135 @@ def sso_to_token(sso_cookie: str, proxy: str = "", log=print) -> dict | None:
         ],
         separators=(",", ":"),
     )
-    consent_headers = {
-        "Content-Type": "text/plain;charset=UTF-8",
-        "Accept": "text/x-component",
-        "Origin": "https://accounts.x.ai",
-        "Referer": final_url,
-        "Next-Action": action_id,
-        "next-action": action_id,
-        "next-router-state-tree": urllib.parse.quote(router_tree, safe=""),
-        "Sec-Fetch-Site": "same-origin",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Dest": "empty",
-    }
-    try:
-        r = s.post(
-            final_url,
+
+    def _consent_headers(aid: str, referer: str) -> dict[str, str]:
+        return {
+            "Content-Type": "text/plain;charset=UTF-8",
+            "Accept": "text/x-component",
+            "Origin": "https://accounts.x.ai",
+            "Referer": referer,
+            "Next-Action": aid,
+            "next-action": aid,
+            "next-router-state-tree": urllib.parse.quote(router_tree, safe=""),
+            "Sec-Fetch-Site": "same-origin",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Dest": "empty",
+        }
+
+    def _post_consent(url: str, aid: str):
+        return s.post(
+            url,
             data=consent_payload,
-            headers=consent_headers,
+            headers=_consent_headers(aid, url),
             impersonate="chrome",
             timeout=20,
             allow_redirects=True,
         )
-        # 404 Server action not found：再拉一次 consent HTML 重新发现 action
-        if r.status_code == 404 or "Server action not found" in str(r.text or ""):
-            log("  ⚠ consent action 失效，重新抓取 consent 页…")
-            try:
-                r2 = s.get(final_url, impersonate="chrome", timeout=15, allow_redirects=True)
-                action_id = _discover_next_action(
-                    str(r2.text or ""), action_id, session=s
-                )
-                consent_headers["Next-Action"] = action_id
-                consent_headers["next-action"] = action_id
-                log(f"  🔑 retry next-action={action_id[:16]}…")
-                r = s.post(
-                    final_url,
-                    data=consent_payload,
-                    headers=consent_headers,
-                    impersonate="chrome",
-                    timeout=20,
-                    allow_redirects=True,
-                )
-            except Exception as e2:
-                log(f"  ❌ consent 重试异常: {e2}")
-                return None
+
+    def _is_action_not_found(resp) -> bool:
+        try:
+            body = str(getattr(resp, "text", None) or "")
+        except Exception:
+            body = ""
+        sc = int(getattr(resp, "status_code", 0) or 0)
+        return sc == 404 or "Server action not found" in body
+
+    try:
+        # 路径变体：完整 URL（含 query）与 path-only（部分部署只认 path）
+        consent_path = final_url.split("?")[0] if "consent" in final_url else final_url
+        post_urls = [final_url]
+        if consent_path != final_url:
+            post_urls.append(consent_path)
+
+        r = None
+        last_err_body = ""
+        for attempt in range(3):
+            for purl in post_urls:
+                try:
+                    r = _post_consent(purl, action_id)
+                except Exception as pe:
+                    log(f"  ⚠ consent POST 异常 attempt={attempt + 1}: {pe}")
+                    continue
+                if not _is_action_not_found(r):
+                    final_url = purl
+                    break
+                last_err_body = str(r.text or "")[:200]
+            else:
+                # 所有 post_urls 都 404 → 重新抓 HTML + 扫 chunk
+                if attempt < 2:
+                    log(
+                        f"  ⚠ consent action 失效 (attempt={attempt + 1})，"
+                        f"重新抓取 consent 页并扫描 JS chunks…"
+                    )
+                    try:
+                        # 清空缓存强制重新发现
+                        old_id = action_id
+                        _CACHED_NEXT_ACTION_ID = ""
+                        r2 = s.get(
+                            final_url,
+                            impersonate="chrome",
+                            timeout=15,
+                            allow_redirects=True,
+                        )
+                        new_html = str(r2.text or "")
+                        if str(r2.url):
+                            final_url = str(r2.url)
+                            consent_path = (
+                                final_url.split("?")[0]
+                                if "consent" in final_url
+                                else final_url
+                            )
+                            post_urls = [final_url]
+                            if consent_path != final_url:
+                                post_urls.append(consent_path)
+                        action_id = _discover_next_action(
+                            new_html,
+                            NEXT_ACTION_ID,
+                            session=s,
+                            use_cache=False,
+                            max_chunks=40,
+                        )
+                        if action_id == old_id and attempt == 1:
+                            # 仍相同：再试 accounts 根 build-id 下的 main-app
+                            try:
+                                root = s.get(
+                                    "https://accounts.x.ai/",
+                                    impersonate="chrome",
+                                    timeout=12,
+                                )
+                                root_html = str(root.text or "")
+                                # 合并根页 script 再扫
+                                action_id = _discover_next_action(
+                                    root_html + "\n" + new_html,
+                                    action_id,
+                                    session=s,
+                                    use_cache=False,
+                                    max_chunks=40,
+                                )
+                            except Exception:
+                                pass
+                        log(f"  🔑 retry next-action={action_id[:16]}…")
+                        continue
+                    except Exception as e2:
+                        log(f"  ❌ consent 重试异常: {e2}")
+                        return None
+                break
+            # inner for broke (success) → leave attempt loop
+            if r is not None and not _is_action_not_found(r):
+                break
+
+        if r is None:
+            log(f"  ❌ consent 无响应: {last_err_body or 'no response'}")
+            return None
     except Exception as e:
         log(f"  ❌ consent 异常: {e}")
         return None
     if r.status_code < 200 or r.status_code >= 300:
         log(f"  ❌ consent HTTP {r.status_code}: {str(r.text)[:200]}")
         return None
+    # 成功后缓存 action id
+    if action_id and action_id != NEXT_ACTION_ID:
+        _CACHED_NEXT_ACTION_ID = action_id
     code = _parse_consent_code(str(r.text))
     if not code:
         # 重定向 Location 里带 code

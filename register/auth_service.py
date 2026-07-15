@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -521,25 +522,28 @@ def sso_to_cpa_auth(
             ("pkce", _via_pkce_token),
             ("device", _via_device_token),
         ):
-            try:
-                tok = mint_fn(sso, proxy=proxy or "", log=log)
-            except Exception as e:
-                log(f"[auth] channel={ch} mint 异常: {e}")
-                channels_out.append(
-                    {
-                        "ok": False,
-                        "channel": ch,
-                        "error": str(e),
-                        "mint_mode": ch,
-                    }
-                )
-                continue
+            tok: dict[str, Any] | None = None
+            mint_err = ""
+            # PKCE 偶发 next-action 404：首败后再试一次（discover 可能已缓存新 id）
+            attempts = 2 if ch == "pkce" else 1
+            for ai in range(attempts):
+                try:
+                    tok = mint_fn(sso, proxy=proxy or "", log=log)
+                except Exception as e:
+                    mint_err = str(e)
+                    log(f"[auth] channel={ch} mint 异常 attempt={ai + 1}/{attempts}: {e}")
+                    tok = None
+                if tok and tok.get("access_token"):
+                    break
+                if ai + 1 < attempts:
+                    log(f"[auth] channel={ch} mint 失败，1s 后重试…")
+                    time.sleep(1.0)
             if not tok or not tok.get("access_token"):
                 channels_out.append(
                     {
                         "ok": False,
                         "channel": ch,
-                        "error": f"mint failed (channel={ch})",
+                        "error": mint_err or f"mint failed (channel={ch})",
                         "mint_mode": ch,
                     }
                 )
