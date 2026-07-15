@@ -132,20 +132,24 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
     config.mail_provider = 'cloudflare';
   }
 
-  // 域名池开关：开=写入 mail_domains；关=只用 mail_domain
-  // 兼容：若未显式开池但 mailDomains 有内容，仍写入池（避免 UI 开了却未持久化开关）
+  // 域名池：仅 Cloudflare Temp Email 支持客户端多域名轮换。
+  // DuckMail / YYDS 由服务端分配域名，无对等「本机域名池」接口 → 强制不写 mail_domains。
   const domainsText = String(settings.mailDomains || '').trim();
+  const isCfMail = config.mail_provider === 'cloudflare';
   const mailPoolOn =
-    settings.mailDomainPoolEnabled === true ||
-    (settings.mailDomainPoolEnabled !== false && domainsText.length > 0);
+    isCfMail &&
+    (settings.mailDomainPoolEnabled === true ||
+      (settings.mailDomainPoolEnabled !== false && domainsText.length > 0));
   const domains = mailPoolOn ? parseList(settings.mailDomains) : [];
   if (domains.length > 0) {
     config.mail_domains = domains;
   } else {
     delete config.mail_domains;
   }
-  config.mail_domain_mode = settings.mailDomainMode || 'round_robin';
-  config.email_domain_mode = settings.mailDomainMode || 'round_robin';
+  config.mail_domain_mode = isCfMail
+    ? settings.mailDomainMode || 'round_robin'
+    : 'round_robin';
+  config.email_domain_mode = config.mail_domain_mode;
 
   // 代理：注册优先 **仅可用池**；可用空时回退待定池（尚未测活时）
   const alivePool = parseProxyPool(

@@ -122,6 +122,7 @@ def _create_duckmail() -> Tuple[Optional[str], Optional[str]]:
     DuckMail：Bearer API Token 创建地址。
     config: mail_api_base, mail_admin_auth(token), mail_domain(可选)
     常见：POST {base}/api/addresses 或 /mailbox
+    无客户端域名池：只用 mail_domain 单域名偏好，不走 mail_domains 轮换。
     """
     _reload_mail_conf()
     base = MAIL_API_BASE.rstrip("/")
@@ -130,7 +131,8 @@ def _create_duckmail() -> Tuple[Optional[str], Optional[str]]:
         raise Exception("duckmail: mail_api_base 未设置")
     if not token:
         raise Exception("duckmail: mail_admin_auth 未设置（填 DuckMail API Token）")
-    domain = next_mail_domain(MAIL_DOMAIN) or MAIL_DOMAIN
+    # 不用域名池 next_mail_domain：DuckMail 无本机多域名轮换接口
+    domain = (MAIL_DOMAIN or "").strip().lstrip("@")
     local = _generate_local_part()
     session, use_cffi = _create_session()
     headers = {
@@ -184,6 +186,7 @@ def _create_yyds() -> Tuple[Optional[str], Optional[str]]:
     """
     YYDS 邮箱：Bearer 创建。
     config 同 duckmail 字段；路径兼容 /api/email/create 等。
+    无客户端域名池：只用 mail_domain 单域名偏好（服务端可另有域名列表）。
     """
     _reload_mail_conf()
     base = MAIL_API_BASE.rstrip("/")
@@ -192,7 +195,8 @@ def _create_yyds() -> Tuple[Optional[str], Optional[str]]:
         raise Exception("yyds: mail_api_base 未设置")
     if not token:
         raise Exception("yyds: mail_admin_auth 未设置")
-    domain = next_mail_domain(MAIL_DOMAIN) or MAIL_DOMAIN
+    # 不用域名池 next_mail_domain：YYDS 域名由服务端管理，非本机池
+    domain = (MAIL_DOMAIN or "").strip().lstrip("@")
     local = _generate_local_part()
     session, use_cffi = _create_session()
     headers = {

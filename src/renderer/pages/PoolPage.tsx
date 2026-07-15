@@ -160,6 +160,16 @@ export function PoolPage() {
   const [authHashChannels, setAuthHashChannels] = useState<Map<string, Set<'A' | 'B'>>>(
     () => new Map()
   );
+  /**
+   * 邮箱 / ssoHash → Auth 侧 bot_flag（listCpaAuth 已解析）。
+   * SSO JWT 无 claim 时回退展示，与 Auth 页一致。
+   */
+  const [authEmailBotFlags, setAuthEmailBotFlags] = useState<
+    Map<string, { botFlagSource: number | string | null; isBotFlag1: boolean }>
+  >(() => new Map());
+  const [authHashBotFlags, setAuthHashBotFlags] = useState<
+    Map<string, { botFlagSource: number | string | null; isBotFlag1: boolean }>
+  >(() => new Map());
   /** auth 文件内 sso 的 SHA-256 集合（无邮箱时交叉匹配） */
   const [authSsoHashes, setAuthSsoHashes] = useState<Set<string>>(() => new Set());
   /** 号池账号 id → ssoHash（异步预计算） */
@@ -175,14 +185,68 @@ export function PoolPage() {
       const r = await window.api.listCpaAuth();
       const nextEmails = new Set<string>();
       const nextHashes = new Set<string>();
+      const nextEmailCh = new Map<string, Set<'A' | 'B'>>();
+      const nextHashCh = new Map<string, Set<'A' | 'B'>>();
+      const nextEmailFlags = new Map<
+        string,
+        { botFlagSource: number | string | null; isBotFlag1: boolean }
+      >();
+      const nextHashFlags = new Map<
+        string,
+        { botFlagSource: number | string | null; isBotFlag1: boolean }
+      >();
+
+      const addCh = (
+        map: Map<string, Set<'A' | 'B'>>,
+        key: string,
+        ch: 'A' | 'B' | null | undefined
+      ) => {
+        if (!key) return;
+        let set = map.get(key);
+        if (!set) {
+          set = new Set();
+          map.set(key, set);
+        }
+        set.add(ch === 'B' ? 'B' : 'A');
+      };
+
+      const preferFlag = (
+        map: Map<string, { botFlagSource: number | string | null; isBotFlag1: boolean }>,
+        key: string,
+        flag: number | string | null | undefined,
+        is1: boolean | undefined
+      ) => {
+        if (!key) return;
+        // 缺失不写入；0 是合法 None
+        if (flag === undefined || flag === null || flag === '') return;
+        const next = {
+          botFlagSource: flag,
+          isBotFlag1: is1 === true || flag === 1 || flag === '1'
+        };
+        const prev = map.get(key);
+        // 已有 Bot(1) 则保留；否则用新值（多 auth 时优先标 1）
+        if (prev?.isBotFlag1) return;
+        if (next.isBotFlag1 || !prev) map.set(key, next);
+      };
+
       for (const it of r.items || []) {
         const e = normEmail(it.email);
         if (e) nextEmails.add(e);
         const h = String(it.ssoHash || '').trim().toLowerCase();
         if (h) nextHashes.add(h);
+        const ch =
+          it.mintChannel === 'B' ? 'B' : it.mintChannel === 'A' ? 'A' : null;
+        if (e) addCh(nextEmailCh, e, ch);
+        if (h) addCh(nextHashCh, h, ch);
+        if (e) preferFlag(nextEmailFlags, e, it.botFlagSource, it.isBotFlag1);
+        if (h) preferFlag(nextHashFlags, h, it.botFlagSource, it.isBotFlag1);
       }
       setAuthEmails(nextEmails);
       setAuthSsoHashes(nextHashes);
+      setAuthEmailChannels(nextEmailCh);
+      setAuthHashChannels(nextHashCh);
+      setAuthEmailBotFlags(nextEmailFlags);
+      setAuthHashBotFlags(nextHashFlags);
     } catch {
       /* auth 目录不可用时保持旧集合 */
     }
@@ -330,6 +394,23 @@ export function PoolPage() {
     if (merged.has('A') && merged.has('B')) return 'AB';
     if (merged.has('B')) return 'B';
     return 'A';
+  };
+
+  /** 匹配到的 Auth bot_flag（邮箱优先，其次 ssoHash） */
+  const authBotFlagOf = (
+    a: AccountRecord
+  ): { botFlagSource: number | string | null; isBotFlag1: boolean } | null => {
+    const e = normEmail(a.email);
+    if (e) {
+      const f = authEmailBotFlags.get(e);
+      if (f && f.botFlagSource != null && f.botFlagSource !== '') return f;
+    }
+    const h = accountSsoHashes.get(a.id);
+    if (h) {
+      const f = authHashBotFlags.get(h);
+      if (f && f.botFlagSource != null && f.botFlagSource !== '') return f;
+    }
+    return null;
   };
 
   const aliveStatusOf = (a: AccountRecord): 'unchecked' | 'alive' | 'dead' => {
@@ -1106,6 +1187,8 @@ export function PoolPage() {
                 ssoResult={ssoMap.get(a.id)}
                 emailMasked={emailMasked}
                 authConverted={isAuthConverted(a)}
+                authChannel={authChannelOf(a)}
+                authBotFlag={authBotFlagOf(a)}
                 onToggle={() => toggle(a.id)}
                 onOpen={() => setOpenId(a.id)}
               />
@@ -1214,6 +1297,7 @@ function AccountCard({
   emailMasked,
   authConverted,
   authChannel,
+  authBotFlag,
   onToggle,
   onOpen
 }: {
@@ -1224,6 +1308,8 @@ function AccountCard({
   authConverted: boolean;
   /** A=PKCE / B=Device / AB=双通道 */
   authChannel: 'A' | 'B' | 'AB' | null;
+  /** 匹配 Auth 文件的 bot_flag（SSO JWT 无 claim 时回退） */
+  authBotFlag: { botFlagSource: number | string | null; isBotFlag1: boolean } | null;
   onToggle(): void;
   onOpen(): void;
 }) {
@@ -1243,7 +1329,7 @@ function AccountCard({
 
   const stop = (e: React.MouseEvent) => e.stopPropagation();
   const emailDisplay = maskEmail(account.email, emailMasked, { empty: '(无邮箱)' });
-  // 优先验活结果；否则本地解码 SSO JWT（无需点验活）
+  // 优先验活结果 → 本地 SSO JWT → 匹配 Auth 文件 bot_flag（与 Auth 页一致）
   // 注意：bot_flag_source=0（None）是合法值，不能用 !flag / || 吞掉
   const localFlag = readBotFlagFromSso(account.sso);
   const hasSsoFlag =
@@ -1251,12 +1337,34 @@ function AccountCard({
     ssoResult.botFlagSource !== undefined &&
     ssoResult.botFlagSource !== null &&
     ssoResult.botFlagSource !== '';
-  const flagSource = hasSsoFlag ? ssoResult!.botFlagSource : localFlag.botFlagSource;
-  const flagIs1 = hasSsoFlag
-    ? ssoResult!.isBotFlag1 === true ||
+  const hasLocalFlag =
+    localFlag.botFlagSource !== undefined &&
+    localFlag.botFlagSource !== null &&
+    localFlag.botFlagSource !== '';
+  const hasAuthFlag =
+    authBotFlag != null &&
+    authBotFlag.botFlagSource !== undefined &&
+    authBotFlag.botFlagSource !== null &&
+    authBotFlag.botFlagSource !== '';
+  let flagSource: number | string | null = null;
+  let flagIs1 = false;
+  let flagFrom: 'probe' | 'sso' | 'auth' | 'none' = 'none';
+  if (hasSsoFlag) {
+    flagSource = ssoResult!.botFlagSource as number | string;
+    flagIs1 =
+      ssoResult!.isBotFlag1 === true ||
       ssoResult!.botFlagSource === 1 ||
-      ssoResult!.botFlagSource === '1'
-    : localFlag.isBotFlag1;
+      ssoResult!.botFlagSource === '1';
+    flagFrom = 'probe';
+  } else if (hasLocalFlag) {
+    flagSource = localFlag.botFlagSource;
+    flagIs1 = localFlag.isBotFlag1;
+    flagFrom = 'sso';
+  } else if (hasAuthFlag) {
+    flagSource = authBotFlag!.botFlagSource;
+    flagIs1 = authBotFlag!.isBotFlag1;
+    flagFrom = 'auth';
+  }
 
   return (
     <div
@@ -1285,9 +1393,21 @@ function AccountCard({
           <div className="mt-1 text-[11px] text-muted-foreground">{fmtBeijing(account.createdAt)}</div>
         </div>
         <div className="flex shrink-0 flex-col items-end gap-1">
-          <AuthConvertedBadge converted={authConverted} />
+          <AuthConvertedBadge converted={authConverted} channel={authChannel} />
           <SsoBadge result={ssoResult} />
-          <BotFlagBadge flag={flagSource} is1={flagIs1} missing="muted" />
+          <span
+            title={
+              flagFrom === 'auth'
+                ? 'bot_flag 来自匹配的 Auth 文件（SSO JWT 无 claim）'
+                : flagFrom === 'probe'
+                  ? 'bot_flag 来自验活结果'
+                  : flagFrom === 'sso'
+                    ? 'bot_flag 来自 SSO JWT'
+                    : undefined
+            }
+          >
+            <BotFlagBadge flag={flagSource} is1={flagIs1} missing="muted" />
+          </span>
         </div>
       </div>
 

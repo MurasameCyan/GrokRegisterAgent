@@ -8,7 +8,7 @@ import {
   KeyRound,
   Loader2,
   Save,
-  Shield,
+
   Trash2,
   X
 } from 'lucide-react';
@@ -976,7 +976,7 @@ export function SettingsForm() {
     <div className="space-y-5">
       <Card collapsible defaultCollapsed>
         <CardHeader
-          title="邮件后端"
+          title="邮件设置"
           description="Cloudflare Temp Email / DuckMail / YYDS"
           right={
             <div className="flex flex-wrap items-center gap-2">
@@ -989,16 +989,30 @@ export function SettingsForm() {
           }
         />
         <CardBody className="space-y-4">
+          {(() => {
+            const provider = draft.mailProvider || 'cloudflare';
+            const isCloudflare = provider === 'cloudflare' || !provider;
+            return (
+              <>
           <Field
             label="邮箱提供方"
-            hint="cloudflare：X-Admin-Auth；duckmail/yyds：Bearer Token 填到管理密码"
+            hint="cloudflare：支持域名池；duckmail/yyds：由服务端分配域名，无客户端域名池接口"
           >
             <select
               className={SELECT_CLASS}
-              value={draft.mailProvider || 'cloudflare'}
-              onChange={(e) =>
-                update('mailProvider', e.target.value as MailProvider)
-              }
+              value={provider}
+              onChange={(e) => {
+                const next = e.target.value as MailProvider;
+                // 域名池仅 Cloudflare 可用；切到其他方案时关闭
+                if (next !== 'cloudflare') {
+                  patch({
+                    mailProvider: next,
+                    mailDomainPoolEnabled: false
+                  });
+                } else {
+                  update('mailProvider', next);
+                }
+              }}
             >
               <option value="cloudflare">Cloudflare Temp Email（默认）</option>
               <option value="duckmail">DuckMail</option>
@@ -1010,9 +1024,9 @@ export function SettingsForm() {
             <Field
               label="API 地址"
               hint={
-                draft.mailProvider === 'duckmail'
+                provider === 'duckmail'
                   ? 'DuckMail API 根，如 https://api.duckmail.sbs'
-                  : draft.mailProvider === 'yyds'
+                  : provider === 'yyds'
                     ? 'YYDS API 根地址'
                     : 'Worker API 根地址，勿填前端 Pages 域名'
               }
@@ -1023,7 +1037,7 @@ export function SettingsForm() {
                 onChange={(e) => updateMail('apiBase', e.target.value)}
                 invalid={!!errors['mail.apiBase']}
                 placeholder={
-                  draft.mailProvider === 'cloudflare' || !draft.mailProvider
+                  isCloudflare
                     ? 'https://xxx.workers.dev'
                     : 'https://api.example.com'
                 }
@@ -1031,12 +1045,12 @@ export function SettingsForm() {
             </Field>
             <Field
               label={
-                draft.mailProvider === 'duckmail' || draft.mailProvider === 'yyds'
+                provider === 'duckmail' || provider === 'yyds'
                   ? 'API Token'
                   : '管理密码'
               }
               hint={
-                draft.mailProvider === 'duckmail' || draft.mailProvider === 'yyds'
+                provider === 'duckmail' || provider === 'yyds'
                   ? 'Bearer Token（写入 mail_admin_auth）'
                   : 'Temp Email 管理员密码（X-Admin-Auth）'
               }
@@ -1050,11 +1064,12 @@ export function SettingsForm() {
             </Field>
           </div>
 
-          {/* 域名：开关 + 对应表单 */}
+          {/* 域名：仅 Cloudflare 显示域名池；其他方案可选单域名提示 */}
+          {isCloudflare ? (
           <div className="space-y-3 rounded-xl border border-border/70 bg-muted/25 p-3.5">
             <ToggleRow
               label="启用域名池"
-              hint="开：多域名轮换；关：只用下方默认域名"
+              hint="仅 Cloudflare Temp Email：多域名轮换；关=只用下方默认域名"
               checked={!!draft.mailDomainPoolEnabled}
               onChange={(v) => update('mailDomainPoolEnabled', v)}
               className="bg-card/60"
@@ -1063,7 +1078,7 @@ export function SettingsForm() {
             {!draft.mailDomainPoolEnabled ? (
               <Field
                 label="默认邮件域名"
-                hint="单域名，例如 example.com"
+                hint="单域名，例如 example.com（须已在 CF Worker 绑定）"
                 error={errors['mail.domain']}
               >
                 <Input
@@ -1077,7 +1092,7 @@ export function SettingsForm() {
               <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(11rem,14rem)] lg:items-start">
                 <Field
                   label="邮箱域名池"
-                  hint="每行一个，或逗号分隔"
+                  hint="每行一个，或逗号分隔（须均为 CF 已绑定域名）"
                   error={errors['mail.domain']}
                 >
                   <textarea
@@ -1097,6 +1112,32 @@ export function SettingsForm() {
               </div>
             )}
           </div>
+          ) : (
+          <div className="space-y-2 rounded-xl border border-border/70 bg-muted/25 p-3.5">
+            <Field
+              label="首选域名（可选）"
+              hint={
+                provider === 'yyds'
+                  ? 'YYDS 可由服务端拉域名列表；此处可选填偏好域名，不支持本机域名池轮换'
+                  : 'DuckMail 由 API 分配地址；可选填 domain 作创建偏好，不支持本机域名池'
+              }
+              error={errors['mail.domain']}
+            >
+              <Input
+                value={draft.mail.domain}
+                onChange={(e) => updateMail('domain', e.target.value)}
+                invalid={!!errors['mail.domain']}
+                placeholder="可选 example.com"
+              />
+            </Field>
+            <p className="text-[11px] leading-4 text-muted-foreground">
+              域名池仅适用于 Cloudflare Temp Email。当前提供方已关闭域名池。
+            </p>
+          </div>
+          )}
+              </>
+            );
+          })()}
         </CardBody>
       </Card>
 
@@ -1678,42 +1719,6 @@ export function SettingsForm() {
 
       <Card collapsible defaultCollapsed>
         <CardHeader
-          title="人机验证"
-          description="Turnstile 自动通过等待上限；每次在 30～上限 内随机"
-          right={
-            <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-muted text-muted-foreground">
-              <Shield className="h-4 w-4" aria-hidden />
-            </span>
-          }
-        />
-        <CardBody>
-          <div className="rounded-xl bg-muted/70 p-4">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <div className="field-label">自动等待上限</div>
-                <div className="mt-1 text-[12px] text-muted-foreground">
-                  每次随机等待 30～{draft.turnstileAutoWaitMax ?? 60}s，再尝试点击
-                </div>
-              </div>
-              <span className="chip tabular-nums">{draft.turnstileAutoWaitMax ?? 60}s</span>
-            </div>
-            <div className="mt-3">
-              <Slider
-                min={30}
-                max={180}
-                value={draft.turnstileAutoWaitMax ?? 60}
-                onValueChange={(v) => update('turnstileAutoWaitMax', v)}
-              />
-            </div>
-            {errors.turnstileAutoWaitMax && (
-              <p className="mt-2 text-xs text-danger">{errors.turnstileAutoWaitMax}</p>
-            )}
-          </div>
-        </CardBody>
-      </Card>
-
-      <Card collapsible defaultCollapsed>
-        <CardHeader
           title="授权管理"
           right={
             <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-muted text-muted-foreground">
@@ -1801,9 +1806,31 @@ export function SettingsForm() {
       <Card collapsible defaultCollapsed>
         <CardHeader
           title="注册方案"
-          description="Plan A/B/C 可单独开关；全部开启时按 A→B→C 顺序兜底"
+          description="人机验证、指纹与 Plan A/B/C；全部开启时按 A→B→C 顺序兜底"
         />
         <CardBody className="space-y-3">
+          <div className="rounded-xl bg-muted/70 p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="field-label">人机验证 · 自动等待上限</div>
+                <div className="mt-1 text-[12px] text-muted-foreground">
+                  Turnstile：每次随机等待 30～{draft.turnstileAutoWaitMax ?? 60}s，再尝试点击
+                </div>
+              </div>
+              <span className="chip tabular-nums">{draft.turnstileAutoWaitMax ?? 60}s</span>
+            </div>
+            <div className="mt-3">
+              <Slider
+                min={30}
+                max={180}
+                value={draft.turnstileAutoWaitMax ?? 60}
+                onValueChange={(v) => update('turnstileAutoWaitMax', v)}
+              />
+            </div>
+            {errors.turnstileAutoWaitMax && (
+              <p className="mt-2 text-xs text-danger">{errors.turnstileAutoWaitMax}</p>
+            )}
+          </div>
           <ToggleRow
             label="随机注册特征"
             hint="UA / 语言 / 时区 / 分辨率等指纹随机化"

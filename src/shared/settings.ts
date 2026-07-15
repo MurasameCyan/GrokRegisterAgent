@@ -850,8 +850,15 @@ export function parseStringList(raw?: string): string[] {
 }
 
 function hasDomain(s: AppSettings): boolean {
-  if (s.mailDomainPoolEnabled) return parseStringList(s.mailDomains).length > 0;
-  return !!s.mail.domain.trim();
+  // 域名池仅 Cloudflare；其他提供方不校验池
+  const provider = String(s.mailProvider || 'cloudflare').toLowerCase();
+  const isCf = provider === 'cloudflare' || provider === 'cf' || !provider;
+  if (isCf && s.mailDomainPoolEnabled) {
+    return parseStringList(s.mailDomains).length > 0;
+  }
+  if (isCf) return !!s.mail.domain.trim();
+  // duckmail / yyds：域名可选（由 API 分配）
+  return true;
 }
 
 export function validateSettings(s: AppSettings): Record<string, string> {
@@ -873,9 +880,12 @@ export function validateSettings(s: AppSettings): Record<string, string> {
   if (!s.mail.apiBase.trim()) errors['mail.apiBase'] = '请填写邮件后端地址';
   if (!s.mail.adminAuth.trim()) errors['mail.adminAuth'] = '请填写邮件后端管理密码';
   if (!hasDomain(s)) {
-    errors['mail.domain'] = s.mailDomainPoolEnabled
-      ? '请在域名池中至少填一个域名'
-      : '请填写邮件域名';
+    const provider = String(s.mailProvider || 'cloudflare').toLowerCase();
+    const isCf = provider === 'cloudflare' || provider === 'cf' || !provider;
+    errors['mail.domain'] =
+      isCf && s.mailDomainPoolEnabled
+        ? '请在域名池中至少填一个域名'
+        : '请填写邮件域名';
   }
   if (s.mailDomainMode !== 'round_robin' && s.mailDomainMode !== 'random') {
     errors.mailDomainMode = '域名池模式无效';

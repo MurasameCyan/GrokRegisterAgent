@@ -141,8 +141,20 @@ function merge(partial: unknown): AppSettings {
     ...DEFAULT_SETTINGS,
     ...p,
     mail: { ...DEFAULT_SETTINGS.mail, ...(p.mail ?? {}) },
+    mailProvider: asMailProvider(
+      (p as AppSettings).mailProvider,
+      DEFAULT_SETTINGS.mailProvider
+    ),
     mailDomains,
-    mailDomainPoolEnabled: asBool(p.mailDomainPoolEnabled, inferMailPoolOn),
+    // 域名池仅 Cloudflare；其他提供方强制关
+    mailDomainPoolEnabled: (() => {
+      const provider = asMailProvider(
+        (p as AppSettings).mailProvider,
+        DEFAULT_SETTINGS.mailProvider
+      );
+      if (provider !== 'cloudflare') return false;
+      return asBool(p.mailDomainPoolEnabled, inferMailPoolOn);
+    })(),
     mailDomainMode: asPoolMode(p.mailDomainMode, DEFAULT_SETTINGS.mailDomainMode),
     proxyEnabled: asBool(p.proxyEnabled, inferProxyOn),
     proxy,

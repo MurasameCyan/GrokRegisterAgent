@@ -940,16 +940,20 @@ def open_signup_page(*, find_tries: int | None = None):
     """打开注册页并点击「使用邮箱注册」。
 
     对齐 GrokRegisterAgent4 主流程：刷新/重开找按钮，中途不狂 demote。
-    仅在「chrome-error / 明确 net 错误 / 用尽重试且未进 accounts.x.ai」时降级代理。
+    硬失败（chrome-error / This site can't be reached）：立即降级代理并缩短重试。
+    注意：page.url 可能仍显示 accounts.x.ai，但文档实为 chrome-error 页——以 body/diag 为准。
     """
     global page, _browser_proxy
     tries = int(find_tries if find_tries is not None else _EMAIL_SIGNUP_FIND_TRIES)
     tries = max(1, min(tries, 10))
     last_err: Exception | str | None = None
     demoted_this_open: set[str] = set()
+    hard_fail_streak = 0
 
     def _is_signup_host(url: str) -> bool:
         u = (url or "").lower()
+        if _is_chrome_error_url(u):
+            return False
         return any(
             h in u
             for h in (
@@ -973,7 +977,7 @@ def open_signup_page(*, find_tries: int | None = None):
         """仅识别真网络/代理故障；勿匹配业务中文里的「代理/隧道」。"""
         raw = blob or ""
         b = raw.lower()
-        b = b.replace("代理/隧道错误", " ").replace("代理已降级", " ")
+        # 保留 chrome-error / can't be reached 等硬信号；去掉我们自己注入的文案以免二次匹配干扰
         hard = (
             "err_proxy",
             "err_tunnel",
@@ -990,6 +994,7 @@ def open_signup_page(*, find_tries: int | None = None):
             "err_empty_response",
             "err_internet_disconnected",
             "chrome-error://",
+            "chromewebdata",
             "this site can't be reached",
             "this site can’t be reached",
             "took too long to respond",
@@ -999,6 +1004,8 @@ def open_signup_page(*, find_tries: int | None = None):
             "tunnel connection failed",
             "err_proxy_connection_failed",
             "err_tunnel_connection_failed",
+            "注册页无法访问",
+            "代理/隧道错误",
         )
         if any(k in b for k in hard):
             return True
@@ -1007,12 +1014,15 @@ def open_signup_page(*, find_tries: int | None = None):
         return False
 
     def _page_is_dead(title: str, url: str, body_hint: str = "") -> bool:
-        """当前标签是否像错误页。已在 accounts.x.ai 且无硬错误 → 不算死页。"""
+        """当前标签是否像错误页。
+
+        page.url 常仍是目标 URL，但 href/body 是 chrome-error——必须查 body_hint。
+        """
         if _is_chrome_error_url(url):
             return True
-        if _is_signup_host(url):
-            return _proxy_err_text(f"{title} {body_hint}")
-        return _proxy_err_text(f"{title} {url} {body_hint}")
+        if _proxy_err_text(f"{title}\n{url}\n{body_hint}"):
+            return True
+        return False
 
     def _demote_and_rotate(reason: str) -> bool:
         global _browser_proxy
@@ -1054,6 +1064,7 @@ def open_signup_page(*, find_tries: int | None = None):
                 last_err = ge
                 # 仅真 net 错误才 demote（对齐 Agent4：开页失败多数只重开标签）
                 if _browser_proxy and _proxy_err_text(str(ge)):
+                    hard_fail_streak += 1
                     _demote_and_rotate(f"开页失败: {str(ge)[:80]}")
                     time.sleep(0.4 + secrets.randbelow(30) / 100.0)
                     continue
@@ -1063,6 +1074,7 @@ def open_signup_page(*, find_tries: int | None = None):
                 except Exception as ge2:
                     last_err = ge2
                     if _browser_proxy and _proxy_err_text(str(ge2)):
+                        hard_fail_streak += 1
                         _demote_and_rotate(f"开页失败: {str(ge2)[:80]}")
                         time.sleep(0.4 + secrets.randbelow(30) / 100.0)
                         continue
@@ -1073,24 +1085,62 @@ def open_signup_page(*, find_tries: int | None = None):
 
             title = ""
             url = ""
+            body_hint = ""
             try:
                 title = str(getattr(page, "title", None) or "")
                 url = str(getattr(page, "url", None) or "")
             except Exception:
                 pass
-
-            # 仅 chrome-error / 明确错误页才中途 demote；
-            # 禁止仅因「url=accounts.x.ai 但按钮未出」降级
-            if _browser_proxy and _page_is_dead(title, url) and not _is_signup_host(url):
-                _demote_and_rotate(
-                    f"注册页不可达(attempt {attempt}): {(title or url)[:100]}"
+            # page.url 可能仍是 accounts.x.ai；从文档读真实 href/正文
+            try:
+                snap = page.run_js(
+                    """
+return JSON.stringify({
+  href: (location && location.href) || '',
+  doc: (document.documentURI || document.URL || ''),
+  title: document.title || '',
+  body: ((document.body && document.body.innerText) || '').slice(0, 220)
+});
+                    """
                 )
+                if isinstance(snap, str) and snap.startswith("{"):
+                    import json as _json
+
+                    d = _json.loads(snap)
+                    real_href = str(d.get("href") or d.get("doc") or "")
+                    body_hint = str(d.get("body") or "")
+                    if real_href:
+                        # 优先 chrome-error 真实地址
+                        if _is_chrome_error_url(real_href) or not url:
+                            url = real_href
+                    if d.get("title") and not title:
+                        title = str(d.get("title") or "")
+            except Exception:
+                pass
+
+            # 硬错误页（含 url 仍显示 accounts.x.ai 但 body 为 can't be reached）→ demote
+            if _browser_proxy and _page_is_dead(title, url, body_hint):
+                hard_fail_streak += 1
+                _demote_and_rotate(
+                    f"注册页不可达(attempt {attempt}): "
+                    f"{(title or url or body_hint)[:100]}"
+                )
+                # 连续硬失败：不必 5 次空刷同一坏代理
+                if hard_fail_streak >= 2 and attempt >= 2:
+                    last_err = Exception(
+                        f"连续硬失败({hard_fail_streak})·代理不可达: "
+                        f"{(url or title or body_hint)[:120]}"
+                    )
+                    break
                 time.sleep(0.5 + secrets.randbelow(40) / 100.0)
                 continue
 
             try:
-                # 已在目标域：给更长找按钮时间（Cloudflare/SPA）
-                btn_timeout = 22 if _is_signup_host(url) else (14 if attempt == 1 else 12)
+                # 已在目标域且非错误页：给更长找按钮时间（Cloudflare/SPA）
+                live_signup = _is_signup_host(url) and not _page_is_dead(
+                    title, url, body_hint
+                )
+                btn_timeout = 22 if live_signup else (14 if attempt == 1 else 12)
                 click_email_signup_button(timeout=btn_timeout)
                 if attempt > 1:
                     print(f"[*] 「使用邮箱注册」第 {attempt}/{tries} 次找到并点击", flush=True)
@@ -1103,18 +1153,21 @@ def open_signup_page(*, find_tries: int | None = None):
                     + (f" · url={url[:80]}" if url else ""),
                     flush=True,
                 )
-                # 中途：只有 chrome-error 且未进目标域才 demote（Agent4 风格：多刷新）
-                if (
-                    _browser_proxy
-                    and _is_chrome_error_url(url)
-                    and not _is_signup_host(url)
-                ):
+                # 异常文案/diag 含 chrome-error / can't be reached → 硬失败 demote
+                hard = _proxy_err_text(err_s) or _is_chrome_error_url(url) or _page_is_dead(
+                    title, url, body_hint + "\n" + err_s
+                )
+                if _browser_proxy and hard:
+                    hard_fail_streak += 1
                     _demote_and_rotate(
-                        f"未找到邮箱注册按钮({attempt}/{tries}): chrome-error"
+                        f"未找到邮箱注册按钮({attempt}/{tries}): 硬网络/代理失败"
                     )
+                    if hard_fail_streak >= 2 and attempt >= 2:
+                        break
                     time.sleep(0.5 + secrets.randbelow(40) / 100.0)
                     continue
 
+                hard_fail_streak = 0  # 非硬失败，可能是 SPA 慢
                 if attempt < tries:
                     try:
                         if attempt >= 3:
@@ -1131,32 +1184,46 @@ def open_signup_page(*, find_tries: int | None = None):
             last_err = outer
             print(f"[Warn] open_signup_page 异常({attempt}/{tries}): {outer}", flush=True)
             if _browser_proxy and _proxy_err_text(str(outer)):
+                hard_fail_streak += 1
                 _demote_and_rotate(f"open_signup 异常: {str(outer)[:80]}")
             time.sleep(0.4 + secrets.randbelow(30) / 100.0)
 
-    # 用尽重试：仅未进 accounts.x.ai 或仍是错误页时 demote（对齐 Agent4）
+    # 用尽重试 / 提前 break：硬失败则 demote
     try:
         from pools import demote_proxy_to_pending
 
         cur = str(_browser_proxy or "").strip()
-        title_f = url_f = ""
+        title_f = url_f = body_f = ""
         try:
             title_f = str(getattr(page, "title", None) or "")
             url_f = str(getattr(page, "url", None) or "")
         except Exception:
             pass
-        if cur and cur not in demoted_this_open:
-            if _page_is_dead(title_f, url_f) or not _is_signup_host(url_f):
-                demote_proxy_to_pending(
-                    cur, reason="未找到邮箱注册按钮(用尽重试·疑似不可达)"
-                )
-            # 已在 accounts.x.ai 却找不到按钮：不 demote，留给页面结构/加载问题
+        err_blob = str(last_err or "")
+        hard_final = (
+            _proxy_err_text(err_blob)
+            or _page_is_dead(title_f, url_f, err_blob)
+            or hard_fail_streak > 0
+        )
+        if cur and cur not in demoted_this_open and hard_final:
+            demote_proxy_to_pending(
+                cur, reason="未找到邮箱注册按钮(硬失败/代理不可达)"
+            )
+        # 真在 accounts.x.ai 活页却找不到按钮：不 demote
     except Exception:
         pass
+
+    err_blob = str(last_err or "")
+    if _proxy_err_text(err_blob) or hard_fail_streak > 0:
+        hint = "；根因=代理/网络不可达（chrome-error / can't be reached），已尝试降级代理"
+    elif "accounts.x.ai" in err_blob.lower() and "chrome-error" not in err_blob.lower():
+        hint = "；若页面已正常打开仍无按钮，多半是文案/结构变化或加载慢"
+    else:
+        hint = ""
     raise Exception(
         f'未找到“使用邮箱注册”按钮（本轮已重试 {tries} 次）'
         + (f": {last_err}" if last_err else "")
-        + "；若日志 url 已是 accounts.x.ai，多半是页面结构/文案变化或加载慢，而非代理池"
+        + hint
     )
 
 
@@ -1320,10 +1387,15 @@ for (const node of candidates) {
 
 if (!target) {
   const href = (location && location.href) || '';
-  const onXai = /accounts\.x\.ai|x\.ai\/sign|auth\.x\.ai|grok\.x\.ai/i.test(href);
+  const docUri = (document.documentURI || document.URL || '') || '';
   const body = (document.body && (document.body.innerText || '')) || '';
   const title = document.title || '';
   const bodyTrim = body.trim();
+  // 真 chrome 错误页：href 常是 chrome-error://，但 Chromium 有时 page.url 仍显示目标站
+  const chromeErr = /chrome-error:\/\/|chromewebdata|chrome:\/\/error/i.test(href + ' ' + docUri);
+  const hardNet = /err_proxy|err_tunnel|err_socks|err_connection_|err_timed_out|err_name_not_resolved|err_address_unreachable|err_ssl_|err_empty_response|this site can.?t be reached|took too long to respond|connection timed out|connection refused|tunnel connection failed|proxy connection failed|无法访问此网站|网页无法打开/i.test(body + ' ' + title);
+  // 仅「非错误页」且在 x.ai 才算 onXai；错误页上的 accounts.x.ai 字样不算活页
+  const onXai = !chromeErr && !hardNet && /accounts\.x\.ai|x\.ai\/sign|auth\.x\.ai|grok\.x\.ai/i.test(href);
   // 诊断摘要（回传 Python，勿过长）
   const sampleBtns = Array.from(document.querySelectorAll('button, a, [role="button"]'))
     .filter(isVisible)
@@ -1332,18 +1404,18 @@ if (!target) {
     .filter(Boolean);
   const diag = JSON.stringify({
     title: (title || '').slice(0, 80),
-    href: href.slice(0, 120),
+    href: (chromeErr ? (href || docUri) : href).slice(0, 120),
     bodyLen: bodyTrim.length,
     bodyHead: bodyTrim.slice(0, 160),
-    btns: sampleBtns
+    btns: sampleBtns,
+    chromeErr: !!chromeErr,
+    hardNet: !!hardNet
   });
 
   if (!bodyTrim && !title.trim()) return 'empty|' + diag;
-  // 仅 chrome 硬错误页才 blocked；已在 accounts.x.ai 时绝不用正文关键字误杀
-  if (!onXai) {
-    if (/err_proxy|err_tunnel|err_socks|err_connection_|err_timed_out|err_name_not_resolved|err_address_unreachable|err_ssl_|err_empty_response|chrome-error:\/\/|this site can.?t be reached|took too long to respond|connection timed out|connection refused|tunnel connection failed|proxy connection failed|无法访问此网站|网页无法打开/i.test(body + title)) {
-      return 'blocked|' + diag;
-    }
+  // 硬错误页一律 blocked（即使 body 里出现了目标 URL 文案）
+  if (chromeErr || hardNet) {
+    return 'blocked|' + diag;
   }
   return 'miss|' + diag;
 }
@@ -1382,15 +1454,26 @@ return true;
             # miss：SPA 未出按钮，继续等
             time.sleep(0.45 + secrets.randbelow(35) / 100.0)
 
-    # 超时：若仍在 accounts.x.ai，明确写「页面结构/选择器」而非代理
+    # 超时：硬错误 vs 真活页结构问题
     url_hint = ""
     try:
         url_hint = str(getattr(page, "url", None) or "")
     except Exception:
         pass
     msg = '未找到“使用邮箱注册”按钮'
-    if "accounts.x.ai" in (url_hint or "").lower():
-        msg += f"（已在 accounts.x.ai，非代理问题；请查按钮文案/结构） url={url_hint[:100]}"
+    diag_l = (last_diag or "").lower()
+    hard = (
+        "chrome-error" in diag_l
+        or "chromewebdata" in diag_l
+        or "can't be reached" in diag_l
+        or "can’t be reached" in diag_l
+        or '"chromeerr":true' in diag_l
+        or '"hardnet":true' in diag_l
+    )
+    if hard:
+        msg += "（代理/网络不可达）"
+    elif "accounts.x.ai" in (url_hint or "").lower():
+        msg += f"（已在 accounts.x.ai 活页，非代理问题；请查按钮文案/结构） url={url_hint[:100]}"
     if last_diag:
         msg += f" diag={last_diag[:240]}"
     raise Exception(msg)
@@ -3941,6 +4024,26 @@ def main():
                 f"C={'开' if plan_c_enabled else '关'}（顺序 A→B→C）"
             )
 
+            def _is_hard_proxy_fail(err: BaseException | str | None) -> bool:
+                """A 因代理/网络硬失败时，B 拟人兜底无意义（同一坏链路）。"""
+                s = str(err or "").lower()
+                keys = (
+                    "chrome-error",
+                    "chromewebdata",
+                    "can't be reached",
+                    "can’t be reached",
+                    "代理/网络不可达",
+                    "代理/隧道错误",
+                    "注册页无法访问",
+                    "连续硬失败",
+                    "err_proxy",
+                    "err_tunnel",
+                    "err_connection",
+                    "err_timed_out",
+                    "err_name_not_resolved",
+                )
+                return any(k in s for k in keys)
+
             # ---------- Plan A ----------
             if result is None and plan_a_enabled:
                 try:
@@ -3959,7 +4062,17 @@ def main():
                     print(f"[plan-a] ✘ 失败: {e}")
 
             # ---------- Plan B ----------
-            if result is None and plan_b_enabled:
+            # 硬代理失败跳过 B：换代理已在 open_signup 内做，拟人无法打通 can't be reached
+            skip_b_hard = result is None and plan_b_enabled and _is_hard_proxy_fail(last_err)
+            if skip_b_hard:
+                print(
+                    "[plan-b] 跳过：Plan A 为代理/网络硬失败（chrome-error），"
+                    "拟人兜底无效；已/将降级代理后进入下一方案或下一轮",
+                    flush=True,
+                )
+                err_parts.append("B:skipped_hard_proxy")
+
+            if result is None and plan_b_enabled and not skip_b_hard:
                 try:
                     print("[plan-b] 拟人兜底…")
                     try:
