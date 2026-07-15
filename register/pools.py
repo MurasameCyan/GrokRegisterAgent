@@ -74,14 +74,62 @@ def _gra_internal_headers() -> dict:
     return headers
 
 
+def _read_config_dict() -> dict:
+    try:
+        path = _config_path()
+        if path.is_file():
+            return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+
+def is_cf_proxy_mode() -> bool:
+    """config.cf_proxy_enabled：CF 独立代理（本地 127.0.0.1:port），非代理池。"""
+    conf = _read_config_dict()
+    raw = conf.get("cf_proxy_enabled")
+    if isinstance(raw, bool):
+        return raw
+    s = str(raw or "").strip().lower()
+    return s in ("1", "true", "yes", "on", "enabled")
+
+
+def is_local_loopback_proxy(proxy: str) -> bool:
+    """是否本机环回代理（CF cfwp / 本地转发）。不可当池节点剔除。"""
+    p = str(proxy or "").strip()
+    if not p:
+        return False
+    try:
+        raw = p
+        if "://" not in raw:
+            raw = "http://" + raw
+        u = urlparse(raw.split("#", 1)[0])
+        host = (u.hostname or "").lower()
+        return host in ("127.0.0.1", "localhost", "::1")
+    except Exception:
+        pl = p.lower()
+        return "127.0.0.1" in pl or "localhost" in pl
+
+
+def should_skip_proxy_demote(proxy: str) -> bool:
+    """CF 独立代理 / 本机环回：禁止 demote 与本轮池剔除。"""
+    if is_cf_proxy_mode():
+        return True
+    return is_local_loopback_proxy(proxy)
+
+
 def remove_proxy_from_local_pool(proxy: str) -> int:
     """从本进程内存代理池立即剔除（按 host:port 身份键）。
 
     Node 降级只改 settings，本进程 config.json 与 _proxy_list 不会自动同步；
     若不本地剔除，后续 acquire 仍会抽到已死代理。
+
+    CF 独立代理 / 127.0.0.1 环回：不剔除（单节点，剔除后只剩「无可用节点」假失败）。
     """
     p = str(proxy or "").strip()
     if not p:
+        return 0
+    if should_skip_proxy_demote(p):
         return 0
     key = proxy_identity_key(p)
     if not key:
@@ -149,9 +197,17 @@ def demote_proxy_to_pending(proxy: str, reason: str = "注册失败") -> bool:
     端点：POST {GRA_API_BASE}/api/proxy/demote
     已降级过（Node moved=0）仍视为成功：本进程本地已剔除即可换代理。
     失败仅打日志，不抛异常。
+
+    CF 独立代理（cfwp 本地端口）不 demote：无「池」可降，剔除只会误报无节点。
     """
     p = str(proxy or "").strip()
     if not p:
+        return False
+    if should_skip_proxy_demote(p):
+        print(
+            f"[*] CF/本机代理不降级、不剔除: {p[:72]}… · {str(reason or '')[:100]}",
+            flush=True,
+        )
         return False
     # 先本地剔除：保证同轮/同进程立刻不会再抽到
     local_n = remove_proxy_from_local_pool(p)

@@ -710,6 +710,39 @@ def _start_browser_once():
                     print(f"[*] 本轮代理 IP 键: {ik}")
             except Exception:
                 pass
+            # CF 独立代理：探测本地端口是否在听，避免「pid 在跑但端口未就绪」
+            try:
+                from pools import is_cf_proxy_mode, is_local_loopback_proxy
+
+                if is_cf_proxy_mode() or is_local_loopback_proxy(picked):
+                    import socket as _sock
+
+                    _host, _port = "127.0.0.1", 30000
+                    try:
+                        if parse_proxy_url:
+                            _pp = parse_proxy_url(picked)
+                            if _pp:
+                                _host = str(_pp.get("host") or "127.0.0.1")
+                                _port = int(_pp.get("port") or 30000)
+                    except Exception:
+                        pass
+                    _ok = False
+                    try:
+                        with _sock.create_connection((_host, _port), timeout=1.5):
+                            _ok = True
+                    except Exception as _pe:
+                        print(
+                            f"[Warn] CF/本机代理端口不可达 {_host}:{_port}: {_pe} "
+                            f"（请确认 cfwp 运行中，且 client_ip=:{_port}）",
+                            flush=True,
+                        )
+                    if _ok:
+                        print(
+                            f"[*] CF/本机代理端口就绪 {_host}:{_port} · {log_proxy}",
+                            flush=True,
+                        )
+            except Exception:
+                pass
 
             if apply_proxy_to_chromium_options is not None:
                 # 热读 prefer local forward
@@ -1038,7 +1071,21 @@ def open_signup_page(*, find_tries: int | None = None):
         if not cur:
             return False
         try:
-            from pools import demote_proxy_to_pending, next_proxy
+            from pools import demote_proxy_to_pending, next_proxy, should_skip_proxy_demote
+
+            # CF 独立 / 本机环回：固定单节点，禁止当池剔除，仅重启浏览器重试
+            if should_skip_proxy_demote(cur):
+                if cur not in demoted_this_open:
+                    demoted_this_open.add(cur)
+                    print(
+                        f"[*] CF/本机代理保持不变（不降级）: {cur[:72]}… · {reason[:100]}",
+                        flush=True,
+                    )
+                try:
+                    restart_browser()
+                except Exception as re:
+                    print(f"[Warn] restart_browser 失败: {re}", flush=True)
+                return True
 
             if cur not in demoted_this_open:
                 demote_proxy_to_pending(cur, reason=reason[:160])
@@ -1196,9 +1243,9 @@ return JSON.stringify({
                 _demote_and_rotate(f"open_signup 异常: {str(outer)[:80]}")
             time.sleep(0.4 + secrets.randbelow(30) / 100.0)
 
-    # 用尽重试 / 提前 break：硬失败则 demote
+    # 用尽重试 / 提前 break：硬失败则 demote（CF/本机代理跳过）
     try:
-        from pools import demote_proxy_to_pending
+        from pools import demote_proxy_to_pending, should_skip_proxy_demote
 
         cur = str(_browser_proxy or "").strip()
         title_f = url_f = body_f = ""
@@ -1213,9 +1260,20 @@ return JSON.stringify({
             or _page_is_dead(title_f, url_f, err_blob)
             or hard_fail_streak > 0
         )
-        if cur and cur not in demoted_this_open and hard_final:
+        if (
+            cur
+            and cur not in demoted_this_open
+            and hard_final
+            and not should_skip_proxy_demote(cur)
+        ):
             demote_proxy_to_pending(
                 cur, reason="未找到邮箱注册按钮(硬失败/代理不可达)"
+            )
+        elif cur and hard_final and should_skip_proxy_demote(cur):
+            print(
+                f"[Warn] CF/本机代理开页失败且已重试耗尽: {cur[:72]}… · "
+                f"{(err_blob or title_f or url_f)[:120]}",
+                flush=True,
             )
         # 真在 accounts.x.ai 活页却找不到按钮：不 demote
     except Exception:
