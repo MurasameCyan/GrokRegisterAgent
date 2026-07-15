@@ -314,6 +314,103 @@ def _run_sso_push_g2(
         return {"attempted": True, "ok": False, "error": str(e)[:300]}
 
 
+
+def _maybe_zdr_after_mint(
+    mint_result: dict[str, Any],
+    *,
+    conf: dict[str, Any],
+    proxy: str,
+    log: LogFn,
+    sso: str = "",
+    cloudflare_cookies: str = "",
+) -> None:
+    """mint 后补刀关 ZDR：已 closed 则跳过；写 tag + patch auth。"""
+    if not mint_result or not mint_result.get("ok"):
+        return
+    # 默认 true（A1）；仅显式 falsy 跳过
+    raw = conf.get("enable_disable_zdr")
+    if raw is None:
+        raw = conf.get("enableDisableZdr")
+    if raw is not None and not _truthy(raw):
+        return
+    try:
+        from account_tags import get_tag, set_zdr_tag, patch_auth_file_zdr
+        from zdr_toggle import disable_zdr_for_sso
+
+        sso_val = (sso or "").strip()
+        email_val = str(mint_result.get("email") or "").strip()
+        paths = mint_result.get("paths") or (
+            [mint_result.get("path")] if mint_result.get("path") else []
+        )
+        if not sso_val:
+            for p in paths:
+                if not p:
+                    continue
+                try:
+                    doc = json.loads(Path(str(p)).read_text(encoding="utf-8"))
+                    sso_val = str(doc.get("sso") or "").strip()
+                    if not email_val:
+                        email_val = str(doc.get("email") or "").strip()
+                    if sso_val:
+                        break
+                except Exception:
+                    continue
+        prev = get_tag(email=email_val, sso=sso_val)
+        if prev.get("zdr_attempted") and prev.get("zdr_closed") is True:
+            log("[auth-queue] ZDR 已关，跳过补刀")
+            for p in paths:
+                if p:
+                    try:
+                        patch_auth_file_zdr(p, closed=True, error="")
+                    except Exception:
+                        pass
+            return
+
+        cf = ""
+        raw_cf = (cloudflare_cookies or "").strip()
+        if "cf_clearance=" in raw_cf:
+            for part in raw_cf.split(";"):
+                part = part.strip()
+                if part.lower().startswith("cf_clearance="):
+                    cf = part.split("=", 1)[-1].strip()
+                    break
+        elif raw_cf and "=" not in raw_cf:
+            cf = raw_cf
+
+        closed = False
+        err = ""
+        steps = None
+        if sso_val:
+            r = disable_zdr_for_sso(
+                sso_val, cf_clearance=cf, proxy=proxy or "", log=log
+            )
+            closed = bool(r.get("ok"))
+            err = str(r.get("error") or "")
+            steps = r.get("steps")
+            if closed:
+                log(f"[auth-queue] ✔ ZDR 已关 · {r.get('message')}")
+            else:
+                log(f"[auth-queue] ✘ ZDR 仍开（不影响授权）: {err}")
+        else:
+            err = "no sso"
+            log("[auth-queue] ZDR 跳过：无 SSO")
+
+        set_zdr_tag(
+            closed=closed, email=email_val, sso=sso_val, error=err, steps=steps
+        )
+        for p in paths:
+            if p:
+                try:
+                    patch_auth_file_zdr(p, closed=closed, error=err)
+                except Exception:
+                    pass
+        mint_result["zdr_closed"] = closed
+        mint_result["zdr_attempted"] = True
+        mint_result["zdr_error"] = err if not closed else ""
+    except Exception as e:
+        log(f"[auth-queue] zdr skip（不影响授权）: {e}")
+
+
 def _maybe_nsfw_and_sub2api(
     mint_result: dict[str, Any],
     *,
@@ -544,6 +641,14 @@ def _run_mint_and_auth_push(
                 sso=sso,
                 cloudflare_cookies=cloudflare_cookies or "",
             )
+            _maybe_zdr_after_mint(
+                r,
+                conf=conf,
+                proxy=proxy,
+                log=log,
+                sso=sso,
+                cloudflare_cookies=cloudflare_cookies or "",
+            )
             return r
         # 可选：SSO 失败时密码路径 browser Device 兜底（P2）
         err = (r or {}).get("error") or "mint failed"
@@ -585,6 +690,14 @@ def _run_mint_and_auth_push(
                                 pass
                         conf = _load_conf()
                         _maybe_nsfw_and_sub2api(
+                            r2,
+                            conf=conf,
+                            proxy=proxy,
+                            log=log,
+                            sso=sso,
+                            cloudflare_cookies=cloudflare_cookies or "",
+                        )
+                        _maybe_zdr_after_mint(
                             r2,
                             conf=conf,
                             proxy=proxy,

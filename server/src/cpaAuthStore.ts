@@ -16,6 +16,7 @@ import type { ReloginStage } from '@shared/runEvents.js';
 import {
   loadAccountTags,
   lookupNsfwTag,
+  zdrStatusFromTag,
   nsfwStatusFromTag
 } from './accountTags.js';
 
@@ -57,6 +58,13 @@ export interface CpaAuthItem {
   nsfwError?: string | null;
   /** ok | fail | none */
   nsfwStatus?: 'ok' | 'fail' | 'none';
+  /** ZDR：true=已关 / false=仍开或失败 / null=未尝试 */
+  zdrClosed?: boolean | null;
+  zdrAttempted?: boolean;
+  zdrAt?: string | null;
+  zdrError?: string | null;
+  /** closed | open | none */
+  zdrStatus?: 'closed' | 'open' | 'none';
 }
 
 /** 规范化 SSO cookie / JWT 文本后做 SHA-256 hex */
@@ -418,6 +426,33 @@ export async function listCpaAuth(): Promise<{ dir: string; items: CpaAuthItem[]
         : nsfwEnabled
           ? 'ok'
           : 'fail';
+      // ZDR：auth JSON 优先，否则侧车
+      let zdrClosed: boolean | null = null;
+      let zdrAttempted = false;
+      let zdrAt: string | null = null;
+      let zdrError: string | null = null;
+      if (data.zdr_attempted === true || data.zdrAttempted === true) {
+        zdrAttempted = true;
+        zdrClosed = data.zdr_closed === true || data.zdrClosed === true;
+        zdrAt = String(data.zdr_at || data.zdrAt || '').trim() || null;
+        zdrError = String(data.zdr_error || data.zdrError || '').trim() || null;
+      } else {
+        const sideZ = zdrStatusFromTag(
+          lookupNsfwTag(accountTags, {
+            email: emailStr,
+            ssoHash: ssoHash || undefined
+          })
+        );
+        zdrClosed = sideZ.zdrClosed;
+        zdrAttempted = sideZ.zdrAttempted;
+        zdrAt = sideZ.zdrAt || null;
+        zdrError = sideZ.zdrError || null;
+      }
+      const zdrStatus: 'closed' | 'open' | 'none' = !zdrAttempted
+        ? 'none'
+        : zdrClosed
+          ? 'closed'
+          : 'open';
       items.push({
         filename: name,
         path: full,
@@ -441,6 +476,11 @@ export async function listCpaAuth(): Promise<{ dir: string; items: CpaAuthItem[]
         nsfwAt,
         nsfwError,
         nsfwStatus,
+        zdrClosed,
+        zdrAttempted,
+        zdrAt,
+        zdrError,
+        zdrStatus,
         ...flags
       });
     } catch {

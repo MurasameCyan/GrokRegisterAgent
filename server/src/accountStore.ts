@@ -239,11 +239,23 @@ export async function listAccounts(): Promise<AccountRecord[]> {
   // 合并 NSFW 侧车 tag（email / sso_hash）
   let withTags = all;
   try {
-    const { loadAccountTags, lookupNsfwTag, nsfwStatusFromTag, ssoHashHex } =
-      await import('./accountTags.js');
+    const {
+      loadAccountTags,
+      lookupNsfwTag,
+      nsfwStatusFromTag,
+      zdrStatusFromTag,
+      ssoHashHex
+    } = await import('./accountTags.js');
     const tags = loadAccountTags();
     withTags = all.map((a) => {
       const side = nsfwStatusFromTag(
+        lookupNsfwTag(tags, {
+          email: a.email,
+          sso: a.sso,
+          ssoHash: a.sso ? ssoHashHex(a.sso) : undefined
+        })
+      );
+      const zdr = zdrStatusFromTag(
         lookupNsfwTag(tags, {
           email: a.email,
           sso: a.sso,
@@ -256,7 +268,12 @@ export async function listAccounts(): Promise<AccountRecord[]> {
         nsfwAttempted: side.nsfwAttempted,
         nsfwAt: side.nsfwAt,
         nsfwError: side.nsfwError,
-        nsfwStatus: side.nsfwStatus
+        nsfwStatus: side.nsfwStatus,
+        zdrClosed: zdr.zdrClosed,
+        zdrAttempted: zdr.zdrAttempted,
+        zdrAt: zdr.zdrAt,
+        zdrError: zdr.zdrError,
+        zdrStatus: zdr.zdrStatus
       } as AccountRecord;
     });
   } catch {

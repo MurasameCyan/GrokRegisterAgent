@@ -12,6 +12,10 @@ export interface AccountTagEntry {
   nsfw_attempted?: boolean;
   nsfw_at?: string;
   nsfw_error?: string;
+  zdr_closed?: boolean;
+  zdr_attempted?: boolean;
+  zdr_at?: string;
+  zdr_error?: string;
 }
 
 export interface AccountTagsFile {
@@ -108,5 +112,34 @@ export function nsfwStatusFromTag(tag: AccountTagEntry | null | undefined): {
     nsfwAt: tag.nsfw_at,
     nsfwError: tag.nsfw_error,
     nsfwStatus: 'fail'
+  };
+}
+
+export type ZdrUiStatus = 'closed' | 'open' | 'none';
+
+export function zdrStatusFromTag(tag: AccountTagEntry | null | undefined): {
+  zdrClosed: boolean | null;
+  zdrAttempted: boolean;
+  zdrAt?: string;
+  zdrError?: string;
+  zdrStatus: ZdrUiStatus;
+} {
+  if (!tag || !tag.zdr_attempted) {
+    return { zdrClosed: null, zdrAttempted: false, zdrStatus: 'none' };
+  }
+  if (tag.zdr_closed === true) {
+    return {
+      zdrClosed: true,
+      zdrAttempted: true,
+      zdrAt: tag.zdr_at,
+      zdrStatus: 'closed'
+    };
+  }
+  return {
+    zdrClosed: false,
+    zdrAttempted: true,
+    zdrAt: tag.zdr_at,
+    zdrError: tag.zdr_error,
+    zdrStatus: 'open'
   };
 }

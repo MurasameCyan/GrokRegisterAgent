@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url';
 import type { AppSettings } from '@shared/settings';
 import {
   buildCfLocalProxyUrl,
+  buildSingBoxLocalProxyUrl,
   parseProxyPool,
   parseStringList,
   stripProxyComment
@@ -156,8 +157,15 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
     : 'round_robin';
   config.email_domain_mode = config.mail_domain_mode;
 
-  // 代理三模式互斥：CF 独立 > 普通池/单条 > 直连
-  const cfOn = (settings as { cfProxyEnabled?: boolean }).cfProxyEnabled === true;
+  // 代理四模式互斥：sing-box > CF 独立 > 普通池/单条 > 直连
+  const sbOn = (settings as { singBoxEnabled?: boolean }).singBoxEnabled === true;
+  const cfOn =
+    !sbOn && (settings as { cfProxyEnabled?: boolean }).cfProxyEnabled === true;
+  const sbLocalUrl = sbOn
+    ? buildSingBoxLocalProxyUrl({
+        singBoxPort: Number((settings as { singBoxPort?: number }).singBoxPort) || 2080
+      })
+    : '';
   const cfLocalUrl = cfOn
     ? buildCfLocalProxyUrl({
         cfProxyPort: Number((settings as { cfProxyPort?: number }).cfProxyPort) || 30000,
@@ -190,13 +198,14 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
   const singleProxy = stripProxyComment(settings.proxy || '');
   const browserOnly = stripProxyComment(settings.browserProxy || '');
   // 总开关 proxyEnabled：false = 强制直连（忽略池/单条内容，池文本仅保留编辑）
-  // CF 开时强制视为「有代理」但不用池
+  // sing-box / CF 开时强制视为「有代理」但不用池
   // 注意：默认 settings.proxyEnabled=false；必须用 === true，勿用 !== false（undefined 会误开）
-  const proxyMasterOn = cfOn || settings.proxyEnabled === true;
+  const proxyMasterOn = sbOn || cfOn || settings.proxyEnabled === true;
   // UI「使用代理池」开关（与池是否有 IP 无关；空池由 Python 启动守卫停止）
-  const poolSwitchOn = !cfOn && settings.proxyPoolEnabled === true;
+  const poolSwitchOn = !sbOn && !cfOn && settings.proxyPoolEnabled === true;
   // 用户开了普通代理、池里有 IP、但忘开「使用代理池」且单条为空 → 自动按池写入，避免静默直连
   const autoPoolFallback =
+    !sbOn &&
     !cfOn &&
     proxyMasterOn &&
     !poolSwitchOn &&
@@ -204,6 +213,7 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
     !singleProxy &&
     !browserOnly;
   const wantPool =
+    !sbOn &&
     !cfOn &&
     proxyMasterOn &&
     poolProxies.length > 0 &&
@@ -213,6 +223,7 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
   config.proxy_enabled = proxyMasterOn;
   config.proxy_pool_enabled = wantPool;
   config.cf_proxy_enabled = cfOn;
+  config.singbox_enabled = sbOn;
   if (cfOn) {
     config.cf_proxy_domain = String(
       (settings as { cfProxyDomain?: string }).cfProxyDomain || ''
@@ -227,8 +238,19 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
     delete config.cf_proxy_port;
     delete config.cf_proxy_local_scheme;
   }
+  if (sbOn) {
+    config.singbox_port = Number((settings as { singBoxPort?: number }).singBoxPort) || 2080;
+  } else {
+    delete config.singbox_port;
+  }
 
-  if (cfOn) {
+  if (sbOn) {
+    // sing-box 独立：本地 mixed HTTP → 127.0.0.1:port（进程由 server 管理）
+    config.proxy = sbLocalUrl;
+    config.browser_proxy = sbLocalUrl;
+    delete config.proxy_pool;
+    config.proxy_mode = settings.proxyMode || 'round_robin';
+  } else if (cfOn) {
     // CF 独立：本地 http/socks5 → 127.0.0.1:port（cfwp 进程由 server 管理）
     config.proxy = cfLocalUrl;
     config.browser_proxy = cfLocalUrl;
@@ -267,17 +289,19 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
 
   // 启动诊断摘要（供 registerBot 打日志；Python 侧也会读 config 打印）
   const proxyDiag = {
-    mode: cfOn
-      ? 'cf'
-      : !proxyMasterOn
-        ? 'direct'
-        : wantPool
-          ? autoPoolFallback
-            ? 'pool_auto'
-            : 'pool'
-          : singleProxy || browserOnly
-            ? 'single'
-            : 'empty',
+    mode: sbOn
+      ? 'singbox'
+      : cfOn
+        ? 'cf'
+        : !proxyMasterOn
+          ? 'direct'
+          : wantPool
+            ? autoPoolFallback
+              ? 'pool_auto'
+              : 'pool'
+            : singleProxy || browserOnly
+              ? 'single'
+              : 'empty',
     proxy_enabled: proxyMasterOn,
     proxy_pool_enabled: wantPool,
     pool_n: Array.isArray(config.proxy_pool) ? config.proxy_pool.length : 0,
@@ -361,6 +385,12 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
     config.enable_nsfw = true;
   } else {
     config.enable_nsfw = false;
+  }
+  // ZDR 关闭：默认 true（A1）；仅显式 false 时关闭
+  if ((settings as { enableDisableZdr?: boolean }).enableDisableZdr === false) {
+    config.enable_disable_zdr = false;
+  } else {
+    config.enable_disable_zdr = true;
   }
   if ((settings as { sub2apiExportEnabled?: boolean }).sub2apiExportEnabled === true) {
     config.sub2api_export_enabled = true;

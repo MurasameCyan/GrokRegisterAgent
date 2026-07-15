@@ -32,6 +32,8 @@
     "_comment_auto_auth_delay": "拿到 SSO 后随机延迟再后台流水线（SSO推送/mint/Auth推送），不阻塞注册",
     "_comment_register_plans": "A/B/C 可单独开关；全开则 A→B→C 顺序兜底",
     "enable_nsfw": false,
+    "enable_disable_zdr": true,
+    "_comment_enable_disable_zdr": "注册 SSO 导出前 + mint 后尝试关闭 ZDR；默认 true；失败标开不挡流水线",
     "browser_recycle_every": 5,
     "max_mail_retry": 3,
     "sub2api_export_enabled": false,

@@ -119,6 +119,21 @@ export interface AppSettings {
    */
   cfProxyLocalScheme: 'socks5' | 'http';
   /**
+   * sing-box 独立代理（本地 mixed HTTP/SOCKS）。
+   * 与 CF / 普通代理/池互斥。全局路由，用户只需粘贴/管理节点。
+   * 仅 Linux 镜像内置二进制（register/bin/sing-box/linux-*）。
+   */
+  singBoxEnabled: boolean;
+  /**
+   * 节点列表（多行）：支持 ss/vmess/vless/trojan/hysteria2/hy2/tuic 分享链接。
+   * 行尾可 #备注。
+   */
+  singBoxNodes: string;
+  /** 当前选用节点 tag（解析后的稳定 id）；空=第一项 */
+  singBoxSelected: string;
+  /** 本地 mixed 监听端口（默认 2080） */
+  singBoxPort: number;
+  /**
    * 代理池批量测活并发数（1..20，默认 8）。
    * 仅影响设置页「全部测活」，不写 Python 注册配置。
    */
@@ -159,6 +174,8 @@ export interface AppSettings {
   cloudflareAuthMode: string;
   /** mint 成功后尝试开启 NSFW（可选，失败不挡主流程） */
   enableNsfw: boolean;
+  /** 注册后 SSO 导出前尝试关闭 ZDR（失败标开、不挡流水线） */
+  enableDisableZdr: boolean;
   /** mint 成功后导出 sub2api accounts（可选） */
   sub2apiExportEnabled: boolean;
   /** 每成功 N 次重启浏览器（0=仅失败/首轮）；默认 5 */
@@ -312,6 +329,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   cfProxyEnableEch: true,
   cfProxyCnrule: true,
   cfProxyLocalScheme: 'socks5',
+  singBoxEnabled: false,
+  singBoxNodes: '',
+  singBoxSelected: '',
+  singBoxPort: 2080,
   proxyProbeConcurrency: 8,
   proxyAutoSaveOnRemoveFailed: false,
   /** 默认开：带密码代理走本地转发，避免 DrissionPage set_proxy 丢弃凭据 */
@@ -326,6 +347,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   authExportQueueMax: 0,
   cloudflareAuthMode: 'x-admin-auth',
   enableNsfw: false,
+  enableDisableZdr: true,
   sub2apiExportEnabled: false,
   browserRecycleEvery: 5,
   maxMailRetry: 3,
@@ -1206,8 +1228,20 @@ export function validateSettings(s: AppSettings): Record<string, string> {
     ) {
       errors.proxyProbeConcurrency = '测活并发须在 1 到 20 之间';
     }
-    // CF 独立代理与普通代理/池互斥：开 CF 时不校验单代理
-    if (s.cfProxyEnabled) {
+    // 互斥模式校验：sing-box / CF / 普通
+    if (s.singBoxEnabled) {
+      const nodes = String(s.singBoxNodes || '')
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter((l) => l && !l.startsWith('#'));
+      if (nodes.length === 0) {
+        errors.singBoxNodes = '已开启 sing-box，请粘贴至少一个节点分享链接';
+      }
+      const port = Number(s.singBoxPort);
+      if (!Number.isInteger(port) || port < 1 || port > 65535) {
+        errors.singBoxPort = '本地端口须在 1～65535';
+      }
+    } else if (s.cfProxyEnabled) {
       if (!String(s.cfProxyDomain || '').trim()) {
         errors.cfProxyDomain =
           '已开启 CF 独立代理，请填写 Workers/Pages/自定义域名（域名:端口）';
@@ -1250,16 +1284,44 @@ export function buildCfLocalProxyUrl(s: Pick<AppSettings, 'cfProxyPort' | 'cfPro
 }
 
 /**
+ * sing-box 本地 mixed 代理 URL（HTTP，mixed 同时提供 SOCKS）。
+ */
+export function buildSingBoxLocalProxyUrl(
+  s: Pick<AppSettings, 'singBoxPort'>
+): string {
+  const port = Number(s.singBoxPort);
+  const p = Number.isInteger(port) && port >= 1 && port <= 65535 ? port : 2080;
+  return `http://127.0.0.1:${p}`;
+}
+
+/**
  * 规范化代理模式互斥：
- * - CF 开 → 关普通代理与池
- * - 普通代理开 → 关 CF
+ * - sing-box 开 → 关 CF / 普通代理与池
+ * - CF 开 → 关 sing-box / 普通代理与池
+ * - 普通代理开 → 关 CF / sing-box
  */
 export function enforceProxyModeMutex(s: AppSettings): AppSettings {
+  if (s.singBoxEnabled) {
+    return {
+      ...s,
+      cfProxyEnabled: false,
+      proxyEnabled: false,
+      proxyPoolEnabled: false
+    };
+  }
   if (s.cfProxyEnabled) {
     return {
       ...s,
+      singBoxEnabled: false,
       proxyEnabled: false,
       proxyPoolEnabled: false
+    };
+  }
+  if (s.proxyEnabled) {
+    return {
+      ...s,
+      singBoxEnabled: false,
+      cfProxyEnabled: false
     };
   }
   return s;

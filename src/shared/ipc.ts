@@ -136,6 +136,13 @@ export interface CpaAuthItem {
   nsfwError?: string | null;
   /** ok | fail | none */
   nsfwStatus?: 'ok' | 'fail' | 'none';
+  /** ZDR：true=已关 / false=仍开或失败 / null=未尝试 */
+  zdrClosed?: boolean | null;
+  zdrAttempted?: boolean;
+  zdrAt?: string | null;
+  zdrError?: string | null;
+  /** closed | open | none */
+  zdrStatus?: 'closed' | 'open' | 'none';
 }
 
 export interface CpaAuthListResult {
@@ -480,6 +487,19 @@ export interface RendererApi {
   /** 读取 cfwp 最近日志 */
   getCfProxyLog(tail?: number): Promise<CfProxyLogResult>;
 
+  /** sing-box 独立代理状态 */
+  getSingBoxStatus(): Promise<SingBoxStatus>;
+  /** 节点摘要列表 + 当前选中 */
+  getSingBoxNodes(): Promise<{ nodes: SingBoxNodeSummary[]; selected: string }>;
+  /** 按已保存配置启动/重载 sing-box */
+  startSingBox(): Promise<SingBoxStatus & { ok?: boolean; error?: string }>;
+  /** 停止 sing-box 进程 */
+  stopSingBox(): Promise<SingBoxStatus & { ok?: boolean }>;
+  /** 按 settings 同步启停 */
+  syncSingBox(): Promise<SingBoxStatus & { ok?: boolean }>;
+  /** 读取 sing-box 最近日志 */
+  getSingBoxLog(tail?: number): Promise<SingBoxLogResult>;
+
   // system
   getSystemHealth(): Promise<SystemHealth>;
   checkUpdate(): Promise<UpdateInfo>;
@@ -503,6 +523,44 @@ export interface CfProxyStatus {
 
 /** CF cfwp 最近日志 */
 export interface CfProxyLogResult {
+  ok: boolean;
+  logPath: string | null;
+  content: string;
+  truncated: boolean;
+  error?: string;
+}
+
+/** sing-box 本地 mixed 代理运行状态 */
+export interface SingBoxStatus {
+  running: boolean;
+  pid: number | null;
+  port: number;
+  localUrl: string;
+  binary: string | null;
+  binaryExists: boolean;
+  selected: string;
+  selectedName: string;
+  nodeCount: number;
+  lastError: string | null;
+  startedAt: number | null;
+  logPath: string | null;
+  configPath: string | null;
+  platform: string;
+  arch: string;
+}
+
+/** sing-box 节点摘要 */
+export interface SingBoxNodeSummary {
+  tag: string;
+  name: string;
+  type: string;
+  server: string;
+  port: number;
+  raw: string;
+}
+
+/** sing-box 最近日志 */
+export interface SingBoxLogResult {
   ok: boolean;
   logPath: string | null;
   content: string;

@@ -66,6 +66,13 @@ export interface AccountRecord {
   nsfwError?: string;
   /** ok | fail | none */
   nsfwStatus?: 'ok' | 'fail' | 'none';
+  /** ZDR：true=已关 / false=仍开或失败 / null=未尝试 */
+  zdrClosed?: boolean | null;
+  zdrAttempted?: boolean;
+  zdrAt?: string;
+  zdrError?: string;
+  /** closed | open | none */
+  zdrStatus?: 'closed' | 'open' | 'none';
 }
 
 /** Auth 重登阶段（WebSocket 推送，UI 显示登录中/mint/激活） */

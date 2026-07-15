@@ -34,7 +34,9 @@ import type {
 import {
   appendProxiesToPoolTextDetailed,
   buildCfLocalProxyUrl,
+  buildSingBoxLocalProxyUrl,
   DEFAULT_SETTINGS,
+  enforceProxyModeMutex,
   moveProxiesToAlivePool,
   parseProxyPoolEntries,
   proxySchemeBadgeLabel,
@@ -43,7 +45,12 @@ import {
   stripProxyComment,
   validateSettings
 } from '@shared/settings';
-import type { CfProxyLogResult, CfProxyStatus } from '@shared/ipc';
+import type {
+  CfProxyLogResult,
+  CfProxyStatus,
+  SingBoxLogResult,
+  SingBoxStatus
+} from '@shared/ipc';
 import { cn } from '@renderer/lib/cn';
 
 /** 合并默认值，避免旧 settings 缺字段 / null 导致渲染崩溃 */
@@ -90,7 +97,16 @@ function normalizeSettingsDraft(raw: AppSettings | null | undefined): AppSetting
     cfProxyDns: String(r.cfProxyDns || DEFAULT_SETTINGS.cfProxyDns),
     cfProxyEnableEch: r.cfProxyEnableEch !== false,
     cfProxyCnrule: r.cfProxyCnrule !== false,
-    cfProxyLocalScheme: r.cfProxyLocalScheme === 'http' ? 'http' : 'socks5'
+    cfProxyLocalScheme: r.cfProxyLocalScheme === 'http' ? 'http' : 'socks5',
+    singBoxEnabled: !!r.singBoxEnabled,
+    singBoxNodes: String(r.singBoxNodes ?? DEFAULT_SETTINGS.singBoxNodes),
+    singBoxSelected: String(r.singBoxSelected ?? DEFAULT_SETTINGS.singBoxSelected),
+    singBoxPort: (() => {
+      const n = Number(r.singBoxPort);
+      return Number.isInteger(n) && n >= 1 && n <= 65535
+        ? n
+        : DEFAULT_SETTINGS.singBoxPort;
+    })()
   };
 }
 
@@ -351,6 +367,12 @@ export function SettingsForm() {
   const [cfLog, setCfLog] = useState<CfProxyLogResult | null>(null);
   const [cfLogLoading, setCfLogLoading] = useState(false);
   const [cfLogCleared, setCfLogCleared] = useState(false);
+  /** sing-box 运行状态 / 日志 */
+  const [sbStatus, setSbStatus] = useState<SingBoxStatus | null>(null);
+  const [sbBusy, setSbBusy] = useState(false);
+  const [sbLog, setSbLog] = useState<SingBoxLogResult | null>(null);
+  const [sbLogLoading, setSbLogLoading] = useState(false);
+  const [sbLogCleared, setSbLogCleared] = useState(false);
 
   useEffect(() => {
     if (data && !draft) {
@@ -420,6 +442,59 @@ export function SettingsForm() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft?.cfProxyEnabled]);
 
+  /** 刷新 sing-box 状态 */
+  const refreshSbStatus = async () => {
+    try {
+      if (typeof window.api?.getSingBoxStatus !== 'function') return;
+      const st = await window.api.getSingBoxStatus();
+      setSbStatus(st);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  /** 读取 sing-box 最近日志 */
+  const refreshSbLog = async () => {
+    try {
+      if (typeof window.api?.getSingBoxLog !== 'function') return;
+      setSbLogLoading(true);
+      const log = await window.api.getSingBoxLog(200);
+      setSbLog(log);
+      setSbLogCleared(false);
+    } catch (err) {
+      setSbLog({
+        ok: false,
+        logPath: sbStatus?.logPath ?? null,
+        content: '',
+        truncated: false,
+        error: err instanceof Error ? err.message : String(err)
+      });
+    } finally {
+      setSbLogLoading(false);
+    }
+  };
+
+  const copySbLog = async () => {
+    const text = sbLog?.content || '';
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      push({ tone: 'ok', title: '已复制 sing-box 日志' });
+    } catch (err) {
+      push({ tone: 'danger', title: '复制失败', description: String(err) });
+    }
+  };
+
+  useEffect(() => {
+    void refreshSbStatus();
+    if (draft?.singBoxEnabled) void refreshSbLog();
+    const t = window.setInterval(() => {
+      if (draft?.singBoxEnabled) void refreshSbStatus();
+    }, 8000);
+    return () => window.clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft?.singBoxEnabled]);
+
   const errors = useMemo(() => {
     if (!draft) return {} as Record<string, string>;
     try {
@@ -473,21 +548,31 @@ export function SettingsForm() {
   const patch = (partial: Partial<AppSettings>) =>
     setDraft((prev) => (prev ? { ...prev, ...partial } : prev));
 
-  /** 开 CF → 关普通/池；开普通 → 关 CF */
-  const setProxyMode = (mode: 'off' | 'normal' | 'cf') => {
-    if (mode === 'cf') {
+  /** 开 sing-box / CF → 关其它；开普通 → 关独立代理 */
+  const setProxyMode = (mode: 'off' | 'normal' | 'cf' | 'singbox') => {
+    if (mode === 'singbox') {
       patch({
+        singBoxEnabled: true,
+        cfProxyEnabled: false,
+        proxyEnabled: false,
+        proxyPoolEnabled: false
+      });
+    } else if (mode === 'cf') {
+      patch({
+        singBoxEnabled: false,
         cfProxyEnabled: true,
         proxyEnabled: false,
         proxyPoolEnabled: false
       });
     } else if (mode === 'normal') {
       patch({
+        singBoxEnabled: false,
         cfProxyEnabled: false,
         proxyEnabled: true
       });
     } else {
       patch({
+        singBoxEnabled: false,
         cfProxyEnabled: false,
         proxyEnabled: false,
         proxyPoolEnabled: false
@@ -523,6 +608,39 @@ export function SettingsForm() {
       void refreshCfLog();
     } finally {
       setCfBusy(false);
+    }
+  };
+
+  const runSbAction = async (action: 'start' | 'stop' | 'sync') => {
+    setSbBusy(true);
+    try {
+      const api = window.api;
+      const r =
+        action === 'start'
+          ? await api.startSingBox()
+          : action === 'stop'
+            ? await api.stopSingBox()
+            : await api.syncSingBox();
+      setSbStatus(r);
+      void refreshSbLog();
+      if (r.lastError && !r.running) {
+        push({ tone: 'danger', title: 'sing-box 异常', description: r.lastError });
+      } else if (action === 'stop') {
+        push({ tone: 'ok', title: '已停止 sing-box' });
+      } else if (r.running) {
+        push({
+          tone: 'ok',
+          title: 'sing-box 运行中',
+          description:
+            (r.localUrl || `http://127.0.0.1:${r.port}`) +
+            (r.selectedName ? ` · ${r.selectedName}` : '')
+        });
+      }
+    } catch (err) {
+      push({ tone: 'danger', title: 'sing-box 操作失败', description: String(err) });
+      void refreshSbLog();
+    } finally {
+      setSbBusy(false);
     }
   };
 
@@ -970,22 +1088,22 @@ export function SettingsForm() {
   const save = async (override?: AppSettings, opts?: { silentOk?: boolean; okTitle?: string; okDesc?: string }) => {
     const base = override || draft;
     // 持久化前强制清洗可用池：禁止 # 网页导入 等垃圾写入 settings
-    // CF 与普通代理/池互斥
+    // sing-box / CF / 普通代理互斥
     let payload: AppSettings = {
       ...base!,
       proxyPoolAlive: sanitizeProxyPoolText(base!.proxyPoolAlive || '')
     };
-    if (payload.cfProxyEnabled) {
-      payload = { ...payload, proxyEnabled: false, proxyPoolEnabled: false };
-    }
+    payload = enforceProxyModeMutex(payload);
     setSaving(true);
     try {
       await window.api.saveSettings(payload);
       setDraft(payload);
       await reload();
-      // 保存后服务端会 sync cfwp；刷新状态条与日志
+      // 保存后服务端会 sync sing-box / cfwp；刷新状态条与日志
       void refreshCfStatus();
+      void refreshSbStatus();
       if (payload.cfProxyEnabled) void refreshCfLog();
+      if (payload.singBoxEnabled) void refreshSbLog();
       if (!opts?.silentOk) {
         push({
           tone: 'ok',
@@ -1357,13 +1475,13 @@ export function SettingsForm() {
       <Card collapsible defaultCollapsed>
         <CardHeader
           title="代理设置"
-          description="三种模式二选一：直连 / 普通代理（单条或池）/ CF 独立代理（cfwp 本地 HTTP·SOCKS）"
+          description="四种模式互斥：直连 / 普通代理（单条或池）/ CF 独立代理 / sing-box 独立代理"
         />
         <CardBody className="grid gap-4 lg:grid-cols-2">
-          {/* 模式互斥：CF 独立 ↔ 普通代理/池 */}
+          {/* 模式互斥：sing-box ↔ CF ↔ 普通代理/池 */}
           <div className="lg:col-span-2 space-y-2">
             <div className="text-[13px] font-medium tracking-tight">代理模式</div>
-            <div className="grid gap-2 sm:grid-cols-3">
+            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
               {(
                 [
                   {
@@ -1380,15 +1498,26 @@ export function SettingsForm() {
                     id: 'cf' as const,
                     label: 'CF 独立代理',
                     hint: 'Workers/Pages → 本地 SOCKS/HTTP'
+                  },
+                  {
+                    id: 'singbox' as const,
+                    label: 'sing-box',
+                    hint: '节点分享链接 → 本地 mixed'
                   }
                 ] as const
               ).map((opt) => {
                 const active =
-                  opt.id === 'cf'
-                    ? !!draft.cfProxyEnabled
-                    : opt.id === 'normal'
-                      ? !draft.cfProxyEnabled && !!draft.proxyEnabled
-                      : !draft.cfProxyEnabled && !draft.proxyEnabled;
+                  opt.id === 'singbox'
+                    ? !!draft.singBoxEnabled
+                    : opt.id === 'cf'
+                      ? !draft.singBoxEnabled && !!draft.cfProxyEnabled
+                      : opt.id === 'normal'
+                        ? !draft.singBoxEnabled &&
+                          !draft.cfProxyEnabled &&
+                          !!draft.proxyEnabled
+                        : !draft.singBoxEnabled &&
+                          !draft.cfProxyEnabled &&
+                          !draft.proxyEnabled;
                 return (
                   <button
                     key={opt.id}
@@ -1410,10 +1539,229 @@ export function SettingsForm() {
               })}
             </div>
             <p className="text-[11px] text-muted-foreground">
-              CF 独立代理与普通代理/代理池<strong>只能二选一</strong>；镜像内仅打包 Linux
-              cfwp（amd64/arm64），不含 Windows 客户端。
+              sing-box / CF / 普通代理<strong>三选一</strong>；镜像内仅打包 Linux
+              cfwp 与 sing-box（amd64/arm64），不含 Windows 客户端。
             </p>
           </div>
+
+          {/* —— sing-box 独立代理面板 —— */}
+          {draft.singBoxEnabled && (
+            <div className="lg:col-span-2 space-y-3 rounded-xl border border-violet-500/30 bg-violet-500/5 p-3.5">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="text-[13px] font-semibold tracking-tight">
+                    sing-box 本地 mixed 代理
+                  </div>
+                  <p className="mt-0.5 text-[11px] leading-4 text-muted-foreground">
+                    粘贴 ss/vmess/vless/trojan/hysteria2/tuic 等分享链接；路由固定全局。保存设置后自动启停
+                    sing-box。
+                  </p>
+                </div>
+                <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+                  <span
+                    className={cn(
+                      'chip text-[11px]',
+                      sbStatus?.running
+                        ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                        : 'bg-muted text-muted-foreground'
+                    )}
+                  >
+                    {sbStatus?.running
+                      ? `运行中 · pid ${sbStatus.pid ?? '?'}`
+                      : '未运行'}
+                  </span>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    className="h-7"
+                    disabled={sbBusy}
+                    onClick={() => void runSbAction('sync')}
+                  >
+                    {sbBusy ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Activity className="h-3.5 w-3.5" />
+                    )}
+                    同步
+                  </Button>
+                  {sbStatus?.running ? (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="danger"
+                      className="h-7"
+                      disabled={sbBusy}
+                      onClick={() => void runSbAction('stop')}
+                    >
+                      停止
+                    </Button>
+                  ) : (
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="h-7"
+                      disabled={sbBusy}
+                      onClick={() => void runSbAction('start')}
+                      title="需先保存设置且开启 sing-box"
+                    >
+                      启动
+                    </Button>
+                  )}
+                </div>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field
+                  label="本地端口"
+                  hint="默认 2080 → mixed HTTP/SOCKS"
+                  error={errors.singBoxPort}
+                >
+                  <Input
+                    type="number"
+                    min={1}
+                    max={65535}
+                    value={draft.singBoxPort ?? 2080}
+                    onChange={(e) =>
+                      update(
+                        'singBoxPort',
+                        Math.max(1, Math.min(65535, Number(e.target.value) || 2080))
+                      )
+                    }
+                    invalid={!!errors.singBoxPort}
+                  />
+                </Field>
+                <Field
+                  label="选用节点"
+                  hint="空=列表第一项；填解析后的 tag 或名称"
+                >
+                  <Input
+                    value={draft.singBoxSelected || ''}
+                    onChange={(e) => update('singBoxSelected', e.target.value)}
+                    placeholder={sbStatus?.selectedName || '默认第一项'}
+                    spellCheck={false}
+                    className="font-mono text-[13px]"
+                  />
+                </Field>
+              </div>
+
+              <Field
+                label="节点列表"
+                hint="每行一个分享链接，行尾可 #备注"
+                error={errors.singBoxNodes}
+              >
+                <textarea
+                  className="min-h-[120px] w-full rounded-lg border border-border/60 bg-background px-3 py-2 font-mono text-[12px] leading-5 outline-none focus:border-primary/50"
+                  value={draft.singBoxNodes || ''}
+                  onChange={(e) => update('singBoxNodes', e.target.value)}
+                  placeholder="vless://...  ss://...  vmess://...  #备注可写行尾"
+                  spellCheck={false}
+                />
+              </Field>
+
+              <div className="rounded-lg border border-border/50 bg-card/60 px-3 py-2 text-[12px]">
+                <div className="font-medium">将使用本地代理</div>
+                <code className="mt-0.5 block break-all font-mono text-[11px] text-muted-foreground">
+                  {buildSingBoxLocalProxyUrl(draft)}
+                </code>
+                {(sbStatus?.selectedName || sbStatus?.selected) && (
+                  <p className="mt-1 text-[11px] text-muted-foreground">
+                    当前节点：{sbStatus.selectedName || sbStatus.selected}
+                    {typeof sbStatus.nodeCount === 'number'
+                      ? ` · 共 ${sbStatus.nodeCount} 个`
+                      : ''}
+                  </p>
+                )}
+                {sbStatus?.lastError && (
+                  <p className="mt-1 text-[11px] text-danger">{sbStatus.lastError}</p>
+                )}
+                {sbStatus && !sbStatus.binaryExists && (
+                  <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-300">
+                    未找到 Linux sing-box 二进制（register/bin/sing-box/linux-amd64|arm64）。请在
+                    Docker 镜像中构建。
+                  </p>
+                )}
+              </div>
+
+              <div className="rounded-lg border border-border/50 bg-card/60">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/50 px-3 py-2">
+                  <div className="flex items-center gap-2 text-[12px] font-medium">
+                    <Terminal className="h-3.5 w-3.5 text-muted-foreground" />
+                    sing-box 日志
+                    {sbLog?.truncated && (
+                      <span className="text-[11px] text-amber-600">仅显示最近内容</span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      className="h-7"
+                      disabled={sbLogLoading}
+                      onClick={() => void refreshSbLog()}
+                    >
+                      {sbLogLoading ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <RefreshCw className="h-3.5 w-3.5" />
+                      )}
+                      刷新
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      className="h-7"
+                      disabled={!sbLog?.content}
+                      onClick={() => void copySbLog()}
+                    >
+                      <Clipboard className="h-3.5 w-3.5" />
+                      复制
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      className="h-7"
+                      disabled={!sbLog?.content && !sbLog?.error}
+                      onClick={() => setSbLogCleared(true)}
+                    >
+                      清空显示
+                    </Button>
+                  </div>
+                </div>
+                <div className="px-3 py-2">
+                  <div className="mb-1 truncate font-mono text-[10px] text-muted-foreground">
+                    {sbLog?.logPath || sbStatus?.logPath || '暂无日志路径'}
+                  </div>
+                  <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded-md bg-slate-950/90 p-3 font-mono text-[11px] leading-5 text-slate-100">
+                    {sbLogCleared
+                      ? '已清空当前显示，点击「刷新」重新读取日志。'
+                      : sbLog?.error
+                        ? `读取日志失败：${sbLog.error}`
+                        : sbLog?.content ||
+                          '暂无日志，保存或启动 sing-box 后刷新。'}
+                  </pre>
+                </div>
+              </div>
+
+              <div className="grid gap-3 sm:grid-cols-2">
+                <ToggleRow
+                  label="SSO 验活走代理"
+                  hint="经 sing-box 本地代理"
+                  checked={draft.ssoCheckUseProxy !== false}
+                  onChange={(v) => update('ssoCheckUseProxy', v)}
+                />
+                <ToggleRow
+                  label="Auth 转换/重签/测活走代理"
+                  hint="经 sing-box 本地代理"
+                  checked={draft.cpaAuthUseProxy !== false}
+                  onChange={(v) => update('cpaAuthUseProxy', v)}
+                />
+              </div>
+            </div>
+          )}
 
           {/* —— CF 独立代理面板（对齐 cfsh.sh 参数）—— */}
           {draft.cfProxyEnabled && (
@@ -1686,7 +2034,7 @@ export function SettingsForm() {
           )}
 
           {/* —— 普通代理 / 池 —— */}
-          {!draft.cfProxyEnabled && draft.proxyEnabled && (
+          {!draft.singBoxEnabled && !draft.cfProxyEnabled && draft.proxyEnabled && (
             <>
               <div className="lg:col-span-2 grid gap-3 sm:grid-cols-2">
                 <ToggleRow
@@ -2376,6 +2724,12 @@ export function SettingsForm() {
             hint="授权队列 mint 后用 SSO 尝试 gRPC always_show_nsfw_content；成败均写 tag，不影响授权流水线"
             checked={!!draft.enableNsfw}
             onChange={(v) => update('enableNsfw', v)}
+          />
+          <ToggleRow
+            label="关闭 ZDR"
+            hint="注册成功后、SSO 导出前用 SSO 尝试关 Zero Retention；probe 失败标「开」，不影响导出与授权"
+            checked={draft.enableDisableZdr !== false}
+            onChange={(v) => update('enableDisableZdr', v)}
           />
           <div className="grid gap-3 sm:grid-cols-2">
             <Field

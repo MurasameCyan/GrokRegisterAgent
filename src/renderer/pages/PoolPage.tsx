@@ -22,6 +22,7 @@ import { PaginationBar } from '@renderer/components/ui/PaginationBar';
 import { AccountDetailDrawer } from '@renderer/components/domain/AccountDetailDrawer';
 import { BotFlagBadge } from '@renderer/components/domain/BotFlagBadge';
 import { NsfwBadge } from '@renderer/components/domain/NsfwBadge';
+import { ZdrBadge } from '@renderer/components/domain/ZdrBadge';
 import { useClientPagination } from '@renderer/hooks/useClientPagination';
 import { useAccountsStore } from '@renderer/store/accountsStore';
 import { useRunStore } from '@renderer/store/runStore';
@@ -1406,6 +1407,17 @@ function AccountCard({
                 : 'none')
             }
             error={account.nsfwError}
+          />
+          <ZdrBadge
+            status={
+              account.zdrStatus ??
+              (account.zdrAttempted
+                ? account.zdrClosed
+                  ? 'closed'
+                  : 'open'
+                : 'none')
+            }
+            error={account.zdrError}
           />
           <span
             title={

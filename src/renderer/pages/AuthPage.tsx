@@ -22,6 +22,7 @@ import { Switch } from '@renderer/components/ui/Switch';
 import { PaginationBar } from '@renderer/components/ui/PaginationBar';
 import { BotFlagBadge } from '@renderer/components/domain/BotFlagBadge';
 import { NsfwBadge } from '@renderer/components/domain/NsfwBadge';
+import { ZdrBadge } from '@renderer/components/domain/ZdrBadge';
 import { useClientPagination } from '@renderer/hooks/useClientPagination';
 import { useToastStore } from '@renderer/store/toastStore';
 import { useSettingsStore } from '@renderer/store/settingsStore';
@@ -2547,6 +2548,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                 <th className="w-10 px-2 py-2.5 text-center font-medium">Type</th>
                 <th className="w-[3.25rem] px-3 py-2.5 font-medium">xai</th>
                 <th className="w-[3.5rem] px-2 py-2.5 font-medium">NSFW</th>
+                <th className="w-[3.5rem] px-2 py-2.5 font-medium">ZDR</th>
                 <th className="w-[4.5rem] px-3 py-2.5 font-medium">bot_flag</th>
                 {/* 固定窄列仅放 O/X，避免测活后邻列横向跳动 */}
                 <th className="w-10 whitespace-nowrap px-2 py-2.5 text-center font-medium">
@@ -2679,6 +2681,19 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                             : 'none')
                         }
                         error={item.nsfwError}
+                      />
+                    </td>
+                    <td className="w-[3.5rem] min-w-[3.5rem] px-2 py-2.5">
+                      <ZdrBadge
+                        status={
+                          item.zdrStatus ??
+                          (item.zdrAttempted
+                            ? item.zdrClosed
+                              ? 'closed'
+                              : 'open'
+                            : 'none')
+                        }
+                        error={item.zdrError}
                       />
                     </td>
                     <td className="w-[4.5rem] min-w-[4.5rem] px-3 py-2.5">
