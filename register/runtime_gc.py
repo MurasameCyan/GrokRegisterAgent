@@ -19,8 +19,12 @@ def cleanup_runtime_memory(
     log: Optional[LogFn] = None,
     force: bool = False,
     min_interval_sec: float = 30.0,
+    silent_ok: bool = False,
 ) -> dict:
-    """触发 Python GC；可选打日志。"""
+    """触发 Python GC；可选打日志。
+
+    silent_ok=True：成功不打日志（仅失败才 log），用于启动阶段减噪。
+    """
     global _last_gc_at, _success_since_gc
     now = time.time()
     if not force and (now - _last_gc_at) < min_interval_sec:
@@ -38,7 +42,7 @@ def cleanup_runtime_memory(
         return {"ok": False, "error": str(e)}
     _last_gc_at = now
     _success_since_gc = 0
-    if log:
+    if log and not silent_ok:
         log(f"[gc] cleanup_runtime_memory collected={collected}")
     return {"ok": True, "collected": collected}
 

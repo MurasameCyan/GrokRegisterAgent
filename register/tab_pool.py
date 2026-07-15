@@ -31,8 +31,7 @@ class TabPool:
                 cls._options_factory = browser_options_or_factory
             else:
                 cls._options_factory = lambda: browser_options_or_factory
-        if log_callback:
-            log_callback("[*] TabPool 已初始化浏览器选项模板")
+        # 成功初始化不刷日志；失败由调用方打印
 
     @classmethod
     def _create_browser(cls):

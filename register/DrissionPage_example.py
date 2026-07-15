@@ -4231,11 +4231,10 @@ def main():
             conf_rt = {}
         recycle_every = load_recycle_every(conf_rt)
         try:
-            # 启动自检（不阻断）
+            # 启动自检：quiet 仅 FAIL 才输出（不刷 PASS 列表）
             from optimization_checks import main as _opt_main
 
-            print("[*] 启动自检 optimization_checks…", flush=True)
-            _code = _opt_main()
+            _code = _opt_main(quiet=True)
             if _code != 0:
                 print("[Warn] 自检有 FAIL 项，继续运行", flush=True)
         except Exception as oe:
@@ -4243,14 +4242,61 @@ def main():
         try:
             from tab_pool import TabPool
 
-            TabPool.init(_new_chromium_options, log_callback=lambda m: print(m, flush=True))
-            print("[*] TabPool 已就绪（线程级浏览器隔离）", flush=True)
+            TabPool.init(_new_chromium_options, log_callback=None)
         except Exception as te:
             print(f"[Warn] TabPool 初始化跳过: {te}", flush=True)
-        cleanup_runtime_memory(log=lambda m: print(m, flush=True), force=True)
-        clear_temp_profiles(log=lambda m: print(m, flush=True))
+        # 启动 GC / 清临时：成功静默，失败才打日志
+        cleanup_runtime_memory(
+            log=lambda m: print(m, flush=True), force=True, silent_ok=True
+        )
+        clear_temp_profiles(log=None)
     except Exception as ge:
         print(f"[Warn] runtime_gc 初始化: {ge}", flush=True)
+
+    # 代理池模式：可用池无 IP → 直接停止（不进入注册循环）
+    try:
+        import json as _j_pool_guard
+
+        def _flag_on(raw, default=True) -> bool:
+            if raw is None:
+                return bool(default)
+            if isinstance(raw, bool):
+                return raw
+            s = str(raw).strip().lower()
+            if s in ("0", "false", "no", "off", "disabled"):
+                return False
+            if s in ("1", "true", "yes", "on", "enabled"):
+                return True
+            return bool(default)
+
+        _cfg_path = os.path.join(os.path.dirname(__file__), "config.json")
+        _cg = {}
+        if os.path.isfile(_cfg_path):
+            with open(_cfg_path, "r", encoding="utf-8") as _fg:
+                _cg = _j_pool_guard.load(_fg) or {}
+        _master = _flag_on(_cg.get("proxy_enabled"), True)
+        # 必须显式开池（writeConfig 在 UI 开「使用代理池」时写 true）
+        _pool_on = _flag_on(_cg.get("proxy_pool_enabled"), False)
+        if _master and _pool_on:
+            _pp = _cg.get("proxy_pool") or _cg.get("proxies") or []
+            if not isinstance(_pp, list):
+                _pp = [_pp] if _pp else []
+            _alive = [
+                str(x).strip()
+                for x in _pp
+                if str(x or "").strip() and not str(x).strip().startswith("#")
+            ]
+            if not _alive:
+                print(
+                    "[Stop] 代理池模式已开启，但可用池内无代理 IP。"
+                    "请先测活迁入可用池，或关闭「使用代理池」/「启用代理」。",
+                    flush=True,
+                )
+                raise SystemExit(2)
+    except SystemExit:
+        raise
+    except Exception as _pg_e:
+        print(f"[Warn] 可用池检查跳过: {_pg_e}", flush=True)
 
     force_browser_recycle = True  # 首轮必须新起浏览器
     try:

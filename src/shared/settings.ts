@@ -719,32 +719,97 @@ export type AppendProxiesResult = {
 };
 
 /**
+ * 清洗池文本：去掉纯注释行（`# 网页导入 …`）、空行挤在一起，只保留可解析代理行。
+ * 用于可用池强制干净；也可用于待定池去垃圾。
+ */
+export function sanitizeProxyPoolText(raw: string): string {
+  const lines = String(raw || '')
+    .replace(/\r\n/g, '\n')
+    .split('\n');
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const line of lines) {
+    const t = line.trim();
+    if (!t) continue;
+    // 纯注释 / 分隔线 / 导入时间戳 → 丢弃
+    if (t.startsWith('#')) continue;
+    if (/^[-=_]{3,}$/.test(t)) continue;
+    const entry = parseProxyLine(t);
+    if (!entry?.proxy) continue;
+    const k = proxyDedupeKey(entry.proxy) || entry.proxy;
+    if (!k || seen.has(k)) continue;
+    seen.add(k);
+    // 规范化输出：scheme + host 为主；保留括号地区标签，去掉行首垃圾
+    const label = (entry.label || '').trim();
+    // 去掉标签里重复的「成功N」（successCount 另存）
+    const labelClean = label
+      .replace(/(?:^|[\s·|/,_-])(?:成功|ok)[:：\s]*\d+\b/gi, ' ')
+      .replace(/\s{2,}/g, ' ')
+      .replace(/^[·\s]+|[·\s]+$/g, '')
+      .trim();
+    const base = entry.proxy; // 已带 scheme
+    const sc =
+      typeof entry.successCount === 'number' && entry.successCount > 0
+        ? entry.successCount
+        : 0;
+    let pretty = labelClean ? `${base}（${labelClean}）` : base;
+    if (sc > 0) pretty = `${pretty}#成功${sc}`;
+    out.push(pretty);
+  }
+  return out.join('\n');
+}
+
+export type AppendProxiesOptions = {
+  /**
+   * 是否在追加块前写注释戳。
+   * - false（默认）：干净追加，**可用池必须 false**
+   * - true：`# 网页导入 时间 +N`（仅建议待定池导入用）
+   * - string：自定义注释前缀
+   */
+  stamp?: boolean | string;
+  /** 写入前清洗目标文本（去掉历史 # 注释） */
+  sanitizeTarget?: boolean;
+};
+
+/**
  * 把代理行追加到池文本（按 host:port 去重；尽量保留带标签的原文行）。
  */
 export function appendProxiesToPoolText(
   targetRaw: string,
   proxiesToAdd: string[],
-  sourceRaw?: string
+  sourceRaw?: string,
+  options?: AppendProxiesOptions
 ): string {
-  return appendProxiesToPoolTextDetailed(targetRaw, proxiesToAdd, sourceRaw).text;
+  return appendProxiesToPoolTextDetailed(targetRaw, proxiesToAdd, sourceRaw, options)
+    .text;
 }
 
 /** 同 appendProxiesToPoolText，额外返回 added/skipped/invalid 便于 UI 反馈 */
 export function appendProxiesToPoolTextDetailed(
   targetRaw: string,
   proxiesToAdd: string[],
-  sourceRaw?: string
+  sourceRaw?: string,
+  options?: AppendProxiesOptions
 ): AppendProxiesResult {
+  const sanitizeTarget = options?.sanitizeTarget === true;
+  const cleanedTarget = sanitizeTarget
+    ? sanitizeProxyPoolText(targetRaw)
+    : String(targetRaw || '');
+
   const existing = new Set(
-    parseProxyPoolEntries(targetRaw).map((e) => proxyDedupeKey(e.proxy) || e.proxy)
+    parseProxyPoolEntries(cleanedTarget).map(
+      (e) => proxyDedupeKey(e.proxy) || e.proxy
+    )
   );
-  // 原文行：dedupeKey → 带标签的整行
+  // 原文行：dedupeKey → 带标签的整行（永不采用纯 # 注释行）
   const sourceLines = new Map<string, string>();
   const feed = (line: string) => {
-    const entry = parseProxyLine(line);
+    const t = String(line || '').trim();
+    if (!t || t.startsWith('#')) return;
+    const entry = parseProxyLine(t);
     if (!entry) return;
     const k = proxyDedupeKey(entry.proxy) || entry.proxy;
-    if (k && !sourceLines.has(k)) sourceLines.set(k, line.trim());
+    if (k && !sourceLines.has(k)) sourceLines.set(k, t);
   };
   if (sourceRaw) {
     for (const line of String(sourceRaw).replace(/\r\n/g, '\n').split('\n')) {
@@ -759,10 +824,15 @@ export function appendProxiesToPoolTextDetailed(
   const seenAdd = new Set<string>();
 
   for (const p of proxiesToAdd) {
-    const entry = parseProxyLine(String(p || ''));
+    const rawP = String(p || '').trim();
+    if (!rawP || rawP.startsWith('#')) {
+      invalid += 1;
+      continue;
+    }
+    const entry = parseProxyLine(rawP);
     const key = entry
       ? proxyDedupeKey(entry.proxy) || entry.proxy
-      : proxyDedupeKey(p) || stripProxyComment(p) || String(p || '').trim();
+      : proxyDedupeKey(p) || stripProxyComment(p) || rawP;
     if (!key) {
       invalid += 1;
       continue;
@@ -778,26 +848,48 @@ export function appendProxiesToPoolTextDetailed(
     }
     existing.add(key);
     seenAdd.add(key);
-    // 优先：source 原文（含国家/协议标签）→ entry.raw → key
-    const line =
+    // 优先：source 原文（含国家/协议标签）→ 规范化 entry → key
+    let line =
       sourceLines.get(key) ||
       entry?.raw?.trim() ||
-      String(p || '').trim() ||
+      rawP ||
       key;
+    // 若原文是注释或无法解析，用规范化 URL+标签
+    if (line.startsWith('#') || !parseProxyLine(line)) {
+      const e2 = entry || parseProxyLine(sourceLines.get(key) || key);
+      if (e2) {
+        const lb = (e2.label || '').trim();
+        line = lb ? `${e2.proxy}（${lb}）` : e2.proxy;
+      } else {
+        invalid += 1;
+        existing.delete(key);
+        seenAdd.delete(key);
+        continue;
+      }
+    }
     addLines.push(line);
   }
 
   if (addLines.length === 0) {
     return {
-      text: String(targetRaw || '').trim(),
+      text: cleanedTarget.trim(),
       added: 0,
       skipped,
       invalid
     };
   }
-  const base = String(targetRaw || '').trim();
-  const stamp = `# 网页导入 ${new Date().toISOString().slice(0, 19).replace('T', ' ')} +${addLines.length}`;
-  const block = `${stamp}\n${addLines.join('\n')}`;
+  const base = cleanedTarget.trim();
+  // 默认不写时间戳；仅 stamp:true / 自定义字符串时写入（待定池网页导入）
+  let block = addLines.join('\n');
+  const stampOpt = options?.stamp;
+  if (stampOpt) {
+    const stampText =
+      typeof stampOpt === 'string' && stampOpt.trim()
+        ? stampOpt.trim()
+        : `网页导入 ${new Date().toISOString().slice(0, 19).replace('T', ' ')} +${addLines.length}`;
+    const stampLine = stampText.startsWith('#') ? stampText : `# ${stampText}`;
+    block = `${stampLine}\n${block}`;
+  }
   return {
     text: base ? `${base}\n${block}` : block,
     added: addLines.length,
@@ -808,7 +900,7 @@ export function appendProxiesToPoolTextDetailed(
 
 /**
  * 把代理从「待定」移到「可用」：alive 末尾追加（去重），pending 删除。
- * 返回更新后的两段文本与实际迁移条数。
+ * **可用池不写 # 注释戳**，并清洗历史垃圾行。
  */
 export function moveProxiesToAlivePool(
   pendingRaw: string,
@@ -816,10 +908,24 @@ export function moveProxiesToAlivePool(
   proxies: string[]
 ): { proxyPool: string; proxyPoolAlive: string; moved: number } {
   if (!proxies.length) {
-    return { proxyPool: pendingRaw, proxyPoolAlive: aliveRaw, moved: 0 };
+    return {
+      proxyPool: pendingRaw,
+      proxyPoolAlive: sanitizeProxyPoolText(aliveRaw),
+      moved: 0
+    };
   }
-  const nextAlive = appendProxiesToPoolText(aliveRaw, proxies, pendingRaw);
-  const nextPending = removeProxiesFromPoolText(pendingRaw, proxies);
+  // 只迁可解析代理；禁止把注释/stamp 带进可用池
+  const cleanProxies = proxies
+    .map((p) => String(p || '').trim())
+    .filter((p) => p && !p.startsWith('#') && !!parseProxyLine(p));
+  const nextAliveRaw = appendProxiesToPoolText(
+    aliveRaw,
+    cleanProxies,
+    pendingRaw,
+    { stamp: false, sanitizeTarget: true }
+  );
+  const nextAlive = sanitizeProxyPoolText(nextAliveRaw);
+  const nextPending = removeProxiesFromPoolText(pendingRaw, cleanProxies);
   // 统计真正新增到 alive 的条数（按 URL 集合差）
   const before = new Set(parseProxyPool(aliveRaw));
   const after = new Set(parseProxyPool(nextAlive));
@@ -936,8 +1042,11 @@ export function moveProxiesFromAliveToPending(
     toAdd.push(line);
   }
 
-  const nextPending = appendProxiesToPoolText(pendingRaw, toAdd, toAdd.join('\n'));
-  const nextAlive = removeProxiesFromPoolText(aliveRaw, proxies);
+  // 待定池可不写导入戳；可用池删除后清洗残留 # 注释
+  const nextPending = appendProxiesToPoolText(pendingRaw, toAdd, toAdd.join('\n'), {
+    stamp: false
+  });
+  const nextAlive = sanitizeProxyPoolText(removeProxiesFromPoolText(aliveRaw, proxies));
   const before = new Set(
     parseProxyPoolEntries(aliveRaw).map((e) => proxyDedupeKey(e.proxy) || e.proxy)
   );

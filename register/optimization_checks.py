@@ -119,9 +119,17 @@ def check_config() -> bool:
     return isinstance(_config(), dict)
 
 
-def main() -> int:
-    print("=== GrokRegisterAgent optimization_checks ===")
+def main(*, quiet: bool = False, verbose: bool = False) -> int:
+    """运行静态自检。
+
+    quiet=True：仅输出 FAIL/异常（注册启动默认，避免刷屏）。
+    verbose=True 或 CLI 默认：输出 PASS 汇总。
+    """
+    show_all = verbose or (not quiet)
+    if show_all:
+        print("=== GrokRegisterAgent optimization_checks ===")
     failed = 0
+    fail_names: list[str] = []
     for name, fn in CHECKS:
         try:
             ok = bool(fn())
@@ -129,15 +137,28 @@ def main() -> int:
             ok = False
             print(f"  FAIL  {name}: exception {e}")
             failed += 1
+            fail_names.append(name)
             continue
         if ok:
-            print(f"  PASS  {name}")
+            if show_all:
+                print(f"  PASS  {name}")
         else:
             print(f"  FAIL  {name}")
             failed += 1
-    print(f"--- {len(CHECKS) - failed}/{len(CHECKS)} passed ---")
+            fail_names.append(name)
+    if show_all:
+        print(f"--- {len(CHECKS) - failed}/{len(CHECKS)} passed ---")
+    elif failed:
+        print(
+            f"[自检] {failed}/{len(CHECKS)} 项 FAIL: {', '.join(fail_names)}",
+            flush=True,
+        )
     return 1 if failed else 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    import sys
+
+    verbose = "--verbose" in sys.argv or "-v" in sys.argv
+    quiet = "--quiet" in sys.argv or "-q" in sys.argv
+    raise SystemExit(main(quiet=quiet and not verbose, verbose=verbose))

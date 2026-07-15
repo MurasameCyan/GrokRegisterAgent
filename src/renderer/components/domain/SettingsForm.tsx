@@ -35,6 +35,7 @@ import {
   parseProxyPoolEntries,
   proxySchemeBadgeLabel,
   removeProxiesFromPoolText,
+  sanitizeProxyPoolText,
   stripProxyComment,
   validateSettings
 } from '@shared/settings';
@@ -293,13 +294,24 @@ export function SettingsForm() {
   const pendingPoolRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
-    if (data && !draft) setDraft(data);
+    if (data && !draft) {
+      // 进页即清洗可用池历史垃圾（# 网页导入 等注释行不参与展示/保存）
+      setDraft({
+        ...data,
+        proxyPoolAlive: sanitizeProxyPoolText(data.proxyPoolAlive || '')
+      });
+    }
   }, [data, draft]);
 
   // 外部 data 更新时同步 draft（仅引用变化时）。
   // 注意：网页导入会先 setDraft 再 store.set，此处需能吃到最新 data。
   useEffect(() => {
-    if (data) setDraft(data);
+    if (data) {
+      setDraft({
+        ...data,
+        proxyPoolAlive: sanitizeProxyPoolText(data.proxyPoolAlive || '')
+      });
+    }
   }, [data]);
 
   const errors = useMemo(() => {
@@ -403,10 +415,12 @@ export function SettingsForm() {
       }
 
       const beforeEntries = parseProxyPoolEntries(draft.proxyPool).length;
+      // 待定池可写导入戳；可用池绝对不走此路径
       const append = appendProxiesToPoolTextDetailed(
         draft.proxyPool || '',
         r.lines,
-        r.lines.join('\n')
+        r.lines.join('\n'),
+        { stamp: true }
       );
       const afterEntries = parseProxyPoolEntries(append.text).length;
       // 以实际解析条数为准（比 added 更直观）
@@ -769,7 +783,9 @@ export function SettingsForm() {
   ): AppSettings | null => {
     if (!proxies.length) return null;
     const key = which === 'alive' ? 'proxyPoolAlive' : 'proxyPool';
-    const nextText = removeProxiesFromPoolText(draft[key] || '', proxies);
+    let nextText = removeProxiesFromPoolText(draft[key] || '', proxies);
+    // 可用池删除后顺带清掉 # 注释垃圾行
+    if (which === 'alive') nextText = sanitizeProxyPoolText(nextText);
     const nextDraft = { ...draft, [key]: nextText };
     setDraft(nextDraft);
     setProxyProbes((prev) => {
@@ -785,10 +801,16 @@ export function SettingsForm() {
   };
 
   const save = async (override?: AppSettings, opts?: { silentOk?: boolean; okTitle?: string; okDesc?: string }) => {
-    const payload = override || draft;
+    const base = override || draft;
+    // 持久化前强制清洗可用池：禁止 # 网页导入 等垃圾写入 settings
+    const payload = {
+      ...base,
+      proxyPoolAlive: sanitizeProxyPoolText(base.proxyPoolAlive || '')
+    };
     setSaving(true);
     try {
       await window.api.saveSettings(payload);
+      setDraft(payload);
       await reload();
       if (!opts?.silentOk) {
         push({
@@ -1924,15 +1946,14 @@ export function SettingsForm() {
             checked={draft.autoResignOn401 === true}
             onChange={(v) => update('autoResignOn401', v)}
           />
-          <div className="space-y-1.5">
-            <label className="text-[12px] font-medium text-foreground">
-              重签/刷新401 并发
-            </label>
-            <input
+          <Field
+            label="重签/刷新401 并发"
+            hint="1～3，默认 2。过高易触发 accounts.x.ai 限流；走代理见「Auth 转换用代理」"
+          >
+            <Input
               type="number"
               min={1}
               max={3}
-              className="w-full rounded-xl border border-border bg-background px-3 py-2 text-[13px]"
               value={
                 draft.cpaResignConcurrency == null
                   ? 2
@@ -1942,14 +1963,13 @@ export function SettingsForm() {
                 const n = Number(e.target.value);
                 update(
                   'cpaResignConcurrency',
-                  Number.isFinite(n) ? Math.min(3, Math.max(1, Math.floor(n))) : 2
+                  Number.isFinite(n)
+                    ? Math.min(3, Math.max(1, Math.floor(n)))
+                    : 2
                 );
               }}
             />
-            <p className="text-[11px] text-muted-foreground">
-              1～3，默认 2。过高易触发 accounts.x.ai 限流；走代理见「Auth 转换用代理」
-            </p>
-          </div>
+          </Field>
         </CardBody>
       </Card>
 
@@ -2197,101 +2217,118 @@ export function SettingsForm() {
                   </div>
                 </div>
 
-                {/* CPA 连接（Auth→CPA 启用时展开） */}
+                {/* CPA 连接（Auth→CPA 启用时展开）— 与上方 Auth 推送块同壳 */}
                 {needCpaConfig && (
-                  <div className="space-y-3 rounded-xl border border-border/60 bg-background/50 p-3">
-                    <div className="text-[12px] font-medium text-foreground">
-                      CPA 连接设定
+                  <div className="space-y-3 rounded-xl border border-border/70 bg-muted/30 p-3">
+                    <div>
+                      <div className="text-[14px] font-medium text-foreground">
+                        CPA 连接设定
+                      </div>
+                      <div className="mt-0.5 text-[11px] text-muted-foreground">
+                        Management API · 远程 CPA 推送目标
+                      </div>
                     </div>
-                    <Field
-                      label="远程 CPA 地址"
-                      hint="Management API 根地址"
-                    >
-                      <Input
-                        value={draft.cpaRemoteUrl || ''}
-                        onChange={(e) => update('cpaRemoteUrl', e.target.value)}
-                        placeholder="http://127.0.0.1:8317"
-                      />
-                    </Field>
-                    <Field
-                      label="远程 CPA 管理密钥"
-                      hint="remote-management.secret-key 明文"
-                    >
-                      <Input
-                        type="password"
-                        value={draft.cpaManagementKey || ''}
-                        onChange={(e) => update('cpaManagementKey', e.target.value)}
-                        placeholder="管理密钥明文"
-                        autoComplete="off"
-                      />
-                    </Field>
-                    <div className="flex flex-wrap items-center gap-3">
-                      <ConnectionTestButton
-                        label="检测远程连通性"
-                        disabled={
-                          !String(draft.cpaRemoteUrl || '').trim() ||
-                          !String(draft.cpaManagementKey || '').trim()
-                        }
-                        onTest={() =>
-                          window.api.testCpaRemote({
-                            url: draft.cpaRemoteUrl,
-                            key: draft.cpaManagementKey
-                          })
-                        }
-                      />
+                    <div className="space-y-3 border-t border-border/50 pt-3">
+                      <Field
+                        label="远程 CPA 地址"
+                        hint="Management API 根地址"
+                      >
+                        <Input
+                          value={draft.cpaRemoteUrl || ''}
+                          onChange={(e) => update('cpaRemoteUrl', e.target.value)}
+                          placeholder="http://127.0.0.1:8317"
+                        />
+                      </Field>
+                      <Field
+                        label="远程 CPA 管理密钥"
+                        hint="remote-management.secret-key 明文"
+                      >
+                        <Input
+                          type="password"
+                          value={draft.cpaManagementKey || ''}
+                          onChange={(e) =>
+                            update('cpaManagementKey', e.target.value)
+                          }
+                          placeholder="管理密钥明文"
+                          autoComplete="off"
+                        />
+                      </Field>
+                      <div className="flex flex-wrap items-center gap-3">
+                        <ConnectionTestButton
+                          label="检测远程连通性"
+                          disabled={
+                            !String(draft.cpaRemoteUrl || '').trim() ||
+                            !String(draft.cpaManagementKey || '').trim()
+                          }
+                          onTest={() =>
+                            window.api.testCpaRemote({
+                              url: draft.cpaRemoteUrl,
+                              key: draft.cpaManagementKey
+                            })
+                          }
+                        />
+                      </div>
                     </div>
                   </div>
                 )}
 
-                {/* grok2api 连接（任一 grok2api 目标启用时展开） */}
+                {/* grok2api 连接（任一 grok2api 目标启用时展开）— 与上方 Auth 推送块同壳 */}
                 {needG2Config && (
-                  <div className="space-y-3 rounded-xl border border-border/60 bg-background/50 p-3">
-                    <div className="text-[12px] font-medium text-foreground">
-                      grok2api 连接设定
-                      <span className="ml-2 font-normal text-muted-foreground">
-                        （SSO / Auth 共用）
-                      </span>
+                  <div className="space-y-3 rounded-xl border border-border/70 bg-muted/30 p-3">
+                    <div>
+                      <div className="text-[14px] font-medium text-foreground">
+                        grok2api 连接设定
+                      </div>
+                      <div className="mt-0.5 text-[11px] text-muted-foreground">
+                        SSO / Auth 共用 · 管理面板根地址与账号
+                      </div>
                     </div>
-                    <Field label="grok2api URL" hint="管理面板根地址">
-                      <Input
-                        value={draft.grok2apiUrl || ''}
-                        onChange={(e) => update('grok2apiUrl', e.target.value)}
-                        placeholder="http://127.0.0.1:8000"
-                      />
-                    </Field>
-                    <Field label="grok2api 用户名">
-                      <Input
-                        value={draft.grok2apiUsername || ''}
-                        onChange={(e) => update('grok2apiUsername', e.target.value)}
-                        placeholder="admin"
-                        autoComplete="off"
-                      />
-                    </Field>
-                    <Field label="grok2api 密码">
-                      <Input
-                        type="password"
-                        value={draft.grok2apiPassword || ''}
-                        onChange={(e) => update('grok2apiPassword', e.target.value)}
-                        placeholder="密码"
-                        autoComplete="off"
-                      />
-                    </Field>
-                    <div className="flex flex-wrap items-center gap-3">
-                      <ConnectionTestButton
-                        label="检测远程连通性"
-                        disabled={
-                          !String(draft.grok2apiUrl || '').trim() ||
-                          !String(draft.grok2apiUsername || '').trim() ||
-                          !String(draft.grok2apiPassword || '').trim()
-                        }
-                        onTest={() =>
-                          window.api.testGrok2apiRemote({
-                            url: draft.grok2apiUrl,
-                            username: draft.grok2apiUsername,
-                            password: draft.grok2apiPassword
-                          })
-                        }
-                      />
+                    <div className="space-y-3 border-t border-border/50 pt-3">
+                      <Field label="grok2api URL" hint="管理面板根地址">
+                        <Input
+                          value={draft.grok2apiUrl || ''}
+                          onChange={(e) => update('grok2apiUrl', e.target.value)}
+                          placeholder="http://127.0.0.1:8000"
+                        />
+                      </Field>
+                      <Field label="grok2api 用户名">
+                        <Input
+                          value={draft.grok2apiUsername || ''}
+                          onChange={(e) =>
+                            update('grok2apiUsername', e.target.value)
+                          }
+                          placeholder="admin"
+                          autoComplete="off"
+                        />
+                      </Field>
+                      <Field label="grok2api 密码">
+                        <Input
+                          type="password"
+                          value={draft.grok2apiPassword || ''}
+                          onChange={(e) =>
+                            update('grok2apiPassword', e.target.value)
+                          }
+                          placeholder="密码"
+                          autoComplete="off"
+                        />
+                      </Field>
+                      <div className="flex flex-wrap items-center gap-3">
+                        <ConnectionTestButton
+                          label="检测远程连通性"
+                          disabled={
+                            !String(draft.grok2apiUrl || '').trim() ||
+                            !String(draft.grok2apiUsername || '').trim() ||
+                            !String(draft.grok2apiPassword || '').trim()
+                          }
+                          onTest={() =>
+                            window.api.testGrok2apiRemote({
+                              url: draft.grok2apiUrl,
+                              username: draft.grok2apiUsername,
+                              password: draft.grok2apiPassword
+                            })
+                          }
+                        />
+                      </div>
                     </div>
                   </div>
                 )}

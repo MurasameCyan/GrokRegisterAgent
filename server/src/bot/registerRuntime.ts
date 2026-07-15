@@ -174,14 +174,13 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
   // 总开关 proxyEnabled：false = 强制直连（忽略池/单条内容，池文本仅保留编辑）
   // 旧逻辑 bug：关代理但池非空时仍写 proxy_pool → UI 显示「直接连接」却仍降级池
   const proxyMasterOn = settings.proxyEnabled !== false;
-  const wantPool =
-    proxyMasterOn &&
-    poolProxies.length > 0 &&
-    settings.proxyPoolEnabled === true;
+  // UI「使用代理池」开关（与池是否有 IP 无关；空池由 Python 启动守卫停止）
+  const poolSwitchOn = settings.proxyPoolEnabled === true;
+  const wantPool = proxyMasterOn && poolSwitchOn && poolProxies.length > 0;
 
   // 写入 Python 可读开关，pools 侧二次保险（即使残留 proxy_pool 也不选用）
   config.proxy_enabled = proxyMasterOn;
-  config.proxy_pool_enabled = wantPool;
+  config.proxy_pool_enabled = proxyMasterOn && poolSwitchOn;
 
   if (!proxyMasterOn) {
     config.proxy = '';
@@ -194,6 +193,12 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
     config.proxy_mode = settings.proxyMode || 'round_robin';
     // 浏览器每轮 next_proxy，不写死单条
     config.browser_proxy = '';
+  } else if (poolSwitchOn && poolProxies.length === 0) {
+    // 开了代理池但可用池空：不写单条兜底，便于 Python 直接 Stop
+    config.proxy = '';
+    config.browser_proxy = '';
+    config.proxy_pool = [];
+    config.proxy_mode = settings.proxyMode || 'round_robin';
   } else if (singleProxy || browserOnly) {
     // 开代理、不用池（或池空）→ 单条 HTTP / browser_proxy
     config.proxy = singleProxy;
