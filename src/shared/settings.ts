@@ -30,9 +30,9 @@ export type RegisterMode = 'browser' | 'hybrid';
  * SSO→CPA mint 路径：
  * - pkce：Auth Code + PKCE（mode=A，默认，referrer=grok-build）
  * - device：Device Flow（mode=B，regkit）
- * - auto：先 A 失败再 B（mode=C）
+ * - double：同时产出 PKCE+Device 两份 auth 并分别测活（mode=C）
  */
-export type CpaMintMode = 'pkce' | 'device' | 'auto';
+export type CpaMintMode = 'pkce' | 'device' | 'double';
 
 export interface AppSettings {
   /** 用户机器上的 Python 解释器绝对路径（高级/环境变量；UI 不暴露） */
@@ -186,17 +186,27 @@ export interface AppSettings {
    */
   proxyFetchUrl: string;
   /**
-   * Plan A 失败后是否启用 Plan B 兜底一次（FlowPilot 人机等待/模拟点击/CF 拦截识别）。
-   * 默认 true：A 失败 → B 一次 → 仍失败则跳过下一账号。
+   * 注册方案 Plan A：全程 Drission + 临时邮 + Turnstile（默认开）。
+   * 可与 B/C 同时开：按 A→B→C 顺序兜底。
+   */
+  registerPlanAEnabled: boolean;
+  /**
+   * 注册方案 Plan B：FlowPilot 人机等待/模拟点击/CF 拦截识别（默认开）。
+   * 上一方案失败后再试一次。
    */
   registerPlanBEnabled: boolean;
   /**
-   * 注册主路径：browser（默认）| hybrid（Plan-C 短浏览器+协议）。
-   * 写入 Python config：register_mode
+   * 注册方案 Plan C：hybrid 短浏览器采 token + 协议（默认关，依赖适配层）。
+   * 写入 Python config：register_plan_c_enabled；兼容旧 registerMode=hybrid。
+   */
+  registerPlanCEnabled: boolean;
+  /**
+   * @deprecated 使用 registerPlanCEnabled。hybrid 时视为 Plan C 开启。
+   * 写入兼容：register_mode
    */
   registerMode: RegisterMode;
   /**
-   * SSO→CPA mint：pkce（默认）| device | auto（A 失败再 B）。
+   * SSO→CPA mint：pkce（默认）| device | double（双通道各写一份 auth 并分别测活）。
    * 写入 Python config：cpa_mint_mode
    */
   cpaMintMode: CpaMintMode;
@@ -224,6 +234,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     adminAuth: '',
     domain: ''
   },
+  mailProvider: 'cloudflare',
   mailDomains: '',
   mailDomainPoolEnabled: false,
   mailDomainMode: 'round_robin',
@@ -262,7 +273,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   /** Auth mint/重签/测活默认走代理 */
   cpaAuthUseProxy: true,
   proxyFetchUrl: 'https://hide.mn/en/proxy-list/',
+  registerPlanAEnabled: true,
   registerPlanBEnabled: true,
+  registerPlanCEnabled: false,
   registerMode: 'browser',
   cpaMintMode: 'pkce',
   grok2apiAutoUpload: false,

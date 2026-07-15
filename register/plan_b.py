@@ -239,23 +239,65 @@ def simulate_submit_click(page) -> dict[str, Any]:
         return {"ok": False, "reason": str(e)[:160]}
 
 
-def load_plan_b_enabled_from_config() -> bool:
-    """config.json: register_plan_b / register_plan_b_enabled，默认 True。"""
+def _load_register_config() -> dict:
     import json
     import os
     from pathlib import Path
 
     p = Path(os.path.join(os.path.dirname(__file__), "config.json"))
     if not p.is_file():
-        return True
+        return {}
     try:
         conf = json.loads(p.read_text(encoding="utf-8"))
+        return conf if isinstance(conf, dict) else {}
     except Exception:
-        return True
-    for k in ("register_plan_b_enabled", "register_plan_b", "registerPlanBEnabled"):
-        if k in conf:
-            v = conf[k]
-            if isinstance(v, bool):
-                return v
-            return str(v).lower() in ("1", "true", "yes", "on")
-    return True
+        return {}
+
+
+def _bool_from_conf(conf: dict, keys: tuple[str, ...], default: bool) -> bool:
+    for k in keys:
+        if k not in conf:
+            continue
+        v = conf[k]
+        if isinstance(v, bool):
+            return v
+        return str(v).lower() in ("1", "true", "yes", "on")
+    return default
+
+
+def load_plan_a_enabled_from_config() -> bool:
+    """config.json: register_plan_a_enabled，默认 True。"""
+    return _bool_from_conf(
+        _load_register_config(),
+        ("register_plan_a_enabled", "register_plan_a", "registerPlanAEnabled"),
+        True,
+    )
+
+
+def load_plan_b_enabled_from_config() -> bool:
+    """config.json: register_plan_b / register_plan_b_enabled，默认 True。"""
+    return _bool_from_conf(
+        _load_register_config(),
+        ("register_plan_b_enabled", "register_plan_b", "registerPlanBEnabled"),
+        True,
+    )
+
+
+def load_plan_c_enabled_from_config() -> bool:
+    """config.json: register_plan_c_enabled 或 register_mode=hybrid，默认 False。"""
+    conf = _load_register_config()
+    if any(
+        k in conf
+        for k in (
+            "register_plan_c_enabled",
+            "register_plan_c",
+            "registerPlanCEnabled",
+        )
+    ):
+        return _bool_from_conf(
+            conf,
+            ("register_plan_c_enabled", "register_plan_c", "registerPlanCEnabled"),
+            False,
+        )
+    mode = str(conf.get("register_mode") or conf.get("registerMode") or "").strip().lower()
+    return mode == "hybrid"

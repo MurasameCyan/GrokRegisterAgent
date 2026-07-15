@@ -115,6 +115,11 @@ export interface CpaAuthItem {
   ssoHash?: string | null;
   /** auth 是否写入了 sso 原文（不返回原文，仅布尔） */
   hasSso?: boolean;
+  /**
+   * mint 通道：A=pkce / B=device。
+   * 来自 mint_channel 字段或文件名后缀 -pkce / -device。
+   */
+  mintChannel?: 'A' | 'B' | null;
   /** 上次测活结果（落盘，刷新后仍显示） */
   probeAction?: string | null;
   probeHttp?: number | null;

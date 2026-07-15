@@ -41,7 +41,7 @@ def _noop(msg: str) -> None:
 
 
 def _read_cpa_mint_mode() -> str:
-    """从环境 / config.json 读 cpa_mint_mode：pkce|device|auto。"""
+    """从环境 / config.json 读 cpa_mint_mode：pkce|device|double。"""
     env = (
         os.environ.get("CPA_MINT_MODE")
         or os.environ.get("cpa_mint_mode")
@@ -51,8 +51,8 @@ def _read_cpa_mint_mode() -> str:
         return "pkce"
     if env in ("device", "b", "device_flow"):
         return "device"
-    if env in ("auto", "c", "pkce_then_device"):
-        return "auto"
+    if env in ("double", "auto", "c", "merged", "both", "pkce_then_device"):
+        return "double"
     conf_path = Path(__file__).resolve().parent / "config.json"
     try:
         conf = json.loads(conf_path.read_text(encoding="utf-8"))
@@ -61,11 +61,41 @@ def _read_cpa_mint_mode() -> str:
             return "pkce"
         if m in ("device", "b", "device_flow"):
             return "device"
-        if m in ("auto", "c", "pkce_then_device"):
-            return "auto"
+        if m in ("double", "auto", "c", "merged", "both", "pkce_then_device"):
+            return "double"
     except Exception:
         pass
     return "pkce"
+
+
+def _via_pkce_token(
+    sso: str, *, proxy: str = "", log: LogFn | None = None
+) -> dict[str, Any] | None:
+    log = log or _noop
+    log("[auth] mint channel=pkce (Auth Code+PKCE)…")
+    return sso_to_token(sso, proxy=proxy or "", log=log)
+
+
+def _via_device_token(
+    sso: str, *, proxy: str = "", log: LogFn | None = None
+) -> dict[str, Any] | None:
+    log = log or _noop
+    log("[auth] mint channel=device (Device Flow)…")
+    try:
+        from oauth_device_mint import mint_tokens_device_flow
+    except ImportError as e:
+        log(f"[auth] oauth_device_mint 不可用: {e}")
+        return None
+    r = mint_tokens_device_flow(sso, proxy=proxy or "", log=log)
+    if not r or not r.get("ok"):
+        log(f"[auth] device mint 失败: {(r or {}).get('error') or 'unknown'}")
+        return None
+    return {
+        "access_token": r.get("access_token") or "",
+        "refresh_token": r.get("refresh_token") or "",
+        "id_token": r.get("id_token"),
+        "expires_in": r.get("expires_in"),
+    }
 
 
 def _mint_tokens(
@@ -75,10 +105,11 @@ def _mint_tokens(
     mint_mode: str = "",
     log: LogFn | None = None,
 ) -> tuple[dict[str, Any] | None, str]:
-    """按 mint_mode 换 token。
+    """按 mint_mode 换 token（单通道）。
 
     返回 (token_dict|None, mode_used)。
     mode: pkce | device
+    double 请走 sso_to_cpa_auth 内双通道分支，不在此合并票。
     """
     log = log or _noop
     mode = (mint_mode or _read_cpa_mint_mode() or "pkce").strip().lower()
@@ -86,44 +117,131 @@ def _mint_tokens(
         mode = "pkce"
     if mode in ("b", "device_flow"):
         mode = "device"
-    if mode in ("c", "pkce_then_device"):
-        mode = "auto"
-
-    def _via_pkce() -> dict[str, Any] | None:
-        log("[auth] mint mode=pkce (Auth Code+PKCE)…")
-        return sso_to_token(sso, proxy=proxy or "", log=log)
-
-    def _via_device() -> dict[str, Any] | None:
-        log("[auth] mint mode=device (Device Flow)…")
-        try:
-            from oauth_device_mint import mint_tokens_device_flow
-        except ImportError as e:
-            log(f"[auth] oauth_device_mint 不可用: {e}")
-            return None
-        r = mint_tokens_device_flow(sso, proxy=proxy or "", log=log)
-        if not r or not r.get("ok"):
-            log(f"[auth] device mint 失败: {(r or {}).get('error') or 'unknown'}")
-            return None
-        return {
-            "access_token": r.get("access_token") or "",
-            "refresh_token": r.get("refresh_token") or "",
-            "id_token": r.get("id_token"),
-            "expires_in": r.get("expires_in"),
-        }
+    if mode in ("c", "auto", "merged", "both", "pkce_then_device"):
+        mode = "double"
 
     if mode == "device":
-        t = _via_device()
+        t = _via_device_token(sso, proxy=proxy, log=log)
         return t, "device"
-    if mode == "auto":
-        t = _via_pkce()
-        if t and t.get("access_token"):
-            return t, "pkce"
-        log("[auth] pkce 失败，fallback device…")
-        t = _via_device()
-        return t, "device" if t else "auto"
-    # 默认 pkce
-    t = _via_pkce()
+    if mode == "double":
+        # 调用方应走 double 双写；此处兜底只取 pkce
+        t = _via_pkce_token(sso, proxy=proxy, log=log)
+        return t, "pkce"
+    t = _via_pkce_token(sso, proxy=proxy, log=log)
     return t, "pkce"
+
+
+def _write_and_probe_one(
+    *,
+    token: dict[str, Any],
+    sso: str,
+    email: str,
+    out_dir: Path,
+    channel: str,
+    proxy: str,
+    random_fingerprint: bool,
+    skip_remote: bool,
+    remote_url: str,
+    management_key: str,
+    delete_on_dead: bool,
+    log: LogFn,
+) -> dict[str, Any]:
+    """单通道：写 auth + 可选远程 + probe。两通道文件名用 channel 后缀区分。"""
+    ref = access_token_referrer(token.get("access_token") or "")
+    if ref:
+        log(f"[auth] channel={channel} access_token referrer={ref}")
+    else:
+        log(
+            f"[auth] channel={channel} ⚠ access_token 无 referrer claim"
+            f"（cli-chat-proxy 可能 403）"
+        )
+
+    # 双通道各用独立指纹，避免 agent-id 撞车
+    seed = f"{email or sso[:16]}-{channel}"
+    headers = random_client_headers(seed) if random_fingerprint else None
+    try:
+        payload = build_cpa_xai_auth(
+            email=email,
+            access_token=token.get("access_token") or "",
+            refresh_token=token.get("refresh_token") or "",
+            id_token=token.get("id_token"),
+            expires_in=token.get("expires_in"),
+            base_url=DEFAULT_BASE_URL,
+            headers=headers,
+            extra={
+                "sso": sso,
+                "mint_channel": channel,
+            }
+            if sso
+            else {"mint_channel": channel},
+        )
+        if not payload.get("email") and email:
+            payload["email"] = email
+    except Exception:
+        payload = token_to_cpa_record(token, email=email, headers=headers, sso=sso)
+        if headers:
+            payload["headers"] = headers
+    payload = _ensure_payload_sso(payload, sso)
+    payload["mint_channel"] = channel
+    # 标注双通道互不影响
+    payload["mint_note"] = (
+        f"channel={channel}; independent OAuth grant; dual mint does not invalidate peer"
+    )
+
+    path = write_cpa_auth(out_dir, payload, channel=channel)
+    log(f"[auth] wrote {path} channel={channel}")
+
+    remote_result: dict[str, Any] | None = None
+    if not skip_remote:
+        r_url = (remote_url or "").strip()
+        r_key = (management_key or "").strip()
+        if not r_url or not r_key:
+            cfg_url, cfg_key = _read_cpa_remote_config()
+            r_url = r_url or cfg_url
+            r_key = r_key or cfg_key
+        if r_url and r_key:
+            try:
+                name = upload_cpa_auth_remote(r_url, r_key, payload)
+                log(f"[auth] channel={channel} CPA 远程推送 OK → {name}")
+                remote_result = {"ok": True, "url": r_url, "name": name}
+            except Exception as e:
+                log(f"[auth] channel={channel} CPA 远程推送失败: {e}")
+                remote_result = {"ok": False, "error": str(e), "url": r_url}
+
+    probe = probe_and_cleanup(
+        path,
+        proxy=proxy or "",
+        delete_on_dead=bool(delete_on_dead),
+        mint_soft_retry=True,
+    )
+    log(
+        f"[auth] channel={channel} probe action={probe.get('action')} "
+        f"http={probe.get('http_status')} deleted={probe.get('deleted')} "
+        f"{probe.get('summary') or probe.get('error') or ''}"
+    )
+    alive = probe.get("action") == "ok" or (
+        probe.get("action") in ("error", "keep") or probe.get("mint_soft_warn")
+    )
+    dead = probe.get("action") == "dead"
+    still = path.is_file()
+    return {
+        "ok": bool(still) and not (dead and not still),
+        "channel": channel,
+        "email": payload.get("email") or email,
+        "path": str(path) if still else "",
+        "filename": path.name if still else "",
+        "sub": payload.get("sub") or "",
+        "agent_id": (headers or {}).get("x-grok-agent-id", ""),
+        "probe": probe,
+        "probe_alive": bool(alive) and not dead,
+        "deleted": bool(probe.get("deleted")) or not still,
+        "referrer": ref,
+        "remote": remote_result,
+        "mint_mode": channel,
+        "error": (
+            f"cpa probe dead HTTP {probe.get('http_status')}" if dead else None
+        ),
+    }
 
 
 def _normalize_grok_pager_headers(headers: dict | None) -> dict[str, str]:
@@ -239,18 +357,17 @@ def sso_to_cpa_auth(
     page: Any = None,
     log: LogFn | None = None,
 ) -> dict[str, Any]:
-    """SSO cookie → mint → data/auth/xai-<email>.json [+ 远程推送]
+    """SSO cookie → mint → data/auth/xai-<email>[-channel].json [+ 远程推送]
 
     mint_mode:
       - pkce（默认 A）：Auth Code+PKCE，referrer=grok-build
       - device（B）：Device Flow（regkit）
-      - auto（C）：先 A 失败再 B
+      - double（C）：同时产出 PKCE + Device 两份 auth，各自写文件、各自测活；
+        两通道独立 OAuth grant，互不影响（一份不会因另一份产生而失效）
       - 空：读 config/env cpa_mint_mode
+      - 兼容别名：auto/c/merged/both → double
 
     若 sso 为 wrapper JWT，先 ensure_session_sso materialize。
-
-    产出文件可在最新 CPA 中手动登录使用：关闭认证文件设置中的
-    「使用官方 API（using_api）」即可，无需手改 headers。
 
     delete_on_dead: mint 后 probe 为 401/402/403 时是否删除本地文件（默认 False）。
     """
@@ -272,6 +389,116 @@ def sso_to_cpa_auth(
         log(f"[auth] materialize 跳过: {e}")
 
     resolved_mode = (mint_mode or _read_cpa_mint_mode() or "pkce").strip().lower()
+    if resolved_mode in ("a", "auth_code"):
+        resolved_mode = "pkce"
+    if resolved_mode in ("b", "device_flow"):
+        resolved_mode = "device"
+    if resolved_mode in ("c", "auto", "merged", "both", "pkce_then_device"):
+        resolved_mode = "double"
+
+    # ---------- double：两通道各 mint → 各写 auth → 各 probe ----------
+    if resolved_mode == "double":
+        log(
+            f"[auth] SSO→CPA mint mode=double email={email or '-'} dir={out_dir} "
+            f"（同时产出 pkce+device 两份 auth，分别测活；两通道互不影响）"
+        )
+        channels_out: list[dict[str, Any]] = []
+        for ch, mint_fn in (
+            ("pkce", _via_pkce_token),
+            ("device", _via_device_token),
+        ):
+            try:
+                tok = mint_fn(sso, proxy=proxy or "", log=log)
+            except Exception as e:
+                log(f"[auth] channel={ch} mint 异常: {e}")
+                channels_out.append(
+                    {
+                        "ok": False,
+                        "channel": ch,
+                        "error": str(e),
+                        "mint_mode": ch,
+                    }
+                )
+                continue
+            if not tok or not tok.get("access_token"):
+                channels_out.append(
+                    {
+                        "ok": False,
+                        "channel": ch,
+                        "error": f"mint failed (channel={ch})",
+                        "mint_mode": ch,
+                    }
+                )
+                continue
+            try:
+                one = _write_and_probe_one(
+                    token=tok,
+                    sso=sso,
+                    email=email,
+                    out_dir=out_dir,
+                    channel=ch,
+                    proxy=proxy or "",
+                    random_fingerprint=random_fingerprint,
+                    skip_remote=skip_remote,
+                    remote_url=remote_url,
+                    management_key=management_key,
+                    delete_on_dead=delete_on_dead,
+                    log=log,
+                )
+                channels_out.append(one)
+            except Exception as e:
+                log(f"[auth] channel={ch} write/probe 异常: {e}")
+                channels_out.append(
+                    {
+                        "ok": False,
+                        "channel": ch,
+                        "error": str(e),
+                        "mint_mode": ch,
+                    }
+                )
+
+        ok_chs = [c for c in channels_out if c.get("ok") and c.get("path")]
+        alive_chs = [c for c in ok_chs if c.get("probe_alive")]
+        # 任一通道写出成功即总体 ok；优先 pkce 作为主 path
+        primary = next(
+            (c for c in ok_chs if c.get("channel") == "pkce"),
+            ok_chs[0] if ok_chs else None,
+        )
+        summary = (
+            f"double channels={len(channels_out)} ok={len(ok_chs)} "
+            f"probe_alive={len(alive_chs)}; independent grants, peer not invalidated"
+        )
+        log(f"[auth] {summary}")
+        if not ok_chs:
+            return {
+                "ok": False,
+                "error": "double mint: both channels failed",
+                "email": email,
+                "mint_mode": "double",
+                "channels": channels_out,
+                "note": "two independent OAuth grants; one does not invalidate the other",
+            }
+        return {
+            "ok": True,
+            "email": (primary or {}).get("email") or email,
+            "path": (primary or {}).get("path") or "",
+            "filename": (primary or {}).get("filename") or "",
+            "sub": (primary or {}).get("sub") or "",
+            "agent_id": (primary or {}).get("agent_id") or "",
+            "probe": (primary or {}).get("probe"),
+            "referrer": (primary or {}).get("referrer"),
+            "remote": (primary or {}).get("remote"),
+            "mint_mode": "double",
+            "channels": channels_out,
+            "paths": [c.get("path") for c in ok_chs if c.get("path")],
+            "note": (
+                "double: produces two channel auths (pkce+device); "
+                "each probed separately; independent grants do not invalidate each other"
+            ),
+            "summary": summary,
+        }
+
+    # ---------- 单通道 pkce | device ----------
     log(
         f"[auth] SSO→CPA mint mode={resolved_mode} email={email or '-'} dir={out_dir}"
     )
@@ -286,119 +513,27 @@ def sso_to_cpa_auth(
             "mint_mode": used_mode,
         }
 
-    ref = access_token_referrer(token.get("access_token") or "")
-    if ref:
-        log(f"[auth] access_token referrer={ref} mint={used_mode}")
-    else:
-        log(
-            f"[auth] ⚠ access_token 无 referrer claim（cli-chat-proxy 可能 403） mint={used_mode}"
-        )
-
-    headers = random_client_headers(email or sso[:16]) if random_fingerprint else None
-    try:
-        payload = build_cpa_xai_auth(
-            email=email,
-            access_token=token.get("access_token") or "",
-            refresh_token=token.get("refresh_token") or "",
-            id_token=token.get("id_token"),
-            expires_in=token.get("expires_in"),
-            base_url=DEFAULT_BASE_URL,
-            headers=headers,
-            extra={"sso": sso} if sso else None,
-        )
-        if not payload.get("email") and email:
-            payload["email"] = email
-    except Exception:
-        payload = token_to_cpa_record(token, email=email, headers=headers, sso=sso)
-        if headers:
-            payload["headers"] = headers
-
-    # 强制顶层写入 sso（号池无邮箱时靠 SSO SHA-256 匹配「已转 Auth」）
-    payload = _ensure_payload_sso(payload, sso)
-
-    path = write_cpa_auth(out_dir, payload)
-    log(f"[auth] wrote {path} mint={used_mode}")
-
-    remote_result: dict[str, Any] | None = None
-    if not skip_remote:
-        r_url = (remote_url or "").strip()
-        r_key = (management_key or "").strip()
-        if not r_url or not r_key:
-            cfg_url, cfg_key = _read_cpa_remote_config()
-            r_url = r_url or cfg_url
-            r_key = r_key or cfg_key
-        if r_url and r_key:
-            try:
-                name = upload_cpa_auth_remote(r_url, r_key, payload)
-                log(f"[auth] CPA 远程推送 OK → {r_url.rstrip('/')}/.../{name}")
-                remote_result = {"ok": True, "url": r_url, "name": name}
-            except Exception as e:
-                log(f"[auth] CPA 远程推送失败: {e}")
-                remote_result = {"ok": False, "error": str(e), "url": r_url}
-        elif r_url and not r_key:
-            log("[auth] 已配置 cpa_remote_url 但无 management_key，跳过远程推送")
-
-    # mint 后 cehuo 风格 /responses 测活；瞬时 403 软重试，勿因 permission-denied 误杀
-    probe = probe_and_cleanup(
-        path,
+    one = _write_and_probe_one(
+        token=token,
+        sso=sso,
+        email=email,
+        out_dir=out_dir,
+        channel="",  # 单通道不写后缀，保持 xai-<email>.json
         proxy=proxy or "",
-        delete_on_dead=bool(delete_on_dead),
-        mint_soft_retry=True,
+        random_fingerprint=random_fingerprint,
+        skip_remote=skip_remote,
+        remote_url=remote_url,
+        management_key=management_key,
+        delete_on_dead=delete_on_dead,
+        log=log,
     )
-    soft_note = ""
-    if probe.get("mint_soft_warn"):
-        soft_note = f" soft_warn={probe.get('mint_soft_warn')}"
-    elif probe.get("soft_403"):
-        soft_note = " soft_403_retried"
-    log(
-        f"[auth] probe action={probe.get('action')} http={probe.get('http_status')} "
-        f"deleted={probe.get('deleted')} "
-        f"{probe.get('summary') or probe.get('error') or ''}{soft_note}"
-    )
-    if probe.get("action") == "dead":
-        still = path.is_file()
-        return {
-            "ok": False,
-            "error": f"cpa probe dead HTTP {probe.get('http_status')}",
-            "email": payload.get("email") or email,
-            "path": str(path) if still else "",
-            "filename": path.name,
-            "probe": probe,
-            "deleted": bool(probe.get("deleted")) or not still,
-            "referrer": ref,
-            "remote": remote_result,
-            "mint_mode": used_mode,
-        }
-    # keep / error / soft_warn：文件已写出 → mint 成功，probe 仅警告
-    if probe.get("action") in ("error", "keep") or probe.get("mint_soft_warn"):
-        return {
-            "ok": True,
-            "email": payload.get("email") or email,
-            "path": str(path),
-            "filename": path.name,
-            "sub": payload.get("sub") or "",
-            "agent_id": (headers or {}).get("x-grok-agent-id", ""),
-            "probe": probe,
-            "probe_warn": probe.get("mint_soft_warn")
-            or probe.get("error")
-            or "probe keep/error",
-            "referrer": ref,
-            "remote": remote_result,
-            "mint_mode": used_mode,
-        }
-
-    return {
-        "ok": True,
-        "email": payload.get("email") or email,
-        "path": str(path),
-        "filename": path.name,
-        "sub": payload.get("sub") or "",
-        "agent_id": (headers or {}).get("x-grok-agent-id", ""),
-        "probe": probe,
-        "referrer": ref,
-        "remote": remote_result,
-        "mint_mode": used_mode,
-    }
+    one["mint_mode"] = used_mode
+    if one.get("error") and not one.get("path"):
+        one["ok"] = False
+    elif one.get("error") and one.get("path"):
+        # probe dead 但文件可能仍在（delete_on_dead=False）
+        one["ok"] = False
+    return one
 
 
 def refresh_access_token(

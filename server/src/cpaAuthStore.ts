@@ -36,6 +36,8 @@ export interface CpaAuthItem {
   /** auth 内 sso 的 SHA-256（规范化后），不返回 sso 原文 */
   ssoHash?: string | null;
   hasSso?: boolean;
+  /** mint 通道：A=pkce / B=device */
+  mintChannel?: 'A' | 'B' | null;
   /** 上次测活结果（落盘 probe_action / probe_http） */
   probeAction?: string | null;
   probeHttp?: number | null;
@@ -145,6 +147,26 @@ function xaiFlags(filename: string, data: Record<string, unknown>) {
     xaiType,
     xai: xaiFilename || xaiType
   };
+}
+
+/** mint 通道：A=pkce / B=device（文件字段或文件名后缀） */
+function resolveMintChannel(
+  filename: string,
+  data: Record<string, unknown>
+): 'A' | 'B' | null {
+  const raw = String(
+    data.mint_channel || data.mintChannel || data.mint_mode || data.mintMode || ''
+  )
+    .trim()
+    .toLowerCase();
+  if (raw === 'pkce' || raw === 'a' || raw === 'auth_code') return 'A';
+  if (raw === 'device' || raw === 'b' || raw === 'device_flow') return 'B';
+  const base = filename.replace(/\.json$/i, '').toLowerCase();
+  if (base.endsWith('-pkce') || base.endsWith('_pkce') || base.endsWith('-a')) return 'A';
+  if (base.endsWith('-device') || base.endsWith('_device') || base.endsWith('-b')) return 'B';
+  // 无后缀的旧文件：默认按 A（PKCE 单通道历史产出）
+  if (/^xai-/i.test(filename)) return 'A';
+  return null;
 }
 
 function assertInsideAuthDir(resolved: string, authRoot: string) {
@@ -369,6 +391,7 @@ export async function listCpaAuth(): Promise<{ dir: string; items: CpaAuthItem[]
         isBotFlag1: Boolean(bot.isBotFlag1),
         ssoHash,
         hasSso,
+        mintChannel: resolveMintChannel(name, data),
         probeAction,
         probeHttp,
         probeAt,
@@ -1063,10 +1086,13 @@ export async function mintCpaAuthFromSso(input: {
   const mintMode =
     mintModeRaw === 'device' || mintModeRaw === 'device_flow' || mintModeRaw === 'b'
       ? 'device'
-      : mintModeRaw === 'auto' ||
+      : mintModeRaw === 'double' ||
+          mintModeRaw === 'auto' ||
           mintModeRaw === 'c' ||
+          mintModeRaw === 'merged' ||
+          mintModeRaw === 'both' ||
           mintModeRaw === 'pkce_then_device'
-        ? 'auto'
+        ? 'double'
         : 'pkce';
 
   const code = `

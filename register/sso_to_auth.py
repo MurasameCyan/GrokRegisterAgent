@@ -465,18 +465,25 @@ def token_to_cpa_record(
     return entry
 
 
-def cpa_auth_filename(record: dict) -> str:
-    """生成 CPA auth 文件名：xai-<email>.json。"""
+def cpa_auth_filename(record: dict, *, channel: str = "") -> str:
+    """生成 CPA auth 文件名：xai-<email>.json；double 模式可带通道后缀。
+
+    channel 例：pkce / device → xai-user_at_x.com-pkce.json
+    """
     ident = str(record.get("email") or "").strip() or str(record.get("sub") or "").strip()
     safe = _safe_email_for_filename(ident)
     fname = safe if safe.lower().startswith("xai") else f"xai-{safe}"
+    ch = str(channel or record.get("mint_channel") or "").strip().lower()
+    # 仅允许安全后缀，避免路径注入
+    if ch and ch.replace("_", "").replace("-", "").isalnum():
+        fname = f"{fname}-{ch}"
     return f"{fname}.json"
 
 
-def write_cpa_auth(auth_dir: Path, record: dict) -> Path:
-    """写出 CPA 可热加载的 xai-<email>.json（原子替换）。"""
+def write_cpa_auth(auth_dir: Path, record: dict, *, channel: str = "") -> Path:
+    """写出 CPA 可热加载的 xai-<email>[-channel].json（原子替换）。"""
     auth_dir.mkdir(parents=True, exist_ok=True)
-    path = auth_dir / cpa_auth_filename(record)
+    path = auth_dir / cpa_auth_filename(record, channel=channel)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.replace(tmp, path)

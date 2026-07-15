@@ -150,6 +150,16 @@ export function PoolPage() {
   });
   /** CPA auth 目录中已存在的邮箱（小写），用于「已转换」标签 */
   const [authEmails, setAuthEmails] = useState<Set<string>>(() => new Set());
+  /**
+   * 邮箱 / ssoHash → 已转通道集合（A=pkce / B=device）。
+   * 用于卡片标签 Auth A / Auth B / Auth AB。
+   */
+  const [authEmailChannels, setAuthEmailChannels] = useState<Map<string, Set<'A' | 'B'>>>(
+    () => new Map()
+  );
+  const [authHashChannels, setAuthHashChannels] = useState<Map<string, Set<'A' | 'B'>>>(
+    () => new Map()
+  );
   /** auth 文件内 sso 的 SHA-256 集合（无邮箱时交叉匹配） */
   const [authSsoHashes, setAuthSsoHashes] = useState<Set<string>>(() => new Set());
   /** 号池账号 id → ssoHash（异步预计算） */
@@ -297,6 +307,29 @@ export function PoolPage() {
     const h = accountSsoHashes.get(a.id);
     if (h && authSsoHashes.has(h)) return true;
     return false;
+  };
+
+  /** 已转通道：A / B / AB / 未转(null) */
+  const authChannelOf = (a: AccountRecord): 'A' | 'B' | 'AB' | null => {
+    const merged = new Set<'A' | 'B'>();
+    const e = normEmail(a.email);
+    if (e) {
+      const s = authEmailChannels.get(e);
+      if (s) s.forEach((c) => merged.add(c));
+    }
+    const h = accountSsoHashes.get(a.id);
+    if (h) {
+      const s = authHashChannels.get(h);
+      if (s) s.forEach((c) => merged.add(c));
+    }
+    if (merged.size === 0) {
+      // 兼容：仅命中旧集合但无通道 map 时，视为 A
+      if (isAuthConverted(a)) return 'A';
+      return null;
+    }
+    if (merged.has('A') && merged.has('B')) return 'AB';
+    if (merged.has('B')) return 'B';
+    return 'A';
   };
 
   const aliveStatusOf = (a: AccountRecord): 'unchecked' | 'alive' | 'dead' => {
@@ -1180,6 +1213,7 @@ function AccountCard({
   ssoResult,
   emailMasked,
   authConverted,
+  authChannel,
   onToggle,
   onOpen
 }: {
@@ -1188,6 +1222,8 @@ function AccountCard({
   ssoResult?: SsoCheckResult;
   emailMasked: boolean;
   authConverted: boolean;
+  /** A=PKCE / B=Device / AB=双通道 */
+  authChannel: 'A' | 'B' | 'AB' | null;
   onToggle(): void;
   onOpen(): void;
 }) {
@@ -1337,14 +1373,28 @@ function SecretRow({
   );
 }
 
-function AuthConvertedBadge({ converted }: { converted: boolean }) {
-  if (converted) {
+function AuthConvertedBadge({
+  converted,
+  channel
+}: {
+  converted: boolean;
+  channel?: 'A' | 'B' | 'AB' | null;
+}) {
+  if (converted || channel) {
+    const tag =
+      channel === 'AB' ? 'Auth AB' : channel === 'B' ? 'Auth B' : 'Auth A';
+    const title =
+      channel === 'AB'
+        ? '已转双通道：A=PKCE + B=Device（两份 auth 互不影响）'
+        : channel === 'B'
+          ? '已转 Auth B（Device Flow）'
+          : '已转 Auth A（Auth Code+PKCE）';
     return (
       <span
         className="shrink-0 rounded-full bg-sky-500/15 px-2 py-0.5 text-[10px] font-medium text-sky-600 dark:text-sky-400"
-        title="已匹配 Auth：同邮箱，或 SSO SHA-256 与 auth 文件内 sso 一致"
+        title={title}
       >
-        已转Auth
+        {tag}
       </span>
     );
   }

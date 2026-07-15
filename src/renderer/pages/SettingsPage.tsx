@@ -100,7 +100,7 @@ function CredentialsPanel({
             <ChevronRight className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
           )}
           <div className="min-w-0">
-            <h3 className="text-[17px] font-semibold tracking-[-0.02em]">账号与密码</h3>
+            <h3 className="text-[17px] font-semibold tracking-[-0.02em]">账号设置</h3>
             <p className="mt-1 text-[13px] leading-5 text-muted-foreground">
               当前账号 {username} · 修改后更新会话
             </p>

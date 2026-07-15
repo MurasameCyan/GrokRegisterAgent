@@ -2543,6 +2543,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                   授权
                 </th>
                 <th className="w-[4.5rem] px-3 py-2.5 font-medium">SSO</th>
+                <th className="w-10 px-2 py-2.5 text-center font-medium">Type</th>
                 <th className="w-[3.25rem] px-3 py-2.5 font-medium">xai</th>
                 <th className="w-[4.5rem] px-3 py-2.5 font-medium">bot_flag</th>
                 {/* 固定窄列仅放 O/X，避免测活后邻列横向跳动 */}
@@ -2638,6 +2639,23 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                           </span>
                         )}
                       </div>
+                    </td>
+                    <td className="w-10 min-w-10 px-2 py-2.5 text-center">
+                      {/* Type：A=PKCE / B=Device，蓝色字 */}
+                      {item.mintChannel === 'A' || item.mintChannel === 'B' ? (
+                        <span
+                          className="text-[12px] font-semibold text-blue-600 dark:text-blue-400"
+                          title={
+                            item.mintChannel === 'B'
+                              ? 'B · Device Flow'
+                              : 'A · Auth Code + PKCE'
+                          }
+                        >
+                          {item.mintChannel}
+                        </span>
+                      ) : (
+                        <span className="text-[11px] text-muted-foreground">—</span>
+                      )}
                     </td>
                     <td className="px-3 py-2.5">
                       {item.xai ? (

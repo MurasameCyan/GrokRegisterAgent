@@ -50,7 +50,17 @@ function asCpaMintMode(v: unknown, fallback: CpaMintMode): CpaMintMode {
     .trim()
     .toLowerCase();
   if (s === 'device' || s === 'device_flow' || s === 'b') return 'device';
-  if (s === 'auto' || s === 'c' || s === 'pkce_then_device') return 'auto';
+  // double：双通道；兼容旧 auto / c / merged
+  if (
+    s === 'double' ||
+    s === 'auto' ||
+    s === 'c' ||
+    s === 'merged' ||
+    s === 'pkce_then_device' ||
+    s === 'both'
+  ) {
+    return 'double';
+  }
   if (s === 'pkce' || s === 'a' || s === 'auth_code') return 'pkce';
   return fallback;
 }
@@ -256,9 +266,29 @@ function merge(partial: unknown): AppSettings {
       typeof (p as AppSettings).proxyFetchUrl === 'string'
         ? (p as AppSettings).proxyFetchUrl
         : DEFAULT_SETTINGS.proxyFetchUrl,
+    registerPlanAEnabled: asBool(
+      (p as AppSettings).registerPlanAEnabled,
+      DEFAULT_SETTINGS.registerPlanAEnabled
+    ),
     registerPlanBEnabled: asBool(
       (p as AppSettings).registerPlanBEnabled,
       DEFAULT_SETTINGS.registerPlanBEnabled
+    ),
+    // Plan C：新字段优先；旧 registerMode=hybrid 视为开启
+    registerPlanCEnabled: (() => {
+      const pAny = p as AppSettings;
+      if (typeof pAny.registerPlanCEnabled === 'boolean') {
+        return pAny.registerPlanCEnabled;
+      }
+      const mode = asRegisterMode(pAny.registerMode, DEFAULT_SETTINGS.registerMode);
+      return mode === 'hybrid' ? true : DEFAULT_SETTINGS.registerPlanCEnabled;
+    })(),
+    registerMode: asRegisterMode(
+      (p as AppSettings).registerMode,
+      // 若仅写了 plan C 开关，同步兼容字段
+      (p as AppSettings).registerPlanCEnabled === true
+        ? 'hybrid'
+        : DEFAULT_SETTINGS.registerMode
     ),
     // 兼容旧字段：任一 g2 通道开启即为 true（不反向污染 SSO 开关）
     grok2apiAutoUpload:

@@ -247,18 +247,22 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
   config.cpa_auto_add =
     settings.autoAuthExport === undefined ? true : !!settings.autoAuthExport;
 
-  // Plan A 失败后 Plan B 兜底一次（默认开）
-  config.register_plan_b_enabled = settings.registerPlanBEnabled !== false;
+  // 注册方案 Plan A/B/C：可单独开关；全开则 A→B→C 顺序兜底
+  const planA =
+    (settings as { registerPlanAEnabled?: boolean }).registerPlanAEnabled !== false;
+  const planB = settings.registerPlanBEnabled !== false;
+  const planC =
+    (settings as { registerPlanCEnabled?: boolean }).registerPlanCEnabled === true ||
+    String((settings as { registerMode?: string }).registerMode || '')
+      .trim()
+      .toLowerCase() === 'hybrid';
+  config.register_plan_a_enabled = planA;
+  config.register_plan_b_enabled = planB;
+  config.register_plan_c_enabled = planC;
+  // 兼容旧字段：register_mode=hybrid 当 C 开
+  config.register_mode = planC ? 'hybrid' : 'browser';
 
-  // 注册主路径：browser（默认）| hybrid（Plan-C）
-  const regMode = String(
-    (settings as { registerMode?: string }).registerMode || 'browser'
-  )
-    .trim()
-    .toLowerCase();
-  config.register_mode = regMode === 'hybrid' ? 'hybrid' : 'browser';
-
-  // SSO→CPA mint：pkce | device | auto
+  // SSO→CPA mint：pkce | device | double（双通道两份 auth）
   const mintMode = String(
     (settings as { cpaMintMode?: string }).cpaMintMode || 'pkce'
   )
@@ -267,11 +271,14 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
   if (mintMode === 'device' || mintMode === 'device_flow' || mintMode === 'b') {
     config.cpa_mint_mode = 'device';
   } else if (
+    mintMode === 'double' ||
     mintMode === 'auto' ||
     mintMode === 'c' ||
+    mintMode === 'merged' ||
+    mintMode === 'both' ||
     mintMode === 'pkce_then_device'
   ) {
-    config.cpa_mint_mode = 'auto';
+    config.cpa_mint_mode = 'double';
   } else {
     config.cpa_mint_mode = 'pkce';
   }
@@ -324,7 +331,9 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
       `[writeConfig] proxy_pool=${nPool} proxy=${config.proxy ? 'set' : 'empty'} ` +
         `browser_proxy=${config.browser_proxy ? 'set' : 'empty'} ` +
         `mail_domains=${nDom} mail_provider=${config.mail_provider || 'cloudflare'} ` +
-        `register_mode=${config.register_mode || 'browser'} ` +
+        `planA=${config.register_plan_a_enabled !== false} ` +
+        `planB=${config.register_plan_b_enabled !== false} ` +
+        `planC=${!!config.register_plan_c_enabled} ` +
         `cpa_mint_mode=${config.cpa_mint_mode || 'pkce'} ` +
         `prefer_local_forward=${!!config.proxy_prefer_local_forward} ` +
         `ip_interval=${config.proxy_ip_interval_sec || 0}s ` +

@@ -21,7 +21,14 @@ import { Switch } from '@renderer/components/ui/Switch';
 import { ConnectionTestButton } from '@renderer/components/domain/ConnectionTestButton';
 import { useSettingsStore } from '@renderer/store/settingsStore';
 import { useToastStore } from '@renderer/store/toastStore';
-import type { AppSettings, PoolMode, ProxyPoolEntry } from '@shared/settings';
+import type {
+  AppSettings,
+  CpaMintMode,
+  MailProvider,
+  PoolMode,
+  ProxyPoolEntry,
+  RegisterMode
+} from '@shared/settings';
 import {
   appendProxiesToPoolTextDetailed,
   moveProxiesToAlivePool,
@@ -1095,7 +1102,7 @@ export function SettingsForm() {
 
       <Card collapsible defaultCollapsed>
         <CardHeader
-          title="代理"
+          title="代理设置"
           description="总开关关闭时直连；开启后可切换单代理或代理池"
         />
         <CardBody className="grid gap-4 lg:grid-cols-2">
@@ -1707,7 +1714,7 @@ export function SettingsForm() {
 
       <Card collapsible defaultCollapsed>
         <CardHeader
-          title="指纹与授权"
+          title="授权管理"
           right={
             <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-muted text-muted-foreground">
               <KeyRound className="h-4 w-4" aria-hidden />
@@ -1716,17 +1723,34 @@ export function SettingsForm() {
         />
         <CardBody className="space-y-3">
           <ToggleRow
-            label="随机注册特征"
-            hint="UA / 语言 / 时区 / 分辨率等指纹随机化"
-            checked={draft.randomFingerprint}
-            onChange={(v) => update('randomFingerprint', v)}
-          />
-          <ToggleRow
             label="自动转换 Auth"
-            hint="注册成功后授权码换 token，写出 xai-*.json 到 DATA_DIR/auth。远程 CPA/grok2api 见「推送授权」"
+            hint="注册成功后授权码换 token，写出 xai-*.json 到 DATA_DIR/auth。远程 CPA/grok2api 见「推送设置」"
             checked={draft.autoAuthExport}
             onChange={(v) => update('autoAuthExport', v)}
           />
+          <Field
+            label="CPA Mint 模式"
+            hint="A=PKCE；B=Device；C=double 同时产出两份不同通道 auth，分别测活（互不影响，不会因另一份而失效）"
+          >
+            <select
+              className={SELECT_CLASS}
+              value={
+                (draft.cpaMintMode as string) === 'auto' ||
+                (draft.cpaMintMode as string) === 'merged'
+                  ? 'double'
+                  : draft.cpaMintMode || 'pkce'
+              }
+              onChange={(e) =>
+                update('cpaMintMode', e.target.value as CpaMintMode)
+              }
+            >
+              <option value="pkce">A · Auth Code + PKCE（推荐）</option>
+              <option value="device">B · Device Flow</option>
+              <option value="double">
+                C · Double（PKCE + Device 各一份，分别测活）
+              </option>
+            </select>
+          </Field>
           <ToggleRow
             label="测活死号自动删除"
             hint="默认关。开启后 Auth 测活遇 401/402/403 才删除本地 Auth 文件；关闭则仅标记死号"
@@ -1775,46 +1799,61 @@ export function SettingsForm() {
       </Card>
 
       <Card collapsible defaultCollapsed>
-        <CardHeader title="注册兜底" />
+        <CardHeader
+          title="注册方案"
+          description="Plan A/B/C 可单独开关；全部开启时按 A→B→C 顺序兜底"
+        />
         <CardBody className="space-y-3">
-          <Field
-            label="注册主路径"
-            hint="browser：全程浏览器（默认）；hybrid：Plan-C 短浏览器采 token + 协议（可选，依赖适配层）"
-          >
-            <select
-              className={SELECT_CLASS}
-              value={draft.registerMode || 'browser'}
-              onChange={(e) =>
-                update('registerMode', e.target.value as RegisterMode)
-              }
-            >
-              <option value="browser">Browser · 全程 Drission（默认）</option>
-              <option value="hybrid">Hybrid · Plan-C（短浏览器 + 协议）</option>
-            </select>
-          </Field>
           <ToggleRow
-            label="启用 Plan B 兜底"
-            hint="默认开。仅 browser 主路径时生效；关闭后 Plan A 失败即跳过，不再二次尝试"
+            label="随机注册特征"
+            hint="UA / 语言 / 时区 / 分辨率等指纹随机化"
+            checked={draft.randomFingerprint}
+            onChange={(v) => update('randomFingerprint', v)}
+          />
+          <ToggleRow
+            label="Plan A · 浏览器主流程"
+            hint="临时邮 + Drission 填表 + Turnstile（默认开）"
+            checked={draft.registerPlanAEnabled !== false}
+            onChange={(v) => {
+              update('registerPlanAEnabled', v);
+            }}
+          />
+          <ToggleRow
+            label="Plan B · 拟人兜底"
+            hint="重启浏览器、更长延迟、等 Turnstile 自然成功、模拟点击；CF 拦截则放弃（默认开）"
             checked={draft.registerPlanBEnabled !== false}
             onChange={(v) => update('registerPlanBEnabled', v)}
           />
+          <ToggleRow
+            label="Plan C · Hybrid 协议"
+            hint="短浏览器采 token + 协议注册（默认关；需适配层，失败不影响已开的 A/B）"
+            checked={
+              draft.registerPlanCEnabled === true ||
+              draft.registerMode === 'hybrid'
+            }
+            onChange={(v) => {
+              patch({
+                registerPlanCEnabled: v,
+                registerMode: v ? 'hybrid' : 'browser'
+              });
+            }}
+          />
           <div className="space-y-1.5 rounded-xl border border-border/60 bg-muted/40 p-3 text-[12px] leading-5 text-muted-foreground">
-            <p className="font-medium text-foreground">执行顺序</p>
+            <p className="font-medium text-foreground">执行顺序（仅尝试已开启方案）</p>
             <ol className="list-decimal space-y-1 pl-4">
               <li>
-                <span className="text-foreground">主路径</span>
-                ：browser 或 hybrid（设置「注册主路径」）
-              </li>
-              <li>
                 <span className="text-foreground">Plan A</span>
-                ：现有临时邮 + Drission 填表 + 现有 Turnstile 处理
+                ：现有临时邮 + Drission 填表 + Turnstile
               </li>
               <li>
                 <span className="text-foreground">Plan B</span>
-                ：重启浏览器 → 更长拟人延迟 → 等 Turnstile 自然成功 → 模拟点击提交 → CF
-                拦截则立即放弃
+                ：重启浏览器 → 拟人延迟 → 等 Turnstile → 模拟点击 → CF 则放弃
               </li>
-              <li>主路径/A+B 都失败：记失败、可选降级代理、进入下一账号</li>
+              <li>
+                <span className="text-foreground">Plan C</span>
+                ：hybrid 短浏览器 + 协议（可选）
+              </li>
+              <li>已开方案均失败：记失败、可选降级代理、进入下一账号</li>
             </ol>
           </div>
         </CardBody>
@@ -1822,7 +1861,7 @@ export function SettingsForm() {
 
       <Card collapsible defaultCollapsed>
         <CardHeader
-          title="推送授权"
+          title="推送设置"
           description="每个目标分「允许推送」与「自动推送」。允许=可手动推/展开连接；自动=注册成功后推送（开自动会同时开允许）。SSO/Auth 的 g2 互不联动。"
           right={
             <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-muted text-muted-foreground">
