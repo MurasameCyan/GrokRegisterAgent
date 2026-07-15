@@ -106,7 +106,14 @@ export function parseHideMnHtml(html: string): string[] {
       ) || '';
     const labelParts = [country, proto, anonymity].filter(Boolean);
     const label = labelParts.join(' · ');
-    lines.push(label ? `${key}（${label}）` : key);
+    // P0：按 Type 列写 scheme（SOCKS5→socks5://；HTTP/HTTPS→http://）
+    let withScheme = key;
+    if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(key)) {
+      if (proto === 'SOCKS5') withScheme = `socks5://${key}`;
+      else if (proto === 'SOCKS4') withScheme = `socks4://${key}`;
+      else withScheme = `http://${key}`; // HTTP / HTTPS / 空 → http://
+    }
+    lines.push(label ? `${withScheme}（${label}）` : withScheme);
   }
   return lines;
 }
@@ -135,7 +142,18 @@ export function parseGenericText(text: string): string[] {
           if (!seen.has(key)) {
             seen.add(key);
             const meta = parts.filter((p) => p !== addr && !/^\d+$/.test(p));
-            lines.push(meta.length ? `${key}（${meta.join(' · ')}）` : key);
+            const label = meta.join(' · ');
+            // P0：CSV 协议列 → scheme（HTTPS→http://）
+            let withScheme = key;
+            if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(key)) {
+              const hint = label.toLowerCase();
+              if (/\bsocks\s*5|socks5/.test(hint)) withScheme = `socks5://${key}`;
+              else if (/\bsocks\s*4a|socks4a/.test(hint)) withScheme = `socks4a://${key}`;
+              else if (/\bsocks\s*4|socks4/.test(hint)) withScheme = `socks4://${key}`;
+              else if (/\bsocks\b/.test(hint)) withScheme = `socks5://${key}`;
+              else withScheme = `http://${key}`;
+            }
+            lines.push(label ? `${withScheme}（${label}）` : withScheme);
           }
           continue;
         }

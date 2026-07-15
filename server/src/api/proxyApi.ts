@@ -8,6 +8,11 @@ import axios from 'axios';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { SocksProxyAgent } from 'socks-proxy-agent';
 import type { Agent } from 'http';
+import {
+  ensureProxyScheme,
+  normalizeProxyUrlShared,
+  parseProxyLine
+} from '@shared/settings';
 
 export type ProxyProbeResult = {
   ok: boolean;
@@ -35,65 +40,33 @@ export type ProxyProbeResult = {
   cfDetail?: string;
 };
 
-const HOST_PORT_RE =
-  /^(?:([^@\s/]+)@)?((?:\d{1,3}(?:\.\d{1,3}){3}|\[?[0-9a-fA-F:]+\]?|[\w.-]+):(\d{1,5}))$/i;
-
 /**
- * 去掉行尾备注，只保留可连的代理地址。
- * 支持：`#标签`、`（日本，elite，HTTPS）`、`(Japan, elite, HTTPS)`、
- * `18,172.64.149.71:80,美国,HTTP,平均`。
+ * 去掉行尾备注并按备注/CSV 补 scheme（与 shared normalize 对齐）。
+ * - SOCKS5 备注 → socks5://
+ * - HTTP / **HTTPS（列表）→ http://**
  */
 function stripProxyAnnotation(raw: string): string {
-  let s = String(raw || '').trim();
-  if (!s) return '';
-
-  // 供应商 CSV：序号,ip:port,地区,协议,质量
-  if (!s.includes('://') && s.includes(',')) {
-    const parts = s.split(',').map((p) => p.trim()).filter(Boolean);
-    if (parts.length >= 2) {
-      let addr = '';
-      if (/^\d+$/.test(parts[0]) && HOST_PORT_RE.test(parts[1])) addr = parts[1];
-      else if (HOST_PORT_RE.test(parts[0])) addr = parts[0];
-      else {
-        for (const p of parts) {
-          if (HOST_PORT_RE.test(p)) {
-            addr = p;
-            break;
-          }
-        }
-      }
-      if (addr) return addr;
-    }
-  }
-
-  // 尾部括号备注（可叠多层，最多 3 次）
-  const parenRe = /[（(][^）)]*[）)]\s*$/;
-  for (let i = 0; i < 3; i++) {
-    const next = s.replace(parenRe, '').trim();
-    if (next === s) break;
-    s = next;
-  }
-  const schemeIdx = s.indexOf('://');
-  const searchFrom = schemeIdx >= 0 ? schemeIdx + 3 : 0;
-  const hashIdx = s.indexOf('#', searchFrom);
-  if (hashIdx >= 0) s = s.slice(0, hashIdx).trim();
-  return s;
+  const shared = normalizeProxyUrlShared(raw);
+  if (shared) return shared;
+  const parsed = parseProxyLine(raw);
+  if (parsed?.proxy) return ensureProxyScheme(parsed.proxy, parsed.label || raw);
+  return '';
 }
 
+/**
+ * 规范化代理 URL（测活/使用主入口，与 Python pools + shared 对齐）：
+ * - 剥离 # / （备注）/ CSV 元数据
+ * - 无 scheme 时按备注推断；**HTTPS 列表标记 → http://**
+ * - socks / socks5h → socks5
+ * - 凭据 encode 重建（防 407）
+ */
 export function normalizeProxyUrl(raw: string): string {
   let s = stripProxyAnnotation(raw);
   if (!s) return '';
-  // 去掉误粘贴的反引号/尖括号/引号
   s = s.replace(/^[`'"<\s]+/, '').replace(/[`'">\s]+$/, '').trim();
   if (!s) return '';
-  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) {
-    // 无 scheme：默认 http（住宅 HTTP 代理常见）
-    // 列表里的 “HTTPS” 一般指支持 CONNECT，不是 https:// 代理协议
-    s = `http://${s}`;
-  }
-  // 统一 socks 写法
-  s = s.replace(/^socks5h:\/\//i, 'socks5://');
-  s = s.replace(/^socks:\/\//i, 'socks5://');
+  // shared 已补 scheme；再保险一次（无 hint 默认 http）
+  s = ensureProxyScheme(s, raw);
 
   // 规范化凭据：用户名含 base64 `==` 时，用手动解析再 encode 重建，
   // 避免部分环境下 auth 丢失 → HTTP 407
@@ -123,8 +96,8 @@ export function parseProxyCredentials(proxyUrl: string): ParsedProxy | null {
   if (!s) return null;
   s = s.replace(/^[`'"<\s]+/, '').replace(/[`'">\s]+$/, '').trim();
   if (!s) return null;
-  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) s = `http://${s}`;
-  s = s.replace(/^socks5h:\/\//i, 'socks5://').replace(/^socks:\/\//i, 'socks5://');
+  // 与 ensureProxyScheme 对齐（含 HTTPS→http、SOCKS 推断）
+  s = ensureProxyScheme(s, proxyUrl);
 
   const m = s.match(/^([a-z][a-z0-9+.-]*):\/\/(.*)$/i);
   if (!m) return null;

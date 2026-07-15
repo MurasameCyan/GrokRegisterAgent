@@ -375,6 +375,48 @@ const HOST_PORT_RE =
   /^(?:([^@\s/]+)@)?((?:\d{1,3}(?:\.\d{1,3}){3}|\[?[0-9a-fA-F:]+\]?|[\w.-]+):(\d{1,5}))$/i;
 
 /**
+ * 从备注 / CSV 协议列推断代理 scheme。
+ *
+ * 规则（P0）：
+ * - 显式 `socks5` / `socks 5` → socks5
+ * - 显式 `socks4a` → socks4a；`socks4` → socks4
+ * - `http` / 空 / 未知 → http
+ * - **`https` / `HTTPS`（列表语境）→ 仍映射为 `http`**
+ *   （表示「支持 HTTPS 站点 / CONNECT」，不是 https:// 代理协议）
+ * - 已有 `xxx://` 时由调用方优先使用显式 scheme，不覆盖
+ */
+export function inferProxySchemeFromHint(hint: string): 'http' | 'socks4' | 'socks4a' | 'socks5' {
+  const t = String(hint || '');
+  if (!t.trim()) return 'http';
+  // 顺序重要：socks4a 先于 socks4；socks5 先于 socks
+  if (/\bsocks\s*5h?\b/i.test(t) || /\bsocks5h?\b/i.test(t)) return 'socks5';
+  if (/\bsocks\s*4a\b/i.test(t) || /\bsocks4a\b/i.test(t)) return 'socks4a';
+  if (/\bsocks\s*4\b/i.test(t) || /\bsocks4\b/i.test(t)) return 'socks4';
+  if (/\bsocks\b/i.test(t)) return 'socks5'; // 笼统 socks → socks5
+  // https / http 列表标记 → 代理协议均为 http://
+  return 'http';
+}
+
+/**
+ * 无 scheme 时根据 hint（备注/CSV）补协议头；已有 scheme 则规范化 socks 别名。
+ * HTTPS 列表标记 → http://（见 inferProxySchemeFromHint）。
+ */
+export function ensureProxyScheme(address: string, hint: string = ''): string {
+  let s = String(address || '').trim();
+  if (!s) return '';
+  s = s.replace(/^[`'"<\s]+/, '').replace(/[`'">\s]+$/, '').trim();
+  if (!s) return '';
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) {
+    // 显式 scheme：仅统一 socks 别名；https:// 代理较少见，保留
+    s = s.replace(/^socks5h:\/\//i, 'socks5://');
+    s = s.replace(/^socks:\/\//i, 'socks5://');
+    return s;
+  }
+  const scheme = inferProxySchemeFromHint(hint);
+  return `${scheme}://${s}`;
+}
+
+/**
  * 供应商 CSV 行（整行一条，逗号不当分隔符）：
  * - `18,172.64.149.71:80,美国,HTTP,平均`
  * - `172.64.149.71:80,荷兰,HTTP,平均`
@@ -416,7 +458,9 @@ function parseCsvProxyLine(rawLine: string): { proxy: string; label: string } | 
   const meta = parts.filter((_, i) => i !== addrIdx && !(i < addrIdx && /^\d+$/.test(parts[i])));
   // 去掉序号后的标签：地区 · 协议 · 质量
   const label = meta.join(' · ');
-  return { proxy: addr, label };
+  // P0：按 CSV 协议列补 scheme（HTTPS → http://）
+  const proxy = ensureProxyScheme(addr, label);
+  return { proxy, label };
 }
 
 /**
@@ -469,11 +513,14 @@ function splitProxyAnnotation(rawLine: string): { proxy: string; label: string }
     s = s.slice(0, hashIdx).trim();
   }
 
-  // 3) 无 scheme 时：若括号元数据暗示 socks，可保留由测活/使用侧加 http://
-  //    此处不改 scheme；HTTPS 在代理列表里通常表示「支持 HTTPS 隧道」，仍走 http:// 代理协议
+  // 3) 无 scheme 时：根据备注/CSV 补 http:// 或 socks4/5://
+  //    HTTPS（列表）→ http://；SOCKS5 → socks5://
+  const label = labels.filter(Boolean).join(' · ');
+  // 无括号备注时，整行也可作 hint（兼容「ip:port SOCKS5」）
+  const hint = label || s;
   return {
-    proxy: s,
-    label: labels.filter(Boolean).join(' · ')
+    proxy: ensureProxyScheme(s, hint),
+    label
   };
 }
 
@@ -500,9 +547,29 @@ export function parseProxyLine(line: string): ProxyPoolEntry | null {
   };
 }
 
-/** 去掉代理行尾 #备注（支持 URL 编码标签，如 #%E9%A6%99%E6%B8%AF-02） */
+/**
+ * 去掉代理行尾备注并规范化 scheme。
+ * 支持 URL 编码标签；备注/CSV 含 SOCKS4/5 时自动补协议头；HTTPS→http://。
+ */
 export function stripProxyComment(line: string): string {
   return parseProxyLine(line)?.proxy || '';
+}
+
+/**
+ * 规范化代理 URL（与 server normalizeProxyUrl 规则对齐的共享实现）。
+ * - 剥离备注/CSV 元数据
+ * - 无 scheme 时按备注推断；HTTPS→http
+ * - 统一 socks / socks5h → socks5
+ */
+export function normalizeProxyUrlShared(raw: string): string {
+  const parsed = parseProxyLine(raw);
+  if (!parsed?.proxy) {
+    // 无 label 的纯地址
+    const s = String(raw || '').trim();
+    if (!s || s.startsWith('#')) return '';
+    return ensureProxyScheme(s.replace(/^[`'"<\s]+/, '').replace(/[`'">\s]+$/, '').trim(), s);
+  }
+  return ensureProxyScheme(parsed.proxy, parsed.label || parsed.raw);
 }
 
 /**

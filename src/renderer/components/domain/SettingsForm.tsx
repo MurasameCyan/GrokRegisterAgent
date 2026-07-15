@@ -1200,7 +1200,10 @@ export function SettingsForm() {
                             hide.mn/proxy-list
                           </a>
                           （表格 IP/Port/国家/类型）。写入下方「待测池」→ 测活 →
-                          可用池 → 保存。
+                          可用池 → 保存。备注/CSV 含 SOCKS4/5 自动补{' '}
+                          <code className="text-[10px]">socks5://</code>；HTTP/HTTPS
+                          列表标记均补 <code className="text-[10px]">http://</code>
+                          （HTTPS≠https 代理协议）。
                         </p>
                       </div>
                       <Button

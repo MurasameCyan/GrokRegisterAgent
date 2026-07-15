@@ -234,8 +234,47 @@ def bump_proxy_register_success(proxy: str, delta: int = 1) -> bool:
         return False
 
 
+def _infer_proxy_scheme_from_hint(hint: str) -> str:
+    """从备注/CSV 协议列推断 scheme（与 Node shared/settings 对齐）。
+
+    - socks5 → socks5；socks4a → socks4a；socks4 → socks4
+    - 笼统 socks → socks5
+    - http / **https（列表）/ 空 → http**
+      HTTPS 表示支持 HTTPS 隧道，不是 https:// 代理协议
+    """
+    t = str(hint or "")
+    if not t.strip():
+        return "http"
+    low = t.lower()
+    if re.search(r"\bsocks\s*5h?\b", low) or re.search(r"\bsocks5h?\b", low):
+        return "socks5"
+    if re.search(r"\bsocks\s*4a\b", low) or "socks4a" in low:
+        return "socks4a"
+    if re.search(r"\bsocks\s*4\b", low) or re.search(r"\bsocks4\b", low):
+        return "socks4"
+    if re.search(r"\bsocks\b", low):
+        return "socks5"
+    return "http"
+
+
+def _ensure_proxy_scheme(address: str, hint: str = "") -> str:
+    """无 scheme 时按 hint 补协议头；已有 scheme 规范化 socks 别名。"""
+    s = (address or "").strip()
+    if not s:
+        return ""
+    s = re.sub(r"^[`'\"<\s]+", "", s)
+    s = re.sub(r"[`'\">\s]+$", "", s).strip()
+    if not s:
+        return ""
+    if re.match(r"^[a-z][a-z0-9+.-]*://", s, re.I):
+        s = re.sub(r"^socks5h://", "socks5://", s, flags=re.I)
+        s = re.sub(r"^socks://", "socks5://", s, flags=re.I)
+        return s
+    return f"{_infer_proxy_scheme_from_hint(hint)}://{s}"
+
+
 def _extract_csv_proxy_addr(line: str) -> str:
-    """从 `18,172.64.149.71:80,美国,HTTP,平均` 取出代理地址，否则空串。"""
+    """从 CSV 取出 host:port（无 scheme），否则空串。"""
     s = (line or "").strip()
     if not s or "://" in s or "," not in s:
         return ""
@@ -252,37 +291,55 @@ def _extract_csv_proxy_addr(line: str) -> str:
     return ""
 
 
+def _extract_csv_proxy_with_scheme(line: str) -> str:
+    """CSV 行 → 带 scheme 的地址。`…,SOCKS5,…` → socks5://；`…,HTTPS,…` → http://"""
+    s = (line or "").strip()
+    addr = _extract_csv_proxy_addr(s)
+    if not addr:
+        return ""
+    parts = [p.strip() for p in s.split(",") if p.strip()]
+    meta = [p for p in parts if p != addr and not p.isdigit()]
+    return _ensure_proxy_scheme(addr, " · ".join(meta))
+
+
 def _is_csv_proxy_line(line: str) -> bool:
     return bool(_extract_csv_proxy_addr(line))
 
 
 def _strip_proxy_comment(line: str) -> str:
-    """去掉代理行尾备注，只保留可连地址。
+    """去掉代理行尾备注并规范化 scheme（与 Node shared/proxyApi 对齐）。
 
     支持：
     - `http://u:p@ip:port#香港-01` / `#%E9%A6%99%E6%B8%AF-02`
-    - `8.216.35.12:8888（日本，elite，HTTPS）`
-    - `ip:port(Japan, elite, HTTPS)`
-    - `18,172.64.149.71:80,美国,HTTP,平均`
+    - `8.216.35.12:8888（日本，elite，SOCKS5）` → socks5://…
+    - `ip:port(Japan, elite, HTTPS)` → http://…（HTTPS≠https 代理）
+    - `18,172.64.149.71:80,美国,HTTP,平均` → http://…
     """
     s = (line or "").strip()
     if not s or s.startswith("#"):
         return ""
-    csv_addr = _extract_csv_proxy_addr(s)
-    if csv_addr:
-        return csv_addr
-    # 尾部全角/半角括号备注
+    csv_url = _extract_csv_proxy_with_scheme(s)
+    if csv_url:
+        return csv_url
+
+    label_parts: list[str] = []
+    # 尾部全角/半角括号备注（保留文本作 scheme hint）
     for _ in range(3):
-        ns = re.sub(r"[（(][^）)]*[）)]\s*$", "", s).strip()
-        if ns == s:
+        m = re.search(r"[（(]([^）)]*)[）)]\s*$", s)
+        if not m:
             break
-        s = ns
+        label_parts.append(m.group(1).strip())
+        s = s[: m.start()].strip()
+
     scheme_idx = s.find("://")
     search_from = scheme_idx + 3 if scheme_idx >= 0 else 0
     hash_idx = s.find("#", search_from)
     if hash_idx >= 0:
-        return s[:hash_idx].strip()
-    return s
+        label_parts.append(s[hash_idx + 1 :].strip())
+        s = s[:hash_idx].strip()
+
+    hint = " · ".join(x for x in label_parts if x) or s
+    return _ensure_proxy_scheme(s, hint)
 
 
 def _split_proxy_pool_text(text: str) -> List[str]:
