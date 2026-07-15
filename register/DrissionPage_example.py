@@ -1068,8 +1068,8 @@ def open_signup_page(*, find_tries: int | None = None):
                         continue
 
             _apply_stealth_patches(page)
-            # SPA 首屏：比 Agent4 略多等一会儿
-            time.sleep(1.2 + secrets.randbelow(70) / 100.0)
+            # SPA 首屏：x.ai 注册页常 2～4s 才出 Sign up with email
+            time.sleep(2.0 + secrets.randbelow(120) / 100.0)
 
             title = ""
             url = ""
@@ -1089,7 +1089,8 @@ def open_signup_page(*, find_tries: int | None = None):
                 continue
 
             try:
-                btn_timeout = 16 if _is_signup_host(url) else (12 if attempt == 1 else 10)
+                # 已在目标域：给更长找按钮时间（Cloudflare/SPA）
+                btn_timeout = 22 if _is_signup_host(url) else (14 if attempt == 1 else 12)
                 click_email_signup_button(timeout=btn_timeout)
                 if attempt > 1:
                     print(f"[*] 「使用邮箱注册」第 {attempt}/{tries} 次找到并点击", flush=True)
@@ -1192,69 +1193,207 @@ def _step_pause(lo_ms: int = 180, hi_ms: int = 650) -> None:
 
 
 def click_email_signup_button(timeout=10):
-    # 页面打开后，自动点击“使用邮箱注册”按钮。
+    """页面打开后点击「使用邮箱注册 / Sign up with email」。
+
+    2026-07：accounts.x.ai 文案为 Sign up with email；
+    已进入 accounts.x.ai 时禁止用正文里的 proxy/blocked 字样误判为隧道错误。
+    """
     _step_pause(200, 700)
     deadline = time.time() + timeout
+    last_diag = ""
     while time.time() < deadline:
         try:
             refresh_active_page()
         except Exception:
             pass
+
+        # 若已出现邮箱输入框，视为已在邮箱注册步，无需再点按钮
+        try:
+            already = page.run_js(
+                r"""
+const inputs = Array.from(document.querySelectorAll(
+  'input[type="email"], input[name*="email" i], input[autocomplete="email"], input[placeholder*="email" i], input[placeholder*="邮箱"]'
+));
+function vis(n){
+  if(!n) return false;
+  const s=getComputedStyle(n);
+  if(s.display==='none'||s.visibility==='hidden'||s.opacity==='0') return false;
+  const r=n.getBoundingClientRect();
+  return r.width>0 && r.height>0;
+}
+return inputs.some(vis);
+"""
+            )
+            if already is True or already == "true" or already == 1:
+                return True
+        except Exception:
+            pass
+
+        # Drission 文本定位兜底（不依赖 JS 可见性）
+        for txt in (
+            "Sign up with email",
+            "Sign up with Email",
+            "使用邮箱注册",
+            "用邮箱注册",
+            "邮箱注册",
+            "Continue with email",
+            "Continue with Email",
+        ):
+            try:
+                ele = page.ele(f"text:{txt}", timeout=0.35)
+                if ele:
+                    try:
+                        ele.click()
+                    except Exception:
+                        try:
+                            page.run_js("arguments[0].click()", ele)
+                        except Exception:
+                            ele.click(by_js=True)
+                    _step_pause(150, 500)
+                    return True
+            except Exception:
+                pass
+
         clicked = page.run_js(r"""
 function isVisible(n) {
   if (!n) return false;
   const s = window.getComputedStyle(n);
-  if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
+  if (s.display === 'none' || s.visibility === 'hidden' || Number(s.opacity) === 0) return false;
   const r = n.getBoundingClientRect();
   return r.width > 0 && r.height > 0;
 }
-const candidates = Array.from(document.querySelectorAll(
-  'button, a, [role="button"], div[role="button"], span[role="button"]'
-)).filter(isVisible);
-const target = candidates.find((node) => {
-  const text = (node.innerText || node.textContent || '').replace(/\s+/g, '').toLowerCase();
-  // 注意：toLowerCase 后中文不变；英文去空格后匹配
-  if (text.includes('使用邮箱注册') || text.includes('用邮箱注册') || text.includes('邮箱注册')) return true;
-  if (text.includes('signupwithemail') || text.includes('signupemail') || text.includes('emailsignup')) return true;
-  if (text.includes('continuewithemail') || text.includes('continuewithmail')) return true;
-  // 避免误点「登录邮箱」类；要求含 email 且含 sign/注册/continue 之一
-  if (text.includes('email') && (text.includes('sign') || text.includes('注册') || text.includes('continue') || text.includes('create'))) {
+function norm(s) {
+  return (s || '').replace(/\s+/g, '').toLowerCase();
+}
+function matchEmailSignup(text, aria, testid) {
+  const t = norm(text);
+  const a = norm(aria);
+  const d = norm(testid);
+  const blob = t + ' ' + a + ' ' + d;
+  if (!blob.trim()) return false;
+  // 中文
+  if (t.includes('使用邮箱注册') || t.includes('用邮箱注册') || t.includes('邮箱注册')) return true;
+  if (a.includes('使用邮箱注册') || a.includes('邮箱注册')) return true;
+  // 英文（去空格）：Sign up with email → signupwithemail
+  if (blob.includes('signupwithemail') || blob.includes('signupemail') || blob.includes('emailsignup')) return true;
+  if (blob.includes('continuewithemail') || blob.includes('continuewithmail')) return true;
+  if (blob.includes('createwithemail') || blob.includes('createaccountwithemail')) return true;
+  // email + sign/create/continue/注册（避免仅 “email” 误点）
+  if ((t.includes('email') || a.includes('email')) &&
+      (t.includes('sign') || t.includes('注册') || t.includes('continue') || t.includes('create') ||
+       a.includes('sign') || a.includes('continue') || a.includes('create'))) {
+    // 排除 Sign in / 登录
+    if (t.includes('signin') || t === 'email' || t.includes('signinemail')) return false;
+    if (t.includes('登录') && !t.includes('注册')) return false;
     return true;
   }
   return false;
-});
+}
+// 扩大候选：含 label、可点 div、data-testid
+const sel = [
+  'button', 'a', '[role="button"]',
+  'div[role="button"]', 'span[role="button"]',
+  '[data-testid*="email"]', '[data-testid*="sign"]',
+  'label', '[tabindex="0"]'
+].join(',');
+let candidates = Array.from(document.querySelectorAll(sel)).filter(isVisible);
+// 再扫一遍可见元素的文本节点父级（SPA 常把文案放在内层 span）
+const more = Array.from(document.querySelectorAll('button *, a *, [role="button"] *'))
+  .filter(isVisible)
+  .map((n) => n.closest('button, a, [role="button"], div, span') || n);
+candidates = candidates.concat(more);
+
+let target = null;
+const seen = new Set();
+for (const node of candidates) {
+  if (!node || seen.has(node)) continue;
+  seen.add(node);
+  const text = node.innerText || node.textContent || '';
+  const aria = node.getAttribute('aria-label') || node.getAttribute('title') || '';
+  const testid = node.getAttribute('data-testid') || node.id || '';
+  if (matchEmailSignup(text, aria, testid)) {
+    // 优先点最外层可点祖先
+    target = node.closest('button, a, [role="button"]') || node;
+    break;
+  }
+}
 
 if (!target) {
-  // 诊断：页面是否还在加载 / 被墙空白
-  // 注意：勿单独匹配 proxy（正常页面/扩展文案也会误伤），对齐 Agent4 收紧规则
+  const href = (location && location.href) || '';
+  const onXai = /accounts\.x\.ai|x\.ai\/sign|auth\.x\.ai|grok\.x\.ai/i.test(href);
   const body = (document.body && (document.body.innerText || '')) || '';
   const title = document.title || '';
-  if (!body.trim() && !title.trim()) return 'empty';
-  if (/err_proxy|err_tunnel|err_socks|err_connection_|err_timed_out|err_name_not_resolved|err_address_unreachable|err_ssl_|err_empty_response|chrome-error:\/\/|this site can.?t be reached|took too long to respond|connection timed out|connection refused|tunnel connection failed|proxy connection failed|无法访问此网站|网页无法打开/i.test(body + title)) {
-    return 'blocked';
+  const bodyTrim = body.trim();
+  // 诊断摘要（回传 Python，勿过长）
+  const sampleBtns = Array.from(document.querySelectorAll('button, a, [role="button"]'))
+    .filter(isVisible)
+    .slice(0, 12)
+    .map((n) => (n.innerText || n.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim().slice(0, 40))
+    .filter(Boolean);
+  const diag = JSON.stringify({
+    title: (title || '').slice(0, 80),
+    href: href.slice(0, 120),
+    bodyLen: bodyTrim.length,
+    bodyHead: bodyTrim.slice(0, 160),
+    btns: sampleBtns
+  });
+
+  if (!bodyTrim && !title.trim()) return 'empty|' + diag;
+  // 仅 chrome 硬错误页才 blocked；已在 accounts.x.ai 时绝不用正文关键字误杀
+  if (!onXai) {
+    if (/err_proxy|err_tunnel|err_socks|err_connection_|err_timed_out|err_name_not_resolved|err_address_unreachable|err_ssl_|err_empty_response|chrome-error:\/\/|this site can.?t be reached|took too long to respond|connection timed out|connection refused|tunnel connection failed|proxy connection failed|无法访问此网站|网页无法打开/i.test(body + title)) {
+      return 'blocked|' + diag;
+    }
   }
-  return false;
+  return 'miss|' + diag;
 }
 
 try { target.scrollIntoView({ block: 'center', inline: 'center' }); } catch (e) {}
-target.focus();
-target.click();
+try { target.focus(); } catch (e) {}
+try { target.click(); } catch (e) {
+  try {
+    target.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+  } catch (e2) {}
+}
 return true;
         """)
 
         if clicked is True or clicked == "true" or clicked == 1:
             _step_pause(150, 500)
             return True
-        if clicked == "blocked":
-            # 页面被墙/隧道错误：由 open_signup_page 统一降级并换代理，此处只抛错
-            raise Exception('注册页无法访问（代理/隧道错误，未找到邮箱注册按钮）')
-        if clicked == "empty":
-            # 空白页：多等一会儿
-            time.sleep(0.8)
-        else:
-            time.sleep(0.4 + secrets.randbelow(30) / 100.0)
 
-    raise Exception('未找到“使用邮箱注册”按钮')
+        kind = ""
+        diag = ""
+        if isinstance(clicked, str) and "|" in clicked:
+            kind, diag = clicked.split("|", 1)
+            last_diag = diag
+        elif isinstance(clicked, str):
+            kind = clicked
+
+        if kind == "blocked":
+            # 真·错误页：由 open_signup_page 处理；带诊断
+            raise Exception(
+                "注册页无法访问（代理/隧道错误，未找到邮箱注册按钮）"
+                + (f" diag={last_diag[:200]}" if last_diag else "")
+            )
+        if kind == "empty":
+            time.sleep(0.9)
+        else:
+            # miss：SPA 未出按钮，继续等
+            time.sleep(0.45 + secrets.randbelow(35) / 100.0)
+
+    # 超时：若仍在 accounts.x.ai，明确写「页面结构/选择器」而非代理
+    url_hint = ""
+    try:
+        url_hint = str(getattr(page, "url", None) or "")
+    except Exception:
+        pass
+    msg = '未找到“使用邮箱注册”按钮'
+    if "accounts.x.ai" in (url_hint or "").lower():
+        msg += f"（已在 accounts.x.ai，非代理问题；请查按钮文案/结构） url={url_hint[:100]}"
+    if last_diag:
+        msg += f" diag={last_diag[:240]}"
+    raise Exception(msg)
 
 
 def fill_email_and_submit(timeout=15):
