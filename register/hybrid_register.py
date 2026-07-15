@@ -408,6 +408,50 @@ def hybrid_register(
                 for k, v in jar_full.items()
                 if k and v is not None
             ]
+            # W3 · SSO 去重
+            try:
+                from sso_ledger import claim_sso
+
+                claim = claim_sso(sso, email=email)
+                if claim.get("duplicate"):
+                    log(
+                        f"[hybrid][sso-ledger] ✘ 重复指纹 "
+                        f"{str(claim.get('fingerprint') or '')[:12]}…"
+                    )
+                    return {
+                        "ok": False,
+                        "error": "duplicate SSO fingerprint",
+                        "duplicate": True,
+                        "mode": "hybrid",
+                        "fingerprint": claim.get("fingerprint"),
+                    }
+            except Exception as le:
+                log(f"[hybrid] sso ledger: {le}")
+
+            # W2 · 缓存 CF（供主循环下一轮 restore）
+            try:
+                from cf_context import CloudflareContext, set_thread_cf_context
+
+                cf_str = str(jar_full.get("cf_clearance") or "")
+                if cf_str and not cf_str.startswith("cf_clearance="):
+                    cf_str = f"cf_clearance={cf_str}"
+                bm = str(jar_full.get("__cf_bm") or "")
+                if bm and not bm.startswith("__cf_bm="):
+                    bm = f"__cf_bm={bm}" if bm else ""
+                parts = [p for p in (cf_str, bm) if p]
+                if parts:
+                    set_thread_cf_context(
+                        CloudflareContext(
+                            user_agent=ua or "",
+                            cloudflare_cookies="; ".join(parts),
+                            captured_at=time.time(),
+                            source="hybrid",
+                        )
+                    )
+                    log(f"[hybrid][cf-ctx] 已缓存 CF parts={len(parts)}")
+            except Exception as cfe:
+                log(f"[hybrid] cf cache: {cfe}")
+
             log(f"[hybrid] ✔ OK email={email} sso_len={len(sso)} cookies={len(cookie_list)}")
             return {
                 "ok": True,

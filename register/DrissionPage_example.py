@@ -944,6 +944,14 @@ def open_signup_page(*, find_tries: int | None = None):
     注意：page.url 可能仍显示 accounts.x.ai，但文档实为 chrome-error 页——以 body/diag 为准。
     """
     global page, _browser_proxy
+    # W2 · 若上一轮已捕获 CF，在打开注册前再写一次（clear 后可能被导航冲掉）
+    try:
+        from cf_context import restore_cloudflare_context, get_thread_cf_context
+
+        if page is not None and get_thread_cf_context() and get_thread_cf_context().ready:
+            restore_cloudflare_context(page, log=lambda m: print(m, flush=True))
+    except Exception:
+        pass
     tries = int(find_tries if find_tries is not None else _EMAIL_SIGNUP_FIND_TRIES)
     tries = max(1, min(tries, 10))
     last_err: Exception | str | None = None
@@ -3926,7 +3934,46 @@ def run_single_registration(
     password = str(profile.get("password", "") or "")
     if isinstance(profile, dict):
         profile = {**profile, "plan": plan_mode}
+
+    # W3 · SSO 指纹账本去重（重复不算成功，不入队、不占目标）
+    if sso_value:
+        try:
+            from sso_ledger import claim_sso
+
+            claim = claim_sso(sso_value, email=email)
+            if claim.get("duplicate"):
+                print(
+                    f"[sso-ledger] ✘ 重复 SSO 指纹={str(claim.get('fingerprint') or '')[:12]}… "
+                    f"first_email={claim.get('email') or '-'} count={claim.get('count')}",
+                    flush=True,
+                )
+                raise AccountRetryNeeded(
+                    f"duplicate SSO fingerprint {str(claim.get('fingerprint') or '')[:16]}"
+                )
+            if claim.get("ok"):
+                print(
+                    f"[sso-ledger] ✔ 新指纹={str(claim.get('fingerprint') or '')[:12]}…",
+                    flush=True,
+                )
+        except AccountRetryNeeded:
+            raise
+        except Exception as le:
+            print(f"[Warn] sso ledger: {le}", flush=True)
+
     append_sso_to_txt(sso_value, output_path, email=email, password=password)
+
+    # W2 · 捕获 CF 上下文供下一轮复用
+    try:
+        from cf_context import capture_cloudflare_context
+
+        capture_cloudflare_context(
+            page,
+            browser,
+            source="post_register",
+            log=lambda m: print(m, flush=True),
+        )
+    except Exception as cfe:
+        print(f"[Warn] cf capture: {cfe}", flush=True)
 
     # 授权流水线全部移交后台队列：SSO 推送 / Auth 转换 / Auth 推送
     # 注册主流程只落盘 SSO，不阻塞下一轮
@@ -4217,6 +4264,13 @@ def main():
             do_full_restart = force_browser_recycle or browser is None
             if do_full_restart:
                 try:
+                    from cf_context import clear_thread_cf_context
+
+                    # 完整重启浏览器后 CF 与 TLS/IP 失效，丢弃
+                    clear_thread_cf_context()
+                except Exception:
+                    pass
+                try:
                     stop_browser()
                 except Exception:
                     pass
@@ -4229,43 +4283,50 @@ def main():
                 start_browser()
                 force_browser_recycle = False
             else:
-                # 复用：清 cookie/storage，不退出 Chromium（TabPool 接口 + 全局 page）
+                # W2 · 复用：清身份 + 恢复 CF（不清掉 cf_clearance）
                 cleared = False
                 try:
+                    from cf_context import clear_identity_keep_cf, clear_thread_cf_context
+
                     if page is not None:
-                        try:
-                            page.get("about:blank")
-                        except Exception:
-                            pass
-                        for js in (
-                            "try{localStorage.clear()}catch(e){}",
-                            "try{sessionStorage.clear()}catch(e){}",
-                        ):
-                            try:
-                                page.run_js(js)
-                            except Exception:
-                                pass
-                        try:
-                            page.set.cookies.clear()
-                        except Exception:
-                            try:
-                                page.run_js(
-                                    "document.cookie.split(';').forEach(c=>{document.cookie=c.replace(/^ +/,'').replace(/=.*/,'=;expires='+new Date().toUTCString()+';path=/')})"
-                                )
-                            except Exception:
-                                pass
-                        cleared = True
-                        print("[*] 浏览器会话已清理（复用进程）", flush=True)
+                        cleared = clear_identity_keep_cf(
+                            page,
+                            browser,
+                            log=lambda m: print(m, flush=True),
+                        )
                     try:
                         from tab_pool import TabPool
 
+                        # TabPool 全清 cookie 后立刻 restore 线程内 CF
                         TabPool.clear_session()
+                        try:
+                            from cf_context import restore_cloudflare_context
+
+                            restore_cloudflare_context(
+                                page, log=lambda m: print(m, flush=True)
+                            )
+                        except Exception:
+                            pass
                     except Exception:
                         pass
+                    if cleared:
+                        print("[*] 浏览器会话已清理（复用进程，已保 CF）", flush=True)
                 except Exception as ce:
                     print(f"[Warn] clear_session 失败，改为重启: {ce}", flush=True)
                     cleared = False
+                    try:
+                        from cf_context import clear_thread_cf_context
+
+                        clear_thread_cf_context()
+                    except Exception:
+                        pass
                 if not cleared:
+                    try:
+                        from cf_context import clear_thread_cf_context
+
+                        clear_thread_cf_context()
+                    except Exception:
+                        pass
                     try:
                         stop_browser()
                     except Exception:
@@ -4348,6 +4409,11 @@ def main():
                     print("")
                     print("[Info] 收到中断信号，停止后续轮次。")
                     break
+                except AccountRetryNeeded as e:
+                    # 含 W3 重复 SSO：不记成功，可换号继续（不占成功配额）
+                    last_err = e
+                    err_parts.append(f"A:retry:{str(e)[:50]}")
+                    print(f"[plan-a] ⟳ 可重试: {e}")
                 except Exception as e:
                     last_err = e
                     err_parts.append(f"A:{str(e)[:60]}")

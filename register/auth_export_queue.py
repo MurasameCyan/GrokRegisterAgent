@@ -217,7 +217,36 @@ def _run_sso_push_g2(
     user_agent: str = "",
     cloudflare_cookies: str = "",
     log: LogFn,
+    durable: bool = True,
 ) -> dict[str, Any]:
+    job_id = ""
+    sso_fp = ""
+    try:
+        from sso_ledger import sso_fingerprint
+
+        sso_fp = sso_fingerprint(sso)
+    except Exception:
+        sso_fp = ""
+    if durable:
+        try:
+            from delivery_store import create_job, ensure_retry_worker
+
+            ensure_retry_worker(60.0, log)
+            j = create_job(
+                channel="sso_g2",
+                email=email or "",
+                sso_fp=sso_fp,
+                payload={
+                    "sso": sso,
+                    "email": email or "",
+                    "user_agent": user_agent or "",
+                    "cloudflare_cookies": cloudflare_cookies or "",
+                },
+            )
+            job_id = str(j.get("id") or "")
+        except Exception as de:
+            log(f"[auth-queue] delivery job create skip: {de}")
+
     try:
         from grok2api_client import (
             load_grok2api_settings_from_config,
@@ -239,6 +268,13 @@ def _run_sso_push_g2(
                 settings[k] = conf[k]
         # 强制本步只按 SSO 推送开关
         settings["push_sso_to_grok2api"] = True
+        if job_id:
+            try:
+                from delivery_store import mark_uploading
+
+                mark_uploading(job_id)
+            except Exception:
+                pass
         up = upload_registered_sso(
             settings,
             sso,
@@ -248,11 +284,33 @@ def _run_sso_push_g2(
             log=log,
         )
         if up is None:
+            if job_id:
+                try:
+                    from delivery_store import mark_success
+
+                    # 配置关闭 / skip 视为完成，避免死循环重试
+                    mark_success(job_id)
+                except Exception:
+                    pass
             return {"attempted": False, "ok": False, "skipped": True}
         log(f"[auth-queue] ✔ SSO→grok2api 成功 mode={up.get('mode')}")
+        if job_id:
+            try:
+                from delivery_store import mark_success
+
+                mark_success(job_id)
+            except Exception:
+                pass
         return {"attempted": True, "ok": True, "mode": up.get("mode"), "result": up}
     except Exception as e:
         log(f"[auth-queue] ✘ SSO→grok2api 失败: {e}")
+        if job_id:
+            try:
+                from delivery_store import mark_failed
+
+                mark_failed(job_id, str(e)[:300], retry_after_sec=60)
+            except Exception:
+                pass
         return {"attempted": True, "ok": False, "error": str(e)[:300]}
 
 
@@ -383,6 +441,7 @@ def _run_mint_and_auth_push(
     log: LogFn,
     password: str = "",
     cloudflare_cookies: str = "",
+    durable: bool = True,
 ) -> dict[str, Any]:
     try:
         from auth_service import sso_to_cpa_auth
@@ -390,6 +449,39 @@ def _run_mint_and_auth_push(
         # skip_remote=False 时 mint 成功会按 config 推 CPA；
         # 若未开自动推 CPA，则 skip_remote=True 只写本地
         # require_grok_45=True：无 grok-4.5 的假活 token 不推 CPA
+        cpa_job_id = ""
+        if push_cpa and durable:
+            try:
+                from delivery_store import create_job, ensure_retry_worker
+                from sso_ledger import sso_fingerprint
+
+                ensure_retry_worker(60.0, log)
+                cj = create_job(
+                    channel="auth_cpa",
+                    email=email or "",
+                    sso_fp=sso_fingerprint(sso),
+                    payload={
+                        "sso": sso,
+                        "email": email or "",
+                        "proxy": proxy or "",
+                        "mint_mode": mint_mode,
+                        "password": password or "",
+                        "cloudflare_cookies": cloudflare_cookies or "",
+                    },
+                )
+                cpa_job_id = str(cj.get("id") or "")
+            except Exception:
+                pass
+
+        # 开始 mint 前占坑，避免补传 worker 与当前线程双 mint
+        if cpa_job_id:
+            try:
+                from delivery_store import mark_uploading
+
+                mark_uploading(cpa_job_id)
+            except Exception:
+                pass
+
         r = sso_to_cpa_auth(
             sso=sso,
             email=email,
@@ -411,12 +503,37 @@ def _run_mint_and_auth_push(
             if push_cpa:
                 if remote and remote.get("ok"):
                     log(f"[auth-queue] ✔ Auth→CPA 推送 OK name={remote.get('name')}")
+                    if cpa_job_id:
+                        try:
+                            from delivery_store import mark_success
+
+                            mark_success(cpa_job_id)
+                        except Exception:
+                            pass
                 elif remote and not remote.get("ok"):
                     log(f"[auth-queue] ✘ Auth→CPA 推送失败: {remote.get('error')}")
+                    if cpa_job_id:
+                        try:
+                            from delivery_store import mark_failed
+
+                            mark_failed(
+                                cpa_job_id,
+                                str(remote.get("error") or "cpa push fail")[:300],
+                                retry_after_sec=90,
+                            )
+                        except Exception:
+                            pass
                 elif not remote:
                     log(
                         "[auth-queue] ⚠ 已开 Auth→CPA 自动推送，但未配置 cpa_remote_url/key 或跳过"
                     )
+                    if cpa_job_id:
+                        try:
+                            from delivery_store import mark_success
+
+                            mark_success(cpa_job_id)
+                        except Exception:
+                            pass
             # P3：可选 NSFW + sub2api（失败不挡主流程；NSFW 用 SSO 非 access_token）
             conf = _load_conf()
             _maybe_nsfw_and_sub2api(
@@ -459,6 +576,22 @@ def _run_mint_and_auth_push(
                     )
                     if r2 and r2.get("ok"):
                         log("[auth-queue] ✔ browser Device mint OK")
+                        if cpa_job_id:
+                            try:
+                                from delivery_store import mark_success
+
+                                mark_success(cpa_job_id)
+                            except Exception:
+                                pass
+                        conf = _load_conf()
+                        _maybe_nsfw_and_sub2api(
+                            r2,
+                            conf=conf,
+                            proxy=proxy,
+                            log=log,
+                            sso=sso,
+                            cloudflare_cookies=cloudflare_cookies or "",
+                        )
                         return r2
                     r = r2 or r
             except ImportError:
@@ -469,6 +602,17 @@ def _run_mint_and_auth_push(
             f"[auth-queue] ✘ Auth mint 失败 email={email or '-'} "
             f"err={(r or {}).get('error') or 'unknown'}"
         )
+        if cpa_job_id:
+            try:
+                from delivery_store import mark_failed
+
+                mark_failed(
+                    cpa_job_id,
+                    str((r or {}).get("error") or "mint failed")[:300],
+                    retry_after_sec=120,
+                )
+            except Exception:
+                pass
         return r or {"ok": False, "error": "mint failed"}
     except Exception as e:
         log(f"[auth-queue] ✘ Auth mint 异常 email={email or '-'}: {e}")
@@ -537,20 +681,52 @@ def _process_job(job: dict[str, Any]) -> None:
         )
         if g2.get("attempted") and not g2.get("ok") and not g2.get("skipped"):
             step_ok = False
-    # 2) mint + 3) Auth→CPA（mint 内 remote；has_grok_45 门禁）
+    # 2) mint + 3) Auth→CPA
+    # U1：若配置了独立 mint 池 (cpa_mint_workers>0)，转交 mint_queue，不阻塞本 worker
     if do_auth:
-        mint_r = _run_mint_and_auth_push(
-            sso=sso,
-            email=email,
-            proxy=proxy,
-            mint_mode=mint_mode,
-            push_cpa=do_cpa,
-            password=password,
-            cloudflare_cookies=cf,
-            log=_log,
-        )
-        if not mint_r.get("ok"):
-            step_ok = False
+        handed = False
+        try:
+            from mint_queue import enqueue_mint, use_separate_mint_pool
+
+            if use_separate_mint_pool():
+                mq = enqueue_mint(
+                    sso=sso,
+                    email=email,
+                    password=password,
+                    proxy=proxy,
+                    mint_mode=mint_mode,
+                    push_cpa=do_cpa,
+                    cloudflare_cookies=cf,
+                    log=_log,
+                )
+                if mq.get("queued"):
+                    handed = True
+                    _log(
+                        f"[auth-queue][{wid}] mint 已转交独立池 email={email or '-'} "
+                        f"pending={mq.get('pending')}"
+                    )
+                elif mq.get("use_inline"):
+                    handed = False
+                elif mq.get("backpressure"):
+                    step_ok = False
+                    _log(f"[auth-queue][{wid}] mint 池背压，本任务 mint 未入队")
+                    handed = True  # 不再内联，避免双倍占坑
+        except Exception as me:
+            _log(f"[auth-queue][{wid}] mint 池转交失败，回退内联: {me}")
+            handed = False
+        if not handed:
+            mint_r = _run_mint_and_auth_push(
+                sso=sso,
+                email=email,
+                proxy=proxy,
+                mint_mode=mint_mode,
+                push_cpa=do_cpa,
+                password=password,
+                cloudflare_cookies=cf,
+                log=_log,
+            )
+            if not mint_r.get("ok"):
+                step_ok = False
     elif do_cpa:
         _log(
             f"[auth-queue][{wid}] ⚠ 已开 Auth→CPA 但未开自动转换 Auth，无法推送（先 mint）"
@@ -587,6 +763,45 @@ def _worker_loop() -> None:
             _q.task_done()
 
 
+def _register_delivery_handlers() -> None:
+    """补传 worker：sso_g2 / auth_cpa 失败任务可恢复。"""
+    try:
+        from delivery_store import register_channel_handler, ensure_retry_worker
+    except Exception:
+        return
+
+    def _h_sso_g2(job: dict[str, Any], log: LogFn) -> bool:
+        pl = job.get("payload") if isinstance(job.get("payload"), dict) else {}
+        r = _run_sso_push_g2(
+            sso=str(pl.get("sso") or ""),
+            email=str(pl.get("email") or job.get("email") or ""),
+            user_agent=str(pl.get("user_agent") or ""),
+            cloudflare_cookies=str(pl.get("cloudflare_cookies") or ""),
+            log=log,
+            durable=False,  # 避免补传再套一层 job
+        )
+        return bool(r.get("ok") or r.get("skipped"))
+
+    def _h_auth_cpa(job: dict[str, Any], log: LogFn) -> bool:
+        pl = job.get("payload") if isinstance(job.get("payload"), dict) else {}
+        r = _run_mint_and_auth_push(
+            sso=str(pl.get("sso") or ""),
+            email=str(pl.get("email") or job.get("email") or ""),
+            proxy=str(pl.get("proxy") or ""),
+            mint_mode=str(pl.get("mint_mode") or "pkce"),
+            push_cpa=True,
+            password=str(pl.get("password") or ""),
+            cloudflare_cookies=str(pl.get("cloudflare_cookies") or ""),
+            log=log,
+            durable=False,  # 补传不再套 job
+        )
+        return bool(r and r.get("ok"))
+
+    register_channel_handler("sso_g2", _h_sso_g2)
+    register_channel_handler("auth_cpa", _h_auth_cpa)
+    ensure_retry_worker(60.0, _log)
+
+
 def ensure_worker() -> None:
     global _q, _workers, _started, _worker_count, _queue_max, _enqueue_block_sec
     with _lock:
@@ -611,6 +826,10 @@ def ensure_worker() -> None:
             t.start()
             _workers.append(t)
         _started = True
+        try:
+            _register_delivery_handlers()
+        except Exception as he:
+            _log(f"[auth-queue] delivery handlers: {he}")
         _log(
             f"[auth-queue] 授权后台队列已启动 workers={workers} queue_max={qmax} "
             f"（注册只交 SSO，不阻塞）"
@@ -723,17 +942,31 @@ enqueue_authorization = enqueue_sso_to_auth
 
 
 def wait_queue_idle(timeout: float = 0) -> bool:
-    """进程退出前等待队列清空。timeout<=0 表示只检查、不等。"""
-    if _q is None:
-        return True
+    """进程退出前等待授权队列 + mint 池清空。timeout<=0 表示只检查、不等。"""
+    def _auth_idle() -> bool:
+        if _q is None:
+            return True
+        return _q.unfinished_tasks == 0 and _pending <= 0
+
+    def _mint_idle() -> bool:
+        try:
+            from mint_queue import wait_mint_idle, queue_stats
+
+            if timeout <= 0:
+                st = queue_stats()
+                return int(st.get("pending") or 0) <= 0 and int(st.get("queue_size") or 0) <= 0
+            return wait_mint_idle(timeout=min(5.0, max(0.5, timeout)))
+        except Exception:
+            return True
+
     if timeout <= 0:
-        return _q.unfinished_tasks == 0
+        return _auth_idle() and _mint_idle()
     end = time.time() + timeout
     while time.time() < end:
-        if _q.unfinished_tasks == 0 and _pending <= 0:
+        if _auth_idle() and _mint_idle():
             return True
         time.sleep(0.5)
-    return _q.unfinished_tasks == 0 and _pending <= 0
+    return _auth_idle() and _mint_idle()
 
 
 def shutdown_workers(timeout: float = 30.0) -> None:
