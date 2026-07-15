@@ -171,13 +171,19 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
         })();
   const singleProxy = stripProxyComment(settings.proxy || '');
   const browserOnly = stripProxyComment(settings.browserProxy || '');
-  // 显式关闭才直连；未设置/true 或有代理内容 → 启用
-  const explicitOff = settings.proxyEnabled === false && poolProxies.length === 0 && !singleProxy && !browserOnly;
+  // 总开关 proxyEnabled：false = 强制直连（忽略池/单条内容，池文本仅保留编辑）
+  // 旧逻辑 bug：关代理但池非空时仍写 proxy_pool → UI 显示「直接连接」却仍降级池
+  const proxyMasterOn = settings.proxyEnabled !== false;
   const wantPool =
+    proxyMasterOn &&
     poolProxies.length > 0 &&
-    settings.proxyPoolEnabled !== false; // 有池内容且未显式关池
+    settings.proxyPoolEnabled === true;
 
-  if (explicitOff) {
+  // 写入 Python 可读开关，pools 侧二次保险（即使残留 proxy_pool 也不选用）
+  config.proxy_enabled = proxyMasterOn;
+  config.proxy_pool_enabled = wantPool;
+
+  if (!proxyMasterOn) {
     config.proxy = '';
     config.browser_proxy = '';
     delete config.proxy_pool;
@@ -189,17 +195,13 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
     // 浏览器每轮 next_proxy，不写死单条
     config.browser_proxy = '';
   } else if (singleProxy || browserOnly) {
+    // 开代理、不用池（或池空）→ 单条 HTTP / browser_proxy
     config.proxy = singleProxy;
     config.browser_proxy = browserOnly || singleProxy;
     delete config.proxy_pool;
     config.proxy_mode = settings.proxyMode || 'round_robin';
-  } else if (poolProxies.length > 0) {
-    // 池开关关了但仍有内容：仍写入池，避免 265 条白填
-    config.proxy = '';
-    config.proxy_pool = poolProxies;
-    config.proxy_mode = settings.proxyMode || 'round_robin';
-    config.browser_proxy = '';
   } else {
+    // 开代理但无可用条目
     config.proxy = '';
     config.browser_proxy = '';
     delete config.proxy_pool;
@@ -398,7 +400,9 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
     const nPool = Array.isArray(config.proxy_pool) ? config.proxy_pool.length : 0;
     const nDom = Array.isArray(config.mail_domains) ? config.mail_domains.length : 0;
     console.log(
-      `[writeConfig] proxy_pool=${nPool} proxy=${config.proxy ? 'set' : 'empty'} ` +
+      `[writeConfig] proxyEnabled=${settings.proxyEnabled !== false} ` +
+        `proxyPoolEnabled=${settings.proxyPoolEnabled === true} ` +
+        `proxy_pool=${nPool} proxy=${config.proxy ? 'set' : 'empty'} ` +
         `browser_proxy=${config.browser_proxy ? 'set' : 'empty'} ` +
         `mail_domains=${nDom} mail_provider=${config.mail_provider || 'cloudflare'} ` +
         `planA=${config.register_plan_a_enabled !== false} ` +

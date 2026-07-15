@@ -394,14 +394,33 @@ def reload_pools(force: bool = False) -> None:
     # 规范化域名：去掉 @ 前缀
     domains = [d.lstrip("@") for d in domains if d]
 
-    proxies = _parse_lines(conf.get("proxy_pool") or conf.get("proxies"), strip_proxy_hash=True)
-    if not proxies:
-        # 单代理仍作为池的唯一项（可选）
-        single_p = _strip_proxy_comment(
-            str(conf.get("browser_proxy") or conf.get("proxy") or "")
+    # 总开关：proxy_enabled=false 时强制空池（直连），忽略残留 proxy_pool 文本
+    def _truthy_proxy_on(raw) -> bool:
+        if raw is None:
+            return True  # 旧配置无字段：沿用池内容
+        if isinstance(raw, bool):
+            return raw
+        s = str(raw).strip().lower()
+        if s in ("0", "false", "no", "off", "disabled"):
+            return False
+        if s in ("1", "true", "yes", "on", "enabled"):
+            return True
+        return True
+
+    proxy_master_on = _truthy_proxy_on(conf.get("proxy_enabled"))
+    proxies: List[str] = []
+    if proxy_master_on:
+        proxies = _parse_lines(
+            conf.get("proxy_pool") or conf.get("proxies"), strip_proxy_hash=True
         )
-        if single_p:
-            proxies = [single_p]
+        if not proxies:
+            # 单代理仍作为池的唯一项（可选）
+            single_p = _strip_proxy_comment(
+                str(conf.get("browser_proxy") or conf.get("proxy") or "")
+            )
+            if single_p:
+                proxies = [single_p]
+    # else: 直连，proxies 保持 []
 
     domain_mode = str(
         conf.get("email_domain_mode") or conf.get("mail_domain_mode") or "round_robin"
