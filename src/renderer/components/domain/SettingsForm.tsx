@@ -33,11 +33,43 @@ import {
   appendProxiesToPoolTextDetailed,
   moveProxiesToAlivePool,
   parseProxyPoolEntries,
+  proxySchemeBadgeLabel,
   removeProxiesFromPoolText,
   stripProxyComment,
   validateSettings
 } from '@shared/settings';
 import { cn } from '@renderer/lib/cn';
+
+/** 行内协议徽章着色：HTTP 蓝 / SOCKS5 紫 / SOCKS4 橙 / HTTPS 青 */
+function proxySchemeChipClass(scheme?: string): string {
+  const s = String(scheme || 'http').toLowerCase();
+  if (s === 'socks5' || s === 'socks5h') {
+    return 'bg-violet-500/15 text-violet-700 dark:text-violet-300 border border-violet-500/25';
+  }
+  if (s === 'socks4' || s === 'socks4a') {
+    return 'bg-amber-500/15 text-amber-800 dark:text-amber-300 border border-amber-500/25';
+  }
+  if (s === 'https') {
+    return 'bg-cyan-500/15 text-cyan-800 dark:text-cyan-300 border border-cyan-500/25';
+  }
+  // http 默认
+  return 'bg-sky-500/15 text-sky-800 dark:text-sky-300 border border-sky-500/25';
+}
+
+function ProxySchemeBadge({ scheme }: { scheme?: string }) {
+  const sch = scheme || 'http';
+  return (
+    <span
+      className={cn(
+        'chip shrink-0 px-1.5 py-0 text-[10px] font-semibold tracking-wide',
+        proxySchemeChipClass(sch)
+      )}
+      title={`协议 ${proxySchemeBadgeLabel(sch)}（${sch}://）`}
+    >
+      {proxySchemeBadgeLabel(sch)}
+    </span>
+  );
+}
 
 const TEXTAREA_CLASS =
   'flex min-h-[96px] w-full rounded-[12px] border border-input bg-muted/60 px-3.5 py-2.5 text-[14px] leading-5 tracking-[-0.01em] transition-colors placeholder:text-muted-foreground/70 focus-visible:border-primary/40 focus-visible:bg-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30 disabled:cursor-not-allowed disabled:opacity-50';
@@ -179,6 +211,7 @@ function ProxyPoolPreview({
               key={e.proxy}
               className="flex flex-wrap items-center gap-2 rounded-lg bg-card/80 px-2.5 py-2 text-[12px]"
             >
+              <ProxySchemeBadge scheme={e.scheme} />
               {e.label ? (
                 <span className="chip shrink-0 bg-primary/10 text-primary">{e.label}</span>
               ) : (
@@ -1498,6 +1531,7 @@ export function SettingsForm() {
                                     key={e.proxy}
                                     className="flex flex-wrap items-center gap-2 rounded-lg bg-card/80 px-2.5 py-2 text-[12px]"
                                   >
+                                    <ProxySchemeBadge scheme={e.scheme} />
                                     {e.label ? (
                                       <span className="chip shrink-0 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400">
                                         {e.label}

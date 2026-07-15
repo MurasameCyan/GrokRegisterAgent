@@ -330,10 +330,40 @@ export interface ProxyPoolEntry {
   /** 展示用短主机（host:port） */
   host: string;
   /**
+   * 代理协议（小写，无 ://）：http / socks5 / socks4 / socks4a / https …
+   * 用于行内协议徽章着色。
+   */
+  scheme?: string;
+  /**
    * 注册成功次数（写在行尾备注 `#成功N`）。
    * 仅可用池使用；前端绿色显示。
    */
   successCount?: number;
+}
+
+/** 从代理 URL 提取 scheme（小写）；无则空串 */
+export function proxySchemeOf(proxyUrl: string): string {
+  const s = String(proxyUrl || '').trim();
+  const m = /^([a-z][a-z0-9+.-]*):\/\//i.exec(s);
+  if (!m) return '';
+  let sch = (m[1] || '').toLowerCase();
+  if (sch === 'socks' || sch === 'socks5h') sch = 'socks5';
+  return sch;
+}
+
+/**
+ * 行内协议徽章文案（HTTP / SOCKS5 / SOCKS4 …）。
+ * HTTPS 代理协议较少见；列表语境下的 HTTPS 标记已映射为 http。
+ */
+export function proxySchemeBadgeLabel(scheme: string): string {
+  const s = String(scheme || '').toLowerCase();
+  if (!s) return 'HTTP';
+  if (s === 'socks5' || s === 'socks5h') return 'SOCKS5';
+  if (s === 'socks4a') return 'SOCKS4A';
+  if (s === 'socks4') return 'SOCKS4';
+  if (s === 'https') return 'HTTPS';
+  if (s === 'http') return 'HTTP';
+  return s.toUpperCase();
 }
 
 /** 从备注文本解析注册成功次数 */
@@ -538,11 +568,13 @@ export function parseProxyLine(line: string): ProxyPoolEntry | null {
     .replace(/\s{2,}/g, ' ')
     .replace(/^[·\s]+|[·\s]+$/g, '')
     .trim();
+  const scheme = proxySchemeOf(proxy) || 'http';
   return {
     raw,
     proxy,
     label: labelClean,
     host: proxyHostPort(proxy),
+    scheme,
     ...(successCount > 0 ? { successCount } : {})
   };
 }
