@@ -3,12 +3,14 @@ import {
   Activity,
   ChevronDown,
   ChevronRight,
+  Clipboard,
   Download,
   Github,
   KeyRound,
   Loader2,
+  RefreshCw,
   Save,
-
+  Terminal,
   Trash2,
   X
 } from 'lucide-react';
@@ -41,7 +43,7 @@ import {
   stripProxyComment,
   validateSettings
 } from '@shared/settings';
-import type { CfProxyStatus } from '@shared/ipc';
+import type { CfProxyLogResult, CfProxyStatus } from '@shared/ipc';
 import { cn } from '@renderer/lib/cn';
 
 /** 合并默认值，避免旧 settings 缺字段 / null 导致渲染崩溃 */
@@ -346,6 +348,9 @@ export function SettingsForm() {
   /** CF cfwp 运行状态（必须在 early return 前声明 hooks） */
   const [cfStatus, setCfStatus] = useState<CfProxyStatus | null>(null);
   const [cfBusy, setCfBusy] = useState(false);
+  const [cfLog, setCfLog] = useState<CfProxyLogResult | null>(null);
+  const [cfLogLoading, setCfLogLoading] = useState(false);
+  const [cfLogCleared, setCfLogCleared] = useState(false);
 
   useEffect(() => {
     if (data && !draft) {
@@ -373,8 +378,41 @@ export function SettingsForm() {
     }
   };
 
+  /** 读取 cfwp 最近日志 */
+  const refreshCfLog = async () => {
+    try {
+      if (typeof window.api?.getCfProxyLog !== 'function') return;
+      setCfLogLoading(true);
+      const log = await window.api.getCfProxyLog(200);
+      setCfLog(log);
+      setCfLogCleared(false);
+    } catch (err) {
+      setCfLog({
+        ok: false,
+        logPath: cfStatus?.logPath ?? null,
+        content: '',
+        truncated: false,
+        error: err instanceof Error ? err.message : String(err)
+      });
+    } finally {
+      setCfLogLoading(false);
+    }
+  };
+
+  const copyCfLog = async () => {
+    const text = cfLog?.content || '';
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      push({ tone: 'ok', title: '已复制 cfwp 日志' });
+    } catch (err) {
+      push({ tone: 'danger', title: '复制失败', description: String(err) });
+    }
+  };
+
   useEffect(() => {
     void refreshCfStatus();
+    if (draft?.cfProxyEnabled) void refreshCfLog();
     const t = window.setInterval(() => {
       if (draft?.cfProxyEnabled) void refreshCfStatus();
     }, 8000);
@@ -468,6 +506,7 @@ export function SettingsForm() {
             ? await api.stopCfProxy()
             : await api.syncCfProxy();
       setCfStatus(r);
+      void refreshCfLog();
       if (r.lastError && !r.running) {
         push({ tone: 'danger', title: 'CF 代理异常', description: r.lastError });
       } else if (action === 'stop') {
@@ -481,6 +520,7 @@ export function SettingsForm() {
       }
     } catch (err) {
       push({ tone: 'danger', title: 'CF 代理操作失败', description: String(err) });
+      void refreshCfLog();
     } finally {
       setCfBusy(false);
     }
@@ -943,8 +983,9 @@ export function SettingsForm() {
       await window.api.saveSettings(payload);
       setDraft(payload);
       await reload();
-      // 保存后服务端会 sync cfwp；刷新状态条
+      // 保存后服务端会 sync cfwp；刷新状态条与日志
       void refreshCfStatus();
+      if (payload.cfProxyEnabled) void refreshCfLog();
       if (!opts?.silentOk) {
         push({
           tone: 'ok',
@@ -1562,6 +1603,69 @@ export function SettingsForm() {
                     Docker 镜像中构建。
                   </p>
                 )}
+              </div>
+
+              <div className="rounded-lg border border-border/50 bg-card/60">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/50 px-3 py-2">
+                  <div className="flex items-center gap-2 text-[12px] font-medium">
+                    <Terminal className="h-3.5 w-3.5 text-muted-foreground" />
+                    cfwp 日志
+                    {cfLog?.truncated && (
+                      <span className="text-[11px] text-amber-600">仅显示最近内容</span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      className="h-7"
+                      disabled={cfLogLoading}
+                      onClick={() => void refreshCfLog()}
+                    >
+                      {cfLogLoading ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <RefreshCw className="h-3.5 w-3.5" />
+                      )}
+                      刷新
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      className="h-7"
+                      disabled={!cfLog?.content}
+                      onClick={() => void copyCfLog()}
+                    >
+                      <Clipboard className="h-3.5 w-3.5" />
+                      复制
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      className="h-7"
+                      disabled={!cfLog?.content && !cfLog?.error}
+                      onClick={() => setCfLogCleared(true)}
+                    >
+                      清空显示
+                    </Button>
+                  </div>
+                </div>
+                <div className="px-3 py-2">
+                  <div className="mb-1 truncate font-mono text-[10px] text-muted-foreground">
+                    {cfLog?.logPath || cfStatus?.logPath || '暂无日志路径'}
+                  </div>
+                  <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded-md bg-slate-950/90 p-3 font-mono text-[11px] leading-5 text-slate-100">
+                    {cfLogCleared
+                      ? '已清空当前显示，点击「刷新」重新读取日志。'
+                      : cfLog?.error
+                        ? `读取日志失败：${cfLog.error}`
+                        : cfLog?.content ||
+                          '暂无日志，保存或启动 CF 独立代理后刷新。'}
+                  </pre>
+                </div>
               </div>
 
               <div className="grid gap-3 sm:grid-cols-2">

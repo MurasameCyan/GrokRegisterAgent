@@ -60,6 +60,10 @@ function isNoiseStdoutLine(msg: string): boolean {
   if (!m) return true;
   // 纯时间戳行
   if (/^\d{2}:\d{2}:\d{2}$/.test(m)) return true;
+  // 代理诊断/注入结果必须可见（排查「开了代理却直连」）
+  if (/^\[proxy\]/i.test(m) || /代理配置失败|本地转发失败|未拿到节点|误直连/i.test(m)) {
+    return false;
+  }
   const rules: RegExp[] = [
     /邮件\s*API\s*:/i,
     /email_register\s+build/i,
@@ -81,6 +85,7 @@ function isNoiseStdoutLine(msg: string): boolean {
     /复用已有\s*DISPLAY\s*=/i,
     /代理池\s*:\s*\d+\s*条/i,
     /本轮代理\s*IP\s*键\s*:/i,
+    // 成功注入细节可藏；失败 [proxy][!] 与启动 [proxy] 摘要必须可见（下方白名单）
     /浏览器代理\s*\(\s*本轮/i,
     /本轮特征\s*:/i,
     /当前使用代理\s*:/i,
@@ -501,6 +506,43 @@ export class RegisterBot extends EventEmitter {
 
     // 并行时 config 共用；count 走 CLI，避免互相覆盖轮数
     writeConfigForPython(registerDir, settings, count);
+    // 启动时在任务日志打一行代理摘要（与 Python [proxy] 双保险）
+    try {
+      const pe = settings.proxyEnabled === true;
+      const cf = (settings as { cfProxyEnabled?: boolean }).cfProxyEnabled === true;
+      const poolOn = settings.proxyPoolEnabled === true;
+      const aliveN = String(settings.proxyPoolAlive || '')
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter((l) => l && !l.startsWith('#')).length;
+      const pendingN = String(settings.proxyPool || '')
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter((l) => l && !l.startsWith('#')).length;
+      const poolN = aliveN > 0 ? aliveN : pendingN;
+      const single = String(settings.proxy || settings.browserProxy || '').trim();
+      const mode = cf
+        ? 'cf'
+        : !pe
+          ? 'direct'
+          : poolOn || poolN > 0
+            ? 'pool'
+            : single
+              ? 'single'
+              : 'empty';
+      this.log(
+        runId,
+        `[proxy] 启动写入 config: mode=${mode} enabled=${pe || cf} ` +
+          `alive≈${aliveN} pending≈${pendingN} single=${!!single} poolSwitch=${poolOn}` +
+          (mode === 'direct'
+            ? '（直连：若需代理请打开「启用代理」并保存）'
+            : mode === 'empty'
+              ? '（已启用但无节点：Python 将停止，避免误直连）'
+              : '')
+      );
+    } catch {
+      /* ignore */
+    }
 
     const ssoOutDir = this.resolveSsoOutDir();
     if (!fs.existsSync(ssoOutDir)) {

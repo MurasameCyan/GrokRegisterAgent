@@ -306,14 +306,20 @@ def apply_proxy_to_chromium_options(
             }
 
     # 有认证：绝不能 co.set_proxy(user:pass)（DrissionPage 会丢弃并直连）。
-    # 策略：prefer_local_forward / PROXY_AUTH_MODE 控制先后；默认本地转发更稳。
+    # 策略：prefer_local_forward / PROXY_AUTH_MODE 控制先后；默认扩展 → 本地。
+    # 带认证 SOCKS：本地转发对 socks5 上游依赖 pysocks，失败率高；
+    # 优先认证扩展（Chromium 原生 socks5://host:port + 扩展填 user/pass）
     env_mode = (os.environ.get("PROXY_AUTH_MODE") or "").strip().lower()
-    force_ext = env_mode in ("extension", "ext", "mv3")
-    force_local = prefer_local_forward or env_mode in (
-        "local",
-        "forward",
-        "local_forward",
-    )
+    prefer_ext_first = str(parsed["scheme"]).startswith("socks")
+    force_ext = env_mode in ("extension", "ext", "mv3") or prefer_ext_first
+    force_local = (
+        prefer_local_forward
+        or env_mode in (
+            "local",
+            "forward",
+            "local_forward",
+        )
+    ) and not prefer_ext_first
 
     def _try_extension() -> dict[str, Any]:
         try:

@@ -8,6 +8,7 @@ import {
   existsSync,
   mkdirSync,
   createWriteStream,
+  readFileSync,
   type WriteStream,
   chmodSync
 } from 'node:fs';
@@ -29,6 +30,15 @@ export type CfwpStatus = {
   logPath: string | null;
   platform: string;
   arch: string;
+};
+
+/** 最近 cfwp 日志读取结果（只读，不删文件） */
+export type CfwpLogResult = {
+  ok: boolean;
+  logPath: string | null;
+  content: string;
+  truncated: boolean;
+  error?: string;
 };
 
 type CfwpRuntimeConfig = {
@@ -187,6 +197,49 @@ export async function stopCfwp(): Promise<CfwpStatus> {
   startedAt = null;
   lastError = null;
   return getCfwpStatus();
+}
+
+/**
+ * 读取当前 cfwp 日志末尾。
+ * - 默认最近 200 行，最多 1000 行
+ * - 最多读末尾 256KB，避免大日志卡死
+ * - 若 settings 带 token，则脱敏为 ******
+ */
+export function readCfwpLog(settings?: AppSettings, tail = 200): CfwpLogResult {
+  const logPath = lastLogPath;
+  if (!logPath) {
+    return { ok: true, logPath: null, content: '', truncated: false };
+  }
+  try {
+    if (!existsSync(logPath)) {
+      return { ok: true, logPath, content: '', truncated: false };
+    }
+    const maxBytes = 256 * 1024;
+    const raw = readFileSync(logPath);
+    const sliced = raw.length > maxBytes ? raw.subarray(raw.length - maxBytes) : raw;
+    let content = sliced.toString('utf8');
+    const lines = content.split(/\r?\n/);
+    const limit =
+      Number.isInteger(tail) && tail > 0 ? Math.min(Math.floor(tail), 1000) : 200;
+    const truncatedByLines = lines.length > limit;
+    if (truncatedByLines) content = lines.slice(-limit).join('\n');
+    const token = String(settings?.cfProxyToken || '').trim();
+    if (token) content = content.split(token).join('******');
+    return {
+      ok: true,
+      logPath,
+      content,
+      truncated: raw.length > maxBytes || truncatedByLines
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      logPath,
+      content: '',
+      truncated: false,
+      error: err instanceof Error ? err.message : String(err)
+    };
+  }
 }
 
 /**

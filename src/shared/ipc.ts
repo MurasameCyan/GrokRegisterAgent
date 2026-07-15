@@ -477,6 +477,8 @@ export interface RendererApi {
   stopCfProxy(): Promise<CfProxyStatus & { ok?: boolean }>;
   /** 按 settings 同步启停 */
   syncCfProxy(): Promise<CfProxyStatus & { ok?: boolean }>;
+  /** 读取 cfwp 最近日志 */
+  getCfProxyLog(tail?: number): Promise<CfProxyLogResult>;
 
   // system
   getSystemHealth(): Promise<SystemHealth>;
@@ -497,6 +499,15 @@ export interface CfProxyStatus {
   logPath: string | null;
   platform: string;
   arch: string;
+}
+
+/** CF cfwp 最近日志 */
+export interface CfProxyLogResult {
+  ok: boolean;
+  logPath: string | null;
+  content: string;
+  truncated: boolean;
+  error?: string;
 }
 
 declare global {

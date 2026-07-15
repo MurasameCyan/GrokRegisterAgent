@@ -191,14 +191,27 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
   const browserOnly = stripProxyComment(settings.browserProxy || '');
   // 总开关 proxyEnabled：false = 强制直连（忽略池/单条内容，池文本仅保留编辑）
   // CF 开时强制视为「有代理」但不用池
-  const proxyMasterOn = cfOn || settings.proxyEnabled !== false;
+  // 注意：默认 settings.proxyEnabled=false；必须用 === true，勿用 !== false（undefined 会误开）
+  const proxyMasterOn = cfOn || settings.proxyEnabled === true;
   // UI「使用代理池」开关（与池是否有 IP 无关；空池由 Python 启动守卫停止）
   const poolSwitchOn = !cfOn && settings.proxyPoolEnabled === true;
-  const wantPool = !cfOn && proxyMasterOn && poolSwitchOn && poolProxies.length > 0;
+  // 用户开了普通代理、池里有 IP、但忘开「使用代理池」且单条为空 → 自动按池写入，避免静默直连
+  const autoPoolFallback =
+    !cfOn &&
+    proxyMasterOn &&
+    !poolSwitchOn &&
+    poolProxies.length > 0 &&
+    !singleProxy &&
+    !browserOnly;
+  const wantPool =
+    !cfOn &&
+    proxyMasterOn &&
+    poolProxies.length > 0 &&
+    (poolSwitchOn || autoPoolFallback);
 
   // 写入 Python 可读开关，pools 侧二次保险（即使残留 proxy_pool 也不选用）
   config.proxy_enabled = proxyMasterOn;
-  config.proxy_pool_enabled = proxyMasterOn && poolSwitchOn;
+  config.proxy_pool_enabled = wantPool;
   config.cf_proxy_enabled = cfOn;
   if (cfOn) {
     config.cf_proxy_domain = String(
@@ -250,6 +263,38 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
     config.browser_proxy = '';
     delete config.proxy_pool;
     config.proxy_mode = settings.proxyMode || 'round_robin';
+  }
+
+  // 启动诊断摘要（供 registerBot 打日志；Python 侧也会读 config 打印）
+  const proxyDiag = {
+    mode: cfOn
+      ? 'cf'
+      : !proxyMasterOn
+        ? 'direct'
+        : wantPool
+          ? autoPoolFallback
+            ? 'pool_auto'
+            : 'pool'
+          : singleProxy || browserOnly
+            ? 'single'
+            : 'empty',
+    proxy_enabled: proxyMasterOn,
+    proxy_pool_enabled: wantPool,
+    pool_n: Array.isArray(config.proxy_pool) ? config.proxy_pool.length : 0,
+    has_proxy: !!String(config.proxy || '').trim(),
+    has_browser_proxy: !!String(config.browser_proxy || '').trim(),
+    auto_pool_fallback: autoPoolFallback
+  };
+  (config as { _proxy_diag?: typeof proxyDiag })._proxy_diag = proxyDiag;
+  try {
+    console.log(
+      `[writeConfig] proxy mode=${proxyDiag.mode} enabled=${proxyDiag.proxy_enabled} ` +
+        `pool_n=${proxyDiag.pool_n} single=${proxyDiag.has_proxy} ` +
+        `browser=${proxyDiag.has_browser_proxy}` +
+        (autoPoolFallback ? ' (auto pool: 未开「使用代理池」但池内有 IP，已按池写入)' : '')
+    );
+  } catch {
+    /* ignore */
   }
 
   config.browser_path = settings.browserPath || '';

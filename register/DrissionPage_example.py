@@ -766,23 +766,33 @@ def _start_browser_once():
                 mode = proxy_apply_result.get("mode")
                 if mode == "auth_extension":
                     print(
-                        f"[*] 浏览器代理(本轮/认证扩展): {proxy_apply_result.get('proxy') or log_proxy}"
+                        f"[proxy] 浏览器代理(本轮/认证扩展): "
+                        f"{proxy_apply_result.get('proxy') or log_proxy}",
+                        flush=True,
                     )
                 elif mode == "local_forward":
                     print(
-                        f"[*] 浏览器代理(本轮/本地转发): {proxy_apply_result.get('local_proxy')} "
-                        f"→ {proxy_apply_result.get('proxy') or log_proxy}"
+                        f"[proxy] 浏览器代理(本轮/本地转发): "
+                        f"{proxy_apply_result.get('local_proxy')} "
+                        f"→ {proxy_apply_result.get('proxy') or log_proxy}",
+                        flush=True,
                     )
                 elif mode in ("set_proxy", "arg"):
                     print(
-                        f"[*] 浏览器代理(本轮/{mode}): {proxy_apply_result.get('proxy') or log_proxy}"
+                        f"[proxy] 浏览器代理(本轮/{mode}): "
+                        f"{proxy_apply_result.get('proxy') or log_proxy}",
+                        flush=True,
                     )
                 elif mode == "error":
+                    # 已启用代理却无法注入 → 禁止静默直连（否则看起来「没连上代理」）
+                    err = proxy_apply_result.get("error")
                     print(
-                        f"[Warn] 代理配置失败，将直连: {proxy_apply_result.get('error')} | raw={log_proxy}"
+                        f"[proxy][!] 代理配置失败，本轮中止（不直连）: {err} | raw={log_proxy}",
+                        flush=True,
                     )
+                    raise RuntimeError(f"proxy apply failed: {err}")
                 else:
-                    print(f"[*] 浏览器代理(本轮): {log_proxy}")
+                    print(f"[proxy] 浏览器代理(本轮): {log_proxy}", flush=True)
             else:
                 # 无 proxy_auth_ext：绝不能 set_proxy(user:pass)，会静默直连
                 try:
@@ -795,7 +805,9 @@ def _start_browser_once():
                         except Exception:
                             co.set_argument("--proxy-server", fr["local_proxy"])
                         print(
-                            f"[*] 浏览器代理(本轮/本地转发-noext): {fr.get('local_proxy')} → {log_proxy}"
+                            f"[proxy] 浏览器代理(本轮/本地转发-noext): "
+                            f"{fr.get('local_proxy')} → {log_proxy}",
+                            flush=True,
                         )
                         proxy_apply_result = {
                             "mode": "local_forward",
@@ -804,16 +816,47 @@ def _start_browser_once():
                         }
                     else:
                         print(
-                            f"[Warn] 无 proxy_auth_ext 且本地转发失败，将直连: {fr.get('error')}"
+                            f"[proxy][!] 无 proxy_auth_ext 且本地转发失败，本轮中止（不直连）: "
+                            f"{fr.get('error')}",
+                            flush=True,
                         )
+                        raise RuntimeError(
+                            f"proxy local forward failed: {fr.get('error')}"
+                        )
+                except RuntimeError:
+                    raise
                 except Exception as e:
                     print(
-                        f"[Warn] 带密码代理无法配置（缺模块）: {e} — 请同步 register/ 并重启容器"
+                        f"[proxy][!] 带密码代理无法配置（缺模块）: {e} — "
+                        f"请同步 register/ 并重启容器",
+                        flush=True,
                     )
+                    raise RuntimeError(f"proxy module missing: {e}") from e
         else:
-            print("[*] 浏览器代理: 直接连接")
+            # picked 为空：若总开关开着，说明池/单条都没配上
+            try:
+                if proxy_enabled() and not is_cf_proxy_mode():
+                    print(
+                        "[proxy][!] 已启用代理但 acquire 未拿到节点 → 本轮中止（不直连）",
+                        flush=True,
+                    )
+                    raise RuntimeError("proxy enabled but no proxy acquired")
+            except RuntimeError:
+                raise
+            except Exception:
+                pass
+            print("[proxy] 浏览器代理: 直接连接（proxy_enabled=false 或无节点）", flush=True)
+    except RuntimeError:
+        raise
     except Exception as e:
-        print(f"[Warn] 代理池选取失败: {e}")
+        print(f"[proxy][!] 代理池选取失败: {e}", flush=True)
+        try:
+            if proxy_enabled():
+                raise RuntimeError(f"proxy acquire failed: {e}") from e
+        except RuntimeError:
+            raise
+        except Exception:
+            pass
 
     # 随机注册特征（UA 大版本对齐真实 Chromium，降低 Turnstile 版本错配）
     if build_fingerprint is not None:
@@ -907,6 +950,7 @@ def start_browser(*, max_proxy_tries: int | None = None):
 
     仅打印当前使用的代理信息，不做出口探测。
     max_proxy_tries 保留兼容旧调用，忽略。
+    代理已启用却注入失败时抛 RuntimeError（禁止静默直连）。
     """
     _ = max_proxy_tries
     info = _start_browser_once()
@@ -914,9 +958,9 @@ def start_browser(*, max_proxy_tries: int | None = None):
         return info
     used = str(info.get("proxy") or _browser_proxy or "").strip()
     if info.get("used_proxy") and used:
-        print(f"[*] 当前使用代理: {_format_proxy_for_log(used)}")
+        print(f"[proxy] 当前使用代理: {_format_proxy_for_log(used)}", flush=True)
     else:
-        print("[*] 当前使用代理: (直连)")
+        print("[proxy] 当前使用代理: (直连)", flush=True)
     return info["browser"], info["page"]
 
 
@@ -4267,6 +4311,95 @@ def main():
     print(f"  计划轮数: {total}", flush=True)
     print(f"  SSO 输出: {args.output}", flush=True)
     print("══════════════════════════════════════", flush=True)
+
+    # 代理诊断：行首 [proxy] 保证 WebUI 不过滤；开了代理却无节点则停，避免静默直连
+    try:
+        def _mask_proxy_url(u: str) -> str:
+            u = str(u or "").strip()
+            if not u:
+                return ""
+            try:
+                if parse_proxy_url:
+                    p = parse_proxy_url(u)
+                    if p and p.get("has_auth"):
+                        return (
+                            f"{p.get('scheme')}://{str(p.get('username') or '')[:8]}…:***"
+                            f"@{p.get('host')}:{p.get('port')}"
+                        )
+                    if p:
+                        return f"{p.get('scheme')}://{p.get('host')}:{p.get('port')}"
+            except Exception:
+                pass
+            return u.split("@")[-1] if "@" in u else u[:48]
+
+        _cfgp = os.path.join(os.path.dirname(__file__), "config.json")
+        _c0 = {}
+        if os.path.isfile(_cfgp):
+            import json as _j0
+
+            with open(_cfgp, "r", encoding="utf-8") as _f0:
+                _c0 = _j0.load(_f0) or {}
+        _pe0 = proxy_enabled(_c0) if callable(proxy_enabled) else bool(_c0.get("proxy_enabled", True))
+        _pool_sw0 = (
+            proxy_pool_enabled(_c0)
+            if callable(proxy_pool_enabled)
+            else bool(_c0.get("proxy_pool_enabled", False))
+        )
+        _pool_n0 = len(load_proxy_pool(_c0)) if _pe0 and callable(load_proxy_pool) else 0
+        _cf0 = is_cf_proxy_mode(_c0) if callable(is_cf_proxy_mode) else False
+        _px0 = str(_c0.get("proxy") or "").strip()
+        _bpx0 = str(_c0.get("browser_proxy") or "").strip()
+        _diag0 = _c0.get("_proxy_diag") if isinstance(_c0.get("_proxy_diag"), dict) else {}
+        if _diag0:
+            print(
+                f"[proxy] writeConfig mode={_diag0.get('mode')} "
+                f"enabled={_diag0.get('proxy_enabled')} pool_n={_diag0.get('pool_n')} "
+                f"single={_diag0.get('has_proxy')} browser={_diag0.get('has_browser_proxy')}"
+                + (" auto_pool_fallback=1" if _diag0.get("auto_pool_fallback") else ""),
+                flush=True,
+            )
+        if _cf0:
+            print(
+                f"[proxy] 模式=CF独立 local={_mask_proxy_url(_px0 or _bpx0) or '-'} "
+                f"domain={_c0.get('cf_proxy_domain') or '-'} → set_proxy 本地 cfwp",
+                flush=True,
+            )
+        elif not _pe0:
+            print(
+                "[proxy] 模式=直连 (proxy_enabled=false)。"
+                "若界面勾了代理仍见此行：请保存设置后重新启动注册。",
+                flush=True,
+            )
+        elif _pool_sw0 or _pool_n0 > 0:
+            print(
+                f"[proxy] 模式=代理池 switch={_pool_sw0} 可用={_pool_n0} 条 "
+                f"→ 每轮 acquire/next_proxy",
+                flush=True,
+            )
+            if _pool_n0 <= 0:
+                print(
+                    "[proxy][!] 代理池已开但可用 IP=0 → 停止，避免误直连。"
+                    "请导入可用池或关闭「使用代理池」并填单条。",
+                    flush=True,
+                )
+                raise SystemExit(2)
+        elif _px0 or _bpx0:
+            print(
+                f"[proxy] 模式=单条 proxy={_mask_proxy_url(_px0) or '-'} "
+                f"browser_proxy={_mask_proxy_url(_bpx0) or '-'} → set_proxy/本地转发",
+                flush=True,
+            )
+        else:
+            print(
+                "[proxy][!] 已启用代理，但 config 无 proxy / browser_proxy / proxy_pool。"
+                "停止注册，避免误直连。请填写单条或导入可用池后保存再启动。",
+                flush=True,
+            )
+            raise SystemExit(2)
+    except SystemExit:
+        raise
+    except Exception as _pe_log:
+        print(f"[proxy][!] 代理模式摘要失败: {_pe_log}", flush=True)
 
     current_round = 0
     success_count = 0

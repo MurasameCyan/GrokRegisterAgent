@@ -269,6 +269,8 @@ const webApi: RendererApi = {
   startCfProxy: () => http('POST', '/api/cf-proxy/start'),
   stopCfProxy: () => http('POST', '/api/cf-proxy/stop'),
   syncCfProxy: () => http('POST', '/api/cf-proxy/sync'),
+  getCfProxyLog: (tail = 200) =>
+    http('GET', `/api/cf-proxy/log?tail=${encodeURIComponent(String(tail))}`),
 
   getSystemHealth: () => http('GET', '/api/system/health'),
   checkUpdate: () => http('GET', '/api/system/update-check')

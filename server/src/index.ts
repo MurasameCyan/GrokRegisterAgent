@@ -28,7 +28,12 @@ import { fetchEmails, extractVerificationCode, fetchLatestCodeByAddress } from '
 import { probeProxy, probeProxyBatch } from './api/proxyApi.js';
 import { fetchProxiesFromUrl } from './api/proxyFetchApi.js';
 import { resolveHttpProxy } from './resolveHttpProxy.js';
-import { getCfwpStatus, stopCfwp, syncCfwpFromSettings } from './cfwpManager.js';
+import {
+  getCfwpStatus,
+  readCfwpLog,
+  stopCfwp,
+  syncCfwpFromSettings
+} from './cfwpManager.js';
 import { proxiedRequest } from './httpClient.js';
 import { checkSso } from './ssoCheck.js';
 import {
@@ -243,6 +248,14 @@ app.post('/api/cf-proxy/sync', async (_req, res) => {
   const s = await loadSettings();
   const status = await syncCfwpFromSettings(s);
   res.json({ ok: true, ...status });
+});
+
+/** 读取 cfwp 最近日志（只读） */
+app.get('/api/cf-proxy/log', async (req, res) => {
+  const s = await loadSettings();
+  const tailRaw = Number(req.query.tail);
+  const tail = Number.isFinite(tailRaw) ? tailRaw : 200;
+  res.json(readCfwpLog(s, tail));
 });
 
 app.get('/api/system/health', async (_req, res) => {
