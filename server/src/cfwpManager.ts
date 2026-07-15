@@ -3,7 +3,7 @@
  * 仅使用 Linux 二进制：register/bin/cfwp/linux-amd64 | linux-arm64
  * 参数对齐 s5http_wkpgs/cfsh.sh。
  */
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
@@ -45,7 +45,7 @@ type CfwpRuntimeConfig = {
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 
-let child: ChildProcessWithoutNullStreams | null = null;
+let child: ChildProcess | null = null;
 let logStream: WriteStream | null = null;
 let startedAt: number | null = null;
 let lastError: string | null = null;
@@ -261,8 +261,9 @@ export async function syncCfwpFromSettings(settings: AppSettings): Promise<CfwpS
   }
 
   const args = buildArgs(cfg);
+  let proc: ChildProcess;
   try {
-    child = spawn(binary, args, {
+    proc = spawn(binary, args, {
       cwd: join(binary, '..'),
       env: { ...process.env, LANG: 'en_US.UTF-8' },
       stdio: ['ignore', 'pipe', 'pipe']
@@ -273,6 +274,7 @@ export async function syncCfwpFromSettings(settings: AppSettings): Promise<CfwpS
     return getCfwpStatus(settings);
   }
 
+  child = proc;
   startedAt = Date.now();
   lastError = null;
   lastBinary = binary;
@@ -285,20 +287,20 @@ export async function syncCfwpFromSettings(settings: AppSettings): Promise<CfwpS
       /* ignore */
     }
   };
-  child.stdout.on('data', onData);
-  child.stderr.on('data', onData);
-  child.on('error', (err) => {
+  proc.stdout?.on('data', onData);
+  proc.stderr?.on('data', onData);
+  proc.on('error', (err) => {
     lastError = err.message || String(err);
   });
-  child.on('exit', (code, signal) => {
-    if (child) {
+  proc.on('exit', (code, signal) => {
+    if (child === proc) {
       lastError =
         lastError ||
         `cfwp 已退出 code=${code ?? 'null'} signal=${signal ?? 'null'}`;
+      child = null;
+      closeLog();
+      startedAt = null;
     }
-    child = null;
-    closeLog();
-    startedAt = null;
   });
 
   // 短暂等待，捕获立即失败

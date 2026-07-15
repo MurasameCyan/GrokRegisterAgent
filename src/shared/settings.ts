@@ -66,7 +66,7 @@ export interface AppSettings {
   mailDomainPoolEnabled: boolean;
   /** 域名池轮换模式 */
   mailDomainMode: PoolMode;
-  /** 是否启用代理（总开关；关=直连） */
+  /** 是否启用代理（总开关；关=直连）。与 cfProxyEnabled 互斥：开 CF 时本字段为 false */
   proxyEnabled: boolean;
   /** Python 进程使用的 HTTP 代理（单代理；proxyPoolEnabled 关时使用） */
   proxy: string;
@@ -81,10 +81,43 @@ export interface AppSettings {
    * 注册中出口 IP / 页面不可达失败时会降级回 proxyPool。
    */
   proxyPoolAlive: string;
-  /** 是否使用代理池（开=池；关=单代理） */
+  /** 是否使用代理池（开=池；关=单代理）。与 CF 独立代理互斥 */
   proxyPoolEnabled: boolean;
   /** 代理池轮换模式 */
   proxyMode: PoolMode;
+  /**
+   * Cloudflare 独立代理（cfwp：本地 HTTP/SOCKS5）。
+   * 与「普通单代理 / 代理池」二选一：开 CF 时强制关闭 proxyEnabled / proxyPoolEnabled。
+   * 仅 Linux 镜像内置二进制（register/bin/cfwp/linux-*）。
+   */
+  cfProxyEnabled: boolean;
+  /**
+   * CF Workers/Pages/自定义域名（格式：域名:443 系或 80 系端口）。
+   * 对应 cfsh：cf_domain
+   */
+  cfProxyDomain: string;
+  /** 密钥（可空）。对应 cfsh：token */
+  cfProxyToken: string;
+  /** 客户端本地监听端口（默认 30000）。对应 cfsh：port → client_ip=:port */
+  cfProxyPort: number;
+  /**
+   * 客户端优选 IP/域名（默认 yg1.ygkkk.dpdns.org）。对应 cfsh：cf_cdnip
+   */
+  cfProxyCdnip: string;
+  /** ProxyIP（可空，默认用服务端）。对应 cfsh：pyip */
+  cfProxyPyip: string;
+  /** DoH 服务器（默认 dns.alidns.com/dns-query）。对应 cfsh：dns */
+  cfProxyDns: string;
+  /** ECH 开关（默认 true）。对应 cfsh：enable_ech y/n */
+  cfProxyEnableEch: boolean;
+  /**
+   * 分流：true=国内外分流；false=全局代理。对应 cfsh：cnrule
+   */
+  cfProxyCnrule: boolean;
+  /**
+   * 写入注册机/Node 的本地协议：socks5 | http（均指向 127.0.0.1:cfProxyPort）
+   */
+  cfProxyLocalScheme: 'socks5' | 'http';
   /**
    * 代理池批量测活并发数（1..20，默认 8）。
    * 仅影响设置页「全部测活」，不写 Python 注册配置。

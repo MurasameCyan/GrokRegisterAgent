@@ -9,6 +9,7 @@ import type { AppSettings } from '@shared/settings';
 import fs from 'fs';
 import path from 'path';
 import { resolveRegisterRuntime, writeConfigForPython } from './registerRuntime.js';
+import { syncCfwpFromSettings } from '../cfwpManager.js';
 
 interface StartOptions {
   runCountOverride?: number;
