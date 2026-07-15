@@ -5,7 +5,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { loadSettings } from './settingsStore.js';
 import { resolveRegisterRuntime } from './bot/registerRuntime.js';
 
 export interface AccountTagEntry {
@@ -21,8 +20,9 @@ export interface AccountTagsFile {
 }
 
 function tagsPathCandidates(): string[] {
-  const settings = loadSettings();
-  const rt = resolveRegisterRuntime(settings);
+  // loadSettings() 是 async；此处仅需同步解析 register 目录。
+  // resolveRegisterRuntime 会走 env REGISTER_DIR / 内置候选路径。
+  const rt = resolveRegisterRuntime({});
   const out: string[] = [];
   if (rt?.registerDir) {
     out.push(join(rt.registerDir, 'data', 'account_tags.json'));
