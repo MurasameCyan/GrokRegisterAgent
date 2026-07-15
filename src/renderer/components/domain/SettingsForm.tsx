@@ -294,14 +294,14 @@ export function SettingsForm() {
     detail: string;
   } | null>(null);
   const pendingPoolRef = useRef<HTMLTextAreaElement | null>(null);
+  /** CF cfwp 运行状态（必须在 early return 前声明 hooks） */
+  const [cfStatus, setCfStatus] = useState<CfProxyStatus | null>(null);
+  const [cfBusy, setCfBusy] = useState(false);
 
   useEffect(() => {
     if (data && !draft) {
-      // 进页即清洗可用池历史垃圾（# 网页导入 等注释行不参与展示/保存）
-      setDraft({
-        ...data,
-        proxyPoolAlive: sanitizeProxyPoolText(data.proxyPoolAlive || '')
-      });
+      // 进页即清洗可用池历史垃圾，并补齐 CF 等新字段默认值
+      setDraft(normalizeSettingsDraft(data));
     }
   }, [data, draft]);
 
@@ -309,12 +309,29 @@ export function SettingsForm() {
   // 注意：网页导入会先 setDraft 再 store.set，此处需能吃到最新 data。
   useEffect(() => {
     if (data) {
-      setDraft({
-        ...data,
-        proxyPoolAlive: sanitizeProxyPoolText(data.proxyPoolAlive || '')
-      });
+      setDraft(normalizeSettingsDraft(data));
     }
   }, [data]);
+
+  /** 刷新 CF cfwp 状态（hooks 必须在 early return 之前） */
+  const refreshCfStatus = async () => {
+    try {
+      if (typeof window.api?.getCfProxyStatus !== 'function') return;
+      const st = await window.api.getCfProxyStatus();
+      setCfStatus(st);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  useEffect(() => {
+    void refreshCfStatus();
+    const t = window.setInterval(() => {
+      if (draft?.cfProxyEnabled) void refreshCfStatus();
+    }, 8000);
+    return () => window.clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft?.cfProxyEnabled]);
 
   const errors = useMemo(() => {
     if (!draft) return {} as Record<string, string>;
@@ -358,39 +375,12 @@ export function SettingsForm() {
       .map((e) => e.proxy);
   }, [alivePoolEntries, proxyProbes]);
 
-  if (!draft) {
-    return <div className="p-8 text-muted-foreground">加载设置…</div>;
-  }
-
-  const dirty = !!data && JSON.stringify(data) !== JSON.stringify(draft);
-  const valid = Object.keys(errors).length === 0;
-  const updateMail = <K extends keyof AppSettings['mail']>(key: K, value: AppSettings['mail'][K]) =>
-    setDraft({ ...draft, mail: { ...draft.mail, [key]: value } });
-  const update = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) =>
-    setDraft({ ...draft, [key]: value });
-
-  /** 刷新 CF cfwp 状态 */
-  const refreshCfStatus = async () => {
-    try {
-      const st = await window.api.getCfProxyStatus();
-      setCfStatus(st);
-    } catch {
-      /* ignore */
-    }
-  };
-
-  useEffect(() => {
-    void refreshCfStatus();
-    const t = window.setInterval(() => {
-      if (draft?.cfProxyEnabled) void refreshCfStatus();
-    }, 8000);
-    return () => window.clearInterval(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draft?.cfProxyEnabled]);
+  /** 一次改多个字段，避免连点 update 互相覆盖（推送目标开关必须用这个） */
+  const patch = (partial: Partial<AppSettings>) =>
+    setDraft((prev) => (prev ? { ...prev, ...partial } : prev));
 
   /** 开 CF → 关普通/池；开普通 → 关 CF */
   const setProxyMode = (mode: 'off' | 'normal' | 'cf') => {
-    if (!draft) return;
     if (mode === 'cf') {
       patch({
         cfProxyEnabled: true,
@@ -414,12 +404,13 @@ export function SettingsForm() {
   const runCfAction = async (action: 'start' | 'stop' | 'sync') => {
     setCfBusy(true);
     try {
+      const api = window.api;
       const r =
         action === 'start'
-          ? await window.api.startCfProxy()
+          ? await api.startCfProxy()
           : action === 'stop'
-            ? await window.api.stopCfProxy()
-            : await window.api.syncCfProxy();
+            ? await api.stopCfProxy()
+            : await api.syncCfProxy();
       setCfStatus(r);
       if (r.lastError && !r.running) {
         push({ tone: 'danger', title: 'CF 代理异常', description: r.lastError });
@@ -438,9 +429,17 @@ export function SettingsForm() {
       setCfBusy(false);
     }
   };
-  /** 一次改多个字段，避免连点 update 互相覆盖（推送目标开关必须用这个） */
-  const patch = (partial: Partial<AppSettings>) =>
-    setDraft((prev) => (prev ? { ...prev, ...partial } : prev));
+
+  if (!draft) {
+    return <div className="p-8 text-muted-foreground">加载设置…</div>;
+  }
+
+  const dirty = !!data && JSON.stringify(data) !== JSON.stringify(draft);
+  const valid = Object.keys(errors).length === 0;
+  const updateMail = <K extends keyof AppSettings['mail']>(key: K, value: AppSettings['mail'][K]) =>
+    setDraft({ ...draft, mail: { ...draft.mail, [key]: value } });
+  const update = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) =>
+    setDraft({ ...draft, [key]: value });
 
   /** 从网页拉取代理并追加到待测池（默认 hide.mn） */
   const fetchProxiesFromWeb = async () => {
