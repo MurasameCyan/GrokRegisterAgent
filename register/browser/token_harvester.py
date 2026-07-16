@@ -701,8 +701,9 @@ return 'filled';
             else:
                 # Wait for React useCastle() / hidden fields before submit.
                 # Logs showed CreateEmail body ~33B (email only) when we click too early.
-                self._wait_castle_ready_before_submit(page, max_wait=6.0)
-                time.sleep(0.4 + (0.3 * (time.time() % 1)))
+                # 多数环境页面无 window.Castle；过长等待无收益（日志 pre-submit len=0 sdk=False）
+                self._wait_castle_ready_before_submit(page, max_wait=2.5)
+                time.sleep(0.35)
                 # Phase 2: click 注册 (Plan A) — avoid matching 继续 on other widgets
                 clicked = page.run_js(
                     r"""
@@ -846,10 +847,30 @@ return {
         except Exception as e:
             self._lg(f"[!] native castle timeout ({e})")
 
-        # CDN SDK mint is almost always invalid for x.ai (short / non-IBYIll).
-        # Do not return injected tokens — hybrid must fail-fast and retry native path next round.
+        # CreateEmail 可能已 200 且 body 无 castle（站点侧可不带 token）。
+        # 返回空串，由 hybrid 根据 create_email_sent_via_browser() 决定是否继续。
+        try:
+            st = page.run_js(
+                """
+return {
+  ok: !!window.__hybrid_create_email_ok,
+  status: Number(window.__hybrid_create_email_status||0),
+  seen: !!window.__hybrid_create_email_seen
+};
+"""
+            )
+            if isinstance(st, dict) and (
+                st.get("ok") or int(st.get("status") or 0) == 200
+            ):
+                self._lg(
+                    f"[!] no castle in CreateEmail body but browser status "
+                    f"ok={st.get('ok')} status={st.get('status')} → continue without castle"
+                )
+                return ""
+        except Exception:
+            pass
         self._lg(
-            "[!] native castle timeout; skip CDN inject (invalid for x.ai) → empty castle"
+            "[!] native castle timeout; no browser CreateEmail success either → empty"
         )
         return ""
 

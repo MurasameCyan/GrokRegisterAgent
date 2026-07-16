@@ -171,22 +171,21 @@ def hybrid_register(
             browser.install_network_hook()
             action = action or browser.scrape_next_action() or action
 
-            # UI 提交邮箱以触发原生 CreateEmail + 捕获 castle
+            # UI 提交邮箱：优先让浏览器原生发出 CreateEmail（日志常见 body~33B 且 200）。
+            # 站点当前 CreateEmail 可不带 castle；勿在此处因抓不到 IBYIll 整轮失败。
             castle = browser.harvest_castle_via_email_submit(email, timeout=45)
             browser_cookies = browser.export_cookies()
-            # Strict: x.ai native tokens are IBYIll|… and typically ~14KB; short/CDN junk never works.
+            browser_sent = browser.create_email_sent_via_browser()
             clen = len(str(castle or ""))
-            if not castle or clen < 1000 or not str(castle).startswith("IBYIll"):
+            if castle and clen >= 1000 and str(castle).startswith("IBYIll"):
+                log(f"[hybrid] native castle ok len={clen}")
+            else:
                 log(
-                    f"[hybrid] bad castle len={clen} "
-                    f"head={(castle or '')[:24]!r} "
-                    f"(require IBYIll + len>=1000)"
+                    f"[hybrid] no usable castle yet len={clen} "
+                    f"browser_create_email={browser_sent} "
+                    f"(defer castle to Server Action)"
                 )
-                return {
-                    "ok": False,
-                    "error": f"castle 无效 len={clen}",
-                    "mode": "hybrid",
-                }
+                castle = str(castle or "")
 
             ua = browser.browser_user_agent() or ""
             sess = ProtocolSession(
@@ -202,13 +201,23 @@ def hybrid_register(
             if action:
                 client.next_action = action
 
-            browser_sent = browser.create_email_sent_via_browser()
             if browser_sent:
                 log(
                     f"[hybrid] CreateEmail via browser OK (skip protocol) "
-                    f"castle_len={len(castle)}"
+                    f"castle_len={clen}"
                 )
             else:
+                # 浏览器未真正发出 CreateEmail 时，协议路径需要有效 castle
+                if clen < 1000 or not str(castle).startswith("IBYIll"):
+                    log(
+                        f"[hybrid] CreateEmail not confirmed by browser and "
+                        f"castle unusable len={clen}"
+                    )
+                    return {
+                        "ok": False,
+                        "error": f"CreateEmail 未确认且 castle 无效 len={clen}",
+                        "mode": "hybrid",
+                    }
                 r1 = client.create_email_validation_code(email, castle)
                 log(
                     f"[hybrid] CreateEmail status={r1.get('status')} "
@@ -273,9 +282,21 @@ def hybrid_register(
                     "mode": "hybrid",
                 }
 
+            # Server Action 仍可能要求 castleRequestToken；优先捕获，其次页面 SDK mint
             castle2 = browser.read_captured_castle() or castle
-            if len(str(castle2)) < 800:
-                castle2 = castle
+            if len(str(castle2 or "")) < 1000 or not str(castle2).startswith("IBYIll"):
+                try:
+                    minted = browser.get_castle_token(timeout=25)
+                    if minted and len(str(minted)) >= 40:
+                        castle2 = minted
+                        log(
+                            f"[hybrid] castle for sign-up via mint/capture "
+                            f"len={len(castle2)} head={str(castle2)[:16]}"
+                        )
+                except Exception as ce:
+                    log(f"[hybrid] castle mint for sign-up: {ce}")
+            if len(str(castle2 or "")) < 40:
+                log(f"[hybrid] sign-up castle still weak len={len(str(castle2 or ''))}")
             browser_cookies = browser.export_cookies()
             jar2 = dict(browser_cookies or {})
             for stale in ("sso", "sso-rw"):
