@@ -1351,24 +1351,45 @@ return 'filled-no-button';
     def prepare_profile_step_for_turnstile(
         self, email: str, code: str, timeout: int = 90
     ) -> bool:
-        """Drive UI email→code→profile so Turnstile widget mounts.
+        """Drive UI email->code->profile so Turnstile widget mounts.
 
         Protocol already verified the code; UI path still needed for widget.
+        Prefer staying on current tab; only reopen signup if page is dead.
         """
         from grok_register_ttk import _get_page
 
-        page = _get_page()
         clean = str(code or "").replace("-", "").strip()
-        try:
-            self.open_signup()
-        except Exception as e:
-            self._lg(f"[Debug] reopen signup: {e}")
+        page = _get_page()
+        need_reopen = page is None
+        if not need_reopen:
+            try:
+                page.run_js("return 1")
+            except Exception:
+                need_reopen = True
+        if need_reopen:
+            try:
+                from grok_register_ttk import refresh_active_page
+
+                if callable(refresh_active_page):
+                    refresh_active_page()
+            except Exception:
+                pass
+            try:
+                self.open_signup()
+            except Exception as e:
+                self._lg(f"[Debug] reopen signup: {e}")
+            page = _get_page()
 
         deadline = time.time() + timeout
         email_done = code_done = False
         while time.time() < deadline:
-            state = page.run_js(
-                """
+            try:
+                page = _get_page() or page
+                if page is None:
+                    time.sleep(0.5)
+                    continue
+                state = page.run_js(
+                    r"""
 function isVisible(node) {
   if (!node) return false;
   const style = window.getComputedStyle(node);
@@ -1384,8 +1405,15 @@ const code = Array.from(document.querySelectorAll('input[data-input-otp="true"],
 const given = Array.from(document.querySelectorAll('input[name="givenName"], input[name="familyName"], input[autocomplete="given-name"]')).some(isVisible);
 return {pw:!!pw, cf:!!cf, email:!!email, code:!!code, given:!!given, url: location.href};
 """
-            )
-            if isinstance(state, dict) and (state.get("pw") or state.get("cf") or state.get("given")):
+                )
+            except Exception as e:
+                self._lg(f"[Debug] profile state: {e}")
+                time.sleep(0.6)
+                continue
+
+            if isinstance(state, dict) and (
+                state.get("pw") or state.get("cf") or state.get("given")
+            ):
                 self._lg(f"[*] profile/turnstile ready state={state}")
                 return True
 
@@ -1403,7 +1431,23 @@ return {pw:!!pw, cf:!!cf, email:!!email, code:!!code, given:!!given, url: locati
                 time.sleep(2.0)
                 continue
 
-            # maybe still on method chooser
+            if (
+                isinstance(state, dict)
+                and not code_done
+                and clean
+                and not state.get("pw")
+                and not state.get("given")
+            ):
+                try:
+                    r = self._set_input_and_submit(clean, "code")
+                    self._lg(f"[*] UI code force submit: {r}")
+                    if r and "no-code" not in str(r):
+                        code_done = True
+                        time.sleep(2.0)
+                        continue
+                except Exception:
+                    pass
+
             if isinstance(state, dict) and not state.get("email") and not state.get("code"):
                 try:
                     from grok_register_ttk import click_email_signup_button
@@ -1414,6 +1458,7 @@ return {pw:!!pw, cf:!!cf, email:!!email, code:!!code, given:!!given, url: locati
             time.sleep(0.8)
         self._lg("[!] profile step timeout")
         return False
+
 
 
 def harvest_tokens(
