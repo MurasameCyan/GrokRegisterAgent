@@ -167,19 +167,12 @@ export function RegisterPage({ onOpenSettings }: { onOpenSettings(): void }) {
             <RuntimeSettingsInline />
             <AuthQueueMetricsCard />
 
-            <div className="grid gap-3 sm:grid-cols-2">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               <InfoBox label="轮数" value={String(settings?.runCount ?? '--')} />
               <InfoBox label="并行上限" value={String(maxParallel)} />
               <InfoBox
                 label="代理"
-                value={(() => {
-                  const s = settings;
-                  if (!s) return '直接连接';
-                  if (s.singBoxEnabled === true) {
-                    return 'Sing-Box · http://127.0.0.1:2080';
-                  }
-                  return '直接连接';
-                })()}
+                value={settings?.singBoxEnabled === true ? 'Sing-Box' : '直连'}
               />
               <InfoBox label="活跃任务" value={`${jobsActive} / ${maxParallel}`} />
             </div>
