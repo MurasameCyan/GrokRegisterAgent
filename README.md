@@ -21,10 +21,12 @@ git clone -b beta https://github.com/MurasameCyan/GrokRegisterAgent.git
 cd GrokRegisterAgent
 cp .env.example .env
 # 按需编辑 .env 中的邮件/代理等配置
+docker compose pull
 docker compose up -d
-# 默认拉取 :beta；也可在 docker-compose.yml 改用 :latest
+# 根目录 docker-compose.yml 只拉取 GHCR，不本地 build（:beta）
 
 # 可选：外置 Turnstile Solver 子容器（默认不拉取；multi-arch amd64/arm64）
+# docker compose --profile solver pull
 # docker compose --profile solver up -d
 # 或 .env 写 COMPOSE_PROFILES=solver 且 TURNSTILE_SOLVER_ENABLED=1
 # 设置页「注册方案 → 外置 Turnstile Solver」开关 + 探活图标
@@ -76,9 +78,11 @@ docker logs grok-agent 2>&1 | head -n 30
 注意：
 
 - 不要把空的 `register` 目录直接挂到 `/app/register`
-- 使用 GHCR 预构建镜像时，若镜像尚无新版 entrypoint，需先 `docker compose build` 或等 GHCR 更新后再享受自动同步；也可先把完整 `register/` 放到项目目录再 `restart`
+- 使用 GHCR 预构建镜像时，若镜像尚无新版 entrypoint，请 `docker compose pull` 等 GHCR 更新后再 `up -d`；也可先把完整 `register/` 放到项目目录再 `restart`
 
 ## 本地从源码构建
+
+根目录 `docker-compose.yml` **只拉取镜像**。需要本地 build 时用 `docker/` 下 compose：
 
 ```bash
 cd docker
