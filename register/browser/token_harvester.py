@@ -1462,22 +1462,42 @@ true;
             self._lg(f"[Debug] inject turnstile: {e}")
             return False
 
-    def get_turnstile_token(self, timeout: int = 90, inject: bool = True) -> str:
+    def get_turnstile_token(
+        self,
+        timeout: int = 90,
+        inject: bool = True,
+        *,
+        fast: bool = False,
+        auto_wait_cap: float | None = None,
+    ) -> str:
         from grok_register_ttk import _get_page, getTurnstileToken
 
         page = _get_page()
         if inject:
             self.inject_turnstile_widget()
 
-        # try official helper first (uses turnstilePatch click path)
+        # 必须把 timeout/fast 传下去（旧代码默认 50s 且无视 fast）
         try:
-            tok = getTurnstileToken(log_callback=self.log)
+            tok = getTurnstileToken(
+                timeout=int(timeout or 50),
+                log_callback=self.log,
+                fast=bool(fast),
+                auto_wait_cap=auto_wait_cap,
+            )
             if tok and len(str(tok)) >= 80:
                 return str(tok)
+        except TypeError:
+            # 旧 shim 不认 fast / auto_wait_cap
+            try:
+                tok = getTurnstileToken(timeout=int(timeout or 50), log_callback=self.log)
+                if tok and len(str(tok)) >= 80:
+                    return str(tok)
+            except Exception as e:
+                self._lg(f"[Debug] getTurnstileToken: {e}")
         except Exception as e:
             self._lg(f"[Debug] getTurnstileToken: {e}")
 
-        deadline = time.time() + timeout
+        deadline = time.time() + max(5, int(timeout or 50))
         while time.time() < deadline:
             try:
                 tok = page.run_js(

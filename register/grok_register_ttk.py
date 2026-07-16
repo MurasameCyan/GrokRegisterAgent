@@ -45,7 +45,8 @@ def click_email_signup_button(timeout=10, log_callback=None, **kwargs):
 
 def getTurnstileToken(timeout=50, log_callback=None, **kwargs):
     kwargs.pop("log_callback", None)
-    return _engine.getTurnstileToken(timeout=timeout, **kwargs)
+    # forward fast / auto_wait_cap to engine (P0.5 short-path retry)
+    return _engine.getTurnstileToken(timeout=timeout, log_callback=None, **kwargs)
 
 
 refresh_active_page = getattr(_engine, "refresh_active_page", None)

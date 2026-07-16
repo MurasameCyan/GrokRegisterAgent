@@ -2714,17 +2714,21 @@ return false;
         pass
 
 
-def getTurnstileToken(timeout=50, log_callback=None):
+def getTurnstileToken(timeout=50, log_callback=None, *, fast=False, auto_wait_cap=None):
     """
     求解最终注册页 Turnstile。
     优先长等自动通过；若控件长期 1x1 折叠则中途 soft reset + 宿主框点击。
-    折叠态：缩短 auto-wait 并尽早进入宿主框点击（AA: 长等 1x1 浪费且无 token）。
+    折叠态：缩短 auto-wait 并尽早进入宿主框点击。
+
+    fast=True（P0.5 重试短路径）：跳过 30–60s 随机自动等待，soft reset 后
+    立刻进入宿主框点击（AA #19d2170b：第二次 get 又烧一整段 auto-wait）。
+    auto_wait_cap：可选硬上限（秒），覆盖随机 auto-wait 的上限。
     """
     _ = log_callback  # optional; hybrid passes log_callback=
     refresh_active_page()
     _apply_stealth_patches(page)
     _scroll_turnstile_into_view()
-    deadline = time.time() + timeout
+    deadline = time.time() + max(8.0, float(timeout or 50))
     last_diag = ""
     click_attempts = 0
     reset_count = 0
@@ -2732,13 +2736,32 @@ def getTurnstileToken(timeout=50, log_callback=None):
     max_clicks = 3
     collapsed_mid_resets = 0
 
-    # 自动通过：30 ~ n 秒随机；若持续 1x1 则提前截断到 ~12–16s 进点击
-    auto_wait_secs = _pick_turnstile_auto_wait_secs(timeout)
+    # 自动通过：正常 30~n；fast / auto_wait_cap 限制
+    if fast:
+        auto_wait_secs = min(3.0, max(1.0, float(timeout or 50) * 0.08))
+        print(
+            f"[*] Turnstile 短路径 fast=1：auto-wait≤{auto_wait_secs:.0f}s，"
+            f"soft reset 后尽快宿主框点击…"
+        )
+        try:
+            _soft_reset_turnstile()
+            reset_count += 1
+            time.sleep(0.8 + secrets.randbelow(8) / 10.0)
+            _scroll_turnstile_into_view()
+        except Exception:
+            pass
+    else:
+        auto_wait_secs = _pick_turnstile_auto_wait_secs(timeout)
+        if auto_wait_cap is not None:
+            try:
+                auto_wait_secs = min(auto_wait_secs, max(0.0, float(auto_wait_cap)))
+            except Exception:
+                pass
+        print(
+            f"[*] Turnstile 自动通过等待最长 {auto_wait_secs:.0f}s "
+            f"（区间 30~{_load_turnstile_auto_wait_max()}s 随机）…"
+        )
     auto_wait_until = time.time() + auto_wait_secs
-    print(
-        f"[*] Turnstile 自动通过等待最长 {auto_wait_secs:.0f}s "
-        f"（区间 30~{_load_turnstile_auto_wait_max()}s 随机）…"
-    )
     auto_start = time.time()
     while time.time() < auto_wait_until:
         token = _read_turnstile_token()

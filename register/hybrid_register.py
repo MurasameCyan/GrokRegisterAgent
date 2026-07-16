@@ -308,6 +308,11 @@ def hybrid_register(
             except Exception as te:
                 log(f"[hybrid] turnstile get: {te}")
             if len(str(turnstile or "")) < 80:
+                # P0.5: 首次失败后走短路径 — 刷新 + soft reset 准备 + 跳过长 auto-wait
+                log(
+                    "[hybrid] turnstile first miss → short-path retry "
+                    "(refresh + soft-reset prep + fast host-click)"
+                )
                 try:
                     from grok_register_ttk import refresh_active_page
 
@@ -316,10 +321,23 @@ def hybrid_register(
                 except Exception:
                     pass
                 try:
-                    browser.prepare_profile_step_for_turnstile(email, clean, timeout=45)
-                    turnstile = browser.get_turnstile_token(timeout=60, inject=True)
+                    browser.prepare_profile_step_for_turnstile(email, clean, timeout=30)
+                except Exception as pe:
+                    log(f"[hybrid] prepare profile retry: {pe}")
+                try:
+                    turnstile = browser.get_turnstile_token(
+                        timeout=50, inject=True, fast=True
+                    )
+                except TypeError:
+                    # older harvester without fast=
+                    try:
+                        turnstile = browser.get_turnstile_token(
+                            timeout=50, inject=True
+                        )
+                    except Exception as te:
+                        log(f"[hybrid] turnstile retry: {te}")
                 except Exception as te:
-                    log(f"[hybrid] turnstile retry: {te}")
+                    log(f"[hybrid] turnstile short-path retry: {te}")
             if len(str(turnstile or "")) < 80:
                 log(f"[hybrid] turnstile short len={len(str(turnstile or ''))}")
                 return {
