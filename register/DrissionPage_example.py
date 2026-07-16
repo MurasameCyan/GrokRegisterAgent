@@ -2938,26 +2938,25 @@ def getTurnstileToken(timeout=50, log_callback=None, *, fast=False, auto_wait_ca
 
         time.sleep(0.2 + secrets.randbelow(20) / 100.0)
 
-    # 最终诊断
+    # 最终诊断（不立即 raise，先给外置 Solver 一次机会）
+    fail_msg = "failed to solve turnstile"
     try:
         diag = _turnstile_widget_state()
         print(f"[Debug] Turnstile 失败诊断: {diag} | last={last_diag}")
         if diag.get("failure"):
-            raise Exception(
+            fail_msg = (
                 "failed to solve turnstile: Cloudflare 返回 failure 反馈页"
                 "（多为 IP 信誉/浏览器指纹/架构问题，而非单纯点不中）"
             )
-        if diag.get("collapsedOnly"):
-            raise Exception(
+        elif diag.get("collapsedOnly"):
+            fail_msg = (
                 "failed to solve turnstile: widget 折叠为 1x1 且无 token"
                 "（常见于 ARM 容器 / UA 与 Chromium 版本错配 / 代理 IP 信誉偏低）"
             )
     except Exception as e:
-        if "failed to solve turnstile" in str(e):
-            raise
         print(f"[Debug] Turnstile 失败诊断不可用: {e} | last={last_diag}")
 
-        # 外置 Solver 兜底（可选组件）
+    # 外置 Solver 兜底（可选组件；必须在函数体内，禁止模块级 raise）
     try:
         from turnstile_solver_client import solve_turnstile, solver_enabled, yescaptcha_key
 
@@ -2979,7 +2978,7 @@ def getTurnstileToken(timeout=50, log_callback=None, *, fast=False, auto_wait_ca
     except Exception as ee:
         print(f"[Debug] external turnstile: {ee}")
 
-raise Exception("failed to solve turnstile")
+    raise Exception(fail_msg)
 
 
 _GIVEN_NAMES = [
