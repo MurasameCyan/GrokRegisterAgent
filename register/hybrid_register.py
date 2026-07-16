@@ -328,19 +328,49 @@ def hybrid_register(
                     "mode": "hybrid",
                 }
 
-            # Server Action 仍可能要求 castleRequestToken；优先捕获，其次页面 SDK mint
+            # Server Action: prefer native IBYIll; skip long CDN mint when CreateEmail
+            # was already castle-less (AA: minting||[] wastes ~25s; SA still 200).
             castle2 = browser.read_captured_castle() or castle
-            if len(str(castle2 or "")) < 1000 or not str(castle2).startswith("IBYIll"):
+            cl2 = len(str(castle2 or ""))
+            if cl2 < 1000 or not str(castle2 or "").startswith("IBYIll"):
+                # one more capture read only — no 25s CDN inject
                 try:
-                    minted = browser.get_castle_token(timeout=25)
-                    if minted and len(str(minted)) >= 40:
-                        castle2 = minted
-                        log(
-                            f"[hybrid] castle for sign-up via mint/capture "
-                            f"len={len(castle2)} head={str(castle2)[:16]}"
-                        )
-                except Exception as ce:
-                    log(f"[hybrid] castle mint for sign-up: {ce}")
+                    c3 = browser.read_captured_castle()
+                    if c3 and len(c3) > cl2:
+                        castle2, cl2 = c3, len(c3)
+                except Exception:
+                    pass
+                # brief native-only probe if page exposes Castle (rare)
+                if cl2 < 800:
+                    try:
+                        page_has = False
+                        harv = getattr(browser, "_harvester", None) or browser
+                        # BrowserTokenSession may expose get_castle_token; use tiny timeout
+                        if hasattr(browser, "get_castle_token") and hasattr(
+                            harv, "_extract_castle_pk"
+                        ):
+                            # only if globals already minting / SDK present would help;
+                            # skip entirely when prior CreateEmail was castle-less
+                            if cl2 == 0 and not str(castle or ""):
+                                log(
+                                    "[hybrid] sign-up castle skip CDN mint "
+                                    "(CreateEmail castle-less path)"
+                                )
+                            else:
+                                minted = browser.get_castle_token(timeout=4)
+                                if (
+                                    minted
+                                    and len(str(minted)) >= 800
+                                    and str(minted).startswith("IBYIll")
+                                ):
+                                    castle2 = minted
+                                    cl2 = len(castle2)
+                                    log(
+                                        f"[hybrid] castle for sign-up via capture "
+                                        f"len={cl2} head={str(castle2)[:16]}"
+                                    )
+                    except Exception as ce:
+                        log(f"[hybrid] castle mint for sign-up: {ce}")
             if len(str(castle2 or "")) < 40:
                 log(f"[hybrid] sign-up castle still weak len={len(str(castle2 or ''))}")
             browser_cookies = browser.export_cookies()

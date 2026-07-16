@@ -808,8 +808,26 @@ export class RegisterBot extends EventEmitter {
       const sso = String(record.sso || '').trim();
       if (!sso) return;
       const proxy = resolveHttpProxy(settings, 'ssoCheck');
-      this.log(runId, `[sso-check] 自动验活… email=${record.email || '-'} id=${String(stableId).slice(0, 8)}…`);
-      const outcome = await checkSso(sso, proxy);
+      this.log(
+        runId,
+        `[sso-check] 自动验活… email=${record.email || '-'} id=${String(stableId).slice(0, 8)}…` +
+          (proxy ? ` proxy=on` : ` proxy=direct`)
+      );
+      // 新 SSO 刚 materialize 时 grok get-user 偶发 403；短延迟 + 重试
+      const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+      await sleep(2500);
+      let outcome = await checkSso(sso, proxy);
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        if (outcome.alive) break;
+        if (outcome.status !== 403 && outcome.status !== 0 && outcome.status !== 401) break;
+        const waitMs = 2000 * attempt;
+        this.log(
+          runId,
+          `[sso-check] status=${outcome.status} 未存活，${waitMs}ms 后重试 (${attempt}/2)…`
+        );
+        await sleep(waitMs);
+        outcome = await checkSso(sso, proxy);
+      }
       const checkedAt = new Date().toISOString();
       const applied = await applyAccountSsoChecks([
         {

@@ -693,20 +693,23 @@ return {
             self._lg(f"[Debug] kick castle mint: {e}")
 
     def _wait_castle_ready_before_submit(self, page, max_wait: float = 10.0) -> None:
-        """Kick mint + poll for long IBYIll castle before clicking 注册."""
+        """Kick mint + poll for long IBYIll castle before clicking 注册.
+
+        Sites often have no window.Castle (sdk=False). AA logs show 10s+8s waits
+        with len=0 forever — early-abort after a short probe to save ~15–20s/round.
+        """
         try:
             self._kick_page_castle_mint(page)
         except Exception:
             pass
-        deadline = time.time() + max(2.0, float(max_wait or 10))
+        max_wait = max(1.0, float(max_wait or 10))
+        deadline = time.time() + max_wait
         last = ""
         kicked = 1
+        saw_sdk_or_mint = False
+        empty_polls = 0
         while time.time() < deadline:
             try:
-                # mid-wait re-kick once if still empty
-                if kicked < 2 and (deadline - time.time()) < (max_wait * 0.45):
-                    self._kick_page_castle_mint(page)
-                    kicked += 1
                 data = page.run_js(
                     r"""
 let best = '';
@@ -737,20 +740,43 @@ return {
                 )
                 if isinstance(data, dict):
                     ln = int(data.get("len") or 0)
-                    s = f"len={ln} sdk={data.get('sdk')} st={data.get('status')}"
+                    sdk = bool(data.get("sdk"))
+                    st = str(data.get("status") or "")
+                    s = f"len={ln} sdk={sdk} st={st}"
                     if s != last:
                         self._lg(f"[*] pre-submit castle wait: {s}")
                         last = s
-                    # prefer long native-looking token
+                    if sdk or st.startswith("minting") or st in ("native-ish", "minted", "done"):
+                        saw_sdk_or_mint = True
                     if ln >= 1000 and str(data.get("head") or "").startswith("IBYIll"):
                         self._lg(f"[*] pre-submit castle ready len={ln}")
                         return
                     if ln >= 2000:
                         self._lg(f"[*] pre-submit castle ready (long) len={ln}")
                         return
+                    if ln < 40 and not sdk and not st.startswith("minting"):
+                        empty_polls += 1
+                        # ~1.2s of empty polls with no SDK → bail early
+                        if empty_polls >= 4 and not saw_sdk_or_mint:
+                            self._lg(
+                                "[*] pre-submit castle: no page SDK / token — "
+                                "skip long wait (site may send CreateEmail without castle)"
+                            )
+                            return
+                    else:
+                        empty_polls = 0
+                        # mid-wait re-kick only when SDK or mint activity exists
+                        if (
+                            kicked < 2
+                            and saw_sdk_or_mint
+                            and ln < 800
+                            and (deadline - time.time()) < (max_wait * 0.45)
+                        ):
+                            self._kick_page_castle_mint(page)
+                            kicked += 1
             except Exception:
                 pass
-            time.sleep(0.35)
+            time.sleep(0.3)
 
     def _click_register_button(self, page) -> str:
         try:
@@ -881,10 +907,9 @@ return 'filled';
                 self._lg(f"[*] UI email fallback submit: {filled2}")
                 submit_result = filled2
             else:
-                # Wait for React useCastle() / kick mint before submit.
-                # CreateEmail body ~33B means click was too early (no castle field).
-                self._wait_castle_ready_before_submit(page, max_wait=10.0)
-                time.sleep(0.45)
+                # Short probe: full wait only if page exposes Castle / mint activity.
+                self._wait_castle_ready_before_submit(page, max_wait=3.0)
+                time.sleep(0.25)
                 # Phase 2: click 注册 (Plan A) — avoid matching 继续 on other widgets
                 clicked = page.run_js(
                     r"""
@@ -960,25 +985,54 @@ return {
                         and (st.get("ok") or int(st.get("status") or 0) == 200)
                     ):
                         retried_submit = True
-                        self._lg(
-                            "[!] CreateEmail body too short (no castle); "
-                            "kick mint + wait + re-click 注册 once"
-                        )
+                        # Site accepted castle-less CreateEmail (body ~33B, HTTP 200).
+                        # Re-click only if page suddenly exposes SDK / long token.
+                        has_sdk = False
                         try:
-                            self._kick_page_castle_mint(page)
-                        except Exception:
-                            pass
-                        time.sleep(1.2)
-                        self._wait_castle_ready_before_submit(page, max_wait=8.0)
-                        # only re-click if we got a long token OR still hope React will attach
-                        pre = self.read_captured_castle()
-                        if pre and len(pre) >= 800:
-                            self._lg(
-                                f"[*] re-submit with pre-mint castle len={len(pre)}"
+                            probe = page.run_js(
+                                r"""
+let sdk = false;
+try {
+  const C = window.Castle || window.castle || null;
+  sdk = !!(C && (C.createRequestToken || (C.default && C.default.createRequestToken)));
+} catch (e) {}
+return {
+  sdk: sdk,
+  clen: String(window.__hybrid_castle || '').length,
+  st: String(window.__hybrid_castle_status || '')
+};
+"""
                             )
-                        r2 = self._click_register_button(page)
-                        self._lg(f"[*] UI email re-submit: {r2}")
-                        submit_result = f"{submit_result}|retry:{r2}"
+                            if isinstance(probe, dict):
+                                has_sdk = bool(probe.get("sdk")) or int(
+                                    probe.get("clen") or 0
+                                ) >= 800
+                        except Exception:
+                            has_sdk = False
+                        if not has_sdk:
+                            self._lg(
+                                "[!] CreateEmail body short (no castle) but browser OK — "
+                                "skip re-click (no page Castle SDK)"
+                            )
+                        else:
+                            self._lg(
+                                "[!] CreateEmail body too short (no castle); "
+                                "kick mint + wait + re-click 注册 once"
+                            )
+                            try:
+                                self._kick_page_castle_mint(page)
+                            except Exception:
+                                pass
+                            time.sleep(0.8)
+                            self._wait_castle_ready_before_submit(page, max_wait=4.0)
+                            pre = self.read_captured_castle()
+                            if pre and len(pre) >= 800:
+                                self._lg(
+                                    f"[*] re-submit with pre-mint castle len={len(pre)}"
+                                )
+                            r2 = self._click_register_button(page)
+                            self._lg(f"[*] UI email re-submit: {r2}")
+                            submit_result = f"{submit_result}|retry:{r2}"
                 except Exception as re:
                     retried_submit = True
                     self._lg(f"[Debug] re-submit: {re}")

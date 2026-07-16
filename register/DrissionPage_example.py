@@ -2344,8 +2344,21 @@ def _locate_turnstile_click_target():
     返回 (target, how)：
       - target 可以是 iframe 元素，或 dict 坐标框 {x,y,w,h,kind:'box'}
     跳过 failure feedback；兼容 1x1 collapsed iframe + 宿主容器点击。
+    collapsed 时优先宿主框（1x1 iframe 坐标点不中 checkbox）。
     """
     last_err = ""
+
+    # 路径 0：若已折叠为 1x1，优先宿主容器（避免点 1x1 iframe 中心）
+    try:
+        st0 = _turnstile_widget_state()
+        if st0.get("collapsedOnly") and st0.get("hostSized"):
+            host_box = _host_click_box()
+            if host_box:
+                host_box = dict(host_box)
+                host_box["kind"] = "box"
+                return host_box, "host-container-box-collapsed"
+    except Exception as e:
+        last_err = f"path0:{e}"
 
     # 路径 A：从 hidden input 的父级 shadow 找 iframe
     try:
@@ -2598,11 +2611,42 @@ def _click_turnstile_checkbox(target, prefer_cdp=True, how=""):
 
 
 def _soft_reset_turnstile():
+    """Reset Turnstile; try mild host uncollapse when iframe is 1x1."""
     try:
         page.run_js(
             """
 try { if (typeof turnstile !== 'undefined') turnstile.reset(); } catch (e) {}
-// 部分站点 widget 需要移除后重渲染；这里只 reset，避免破坏 React 树
+// Nudge collapsed hosts: force size on 1x1 iframes under turnstile parents
+try {
+  const hosts = document.querySelectorAll(
+    '.cf-turnstile, [data-sitekey], div[id^="cf-"], input[name="cf-turnstile-response"]'
+  );
+  hosts.forEach((el) => {
+    const root = el.name === 'cf-turnstile-response' ? (el.parentElement || el) : el;
+    if (!root) return;
+    try {
+      root.style.minWidth = root.style.minWidth || '300px';
+      root.style.minHeight = root.style.minHeight || '65px';
+      root.style.opacity = '1';
+      root.style.visibility = 'visible';
+    } catch (e0) {}
+    try {
+      root.querySelectorAll('iframe').forEach((f) => {
+        const r = f.getBoundingClientRect();
+        if (r.width > 0 && r.width <= 5 && r.height > 0 && r.height <= 5) {
+          f.style.width = '300px';
+          f.style.height = '65px';
+        }
+      });
+    } catch (e1) {}
+  });
+} catch (e) {}
+// Re-execute if API exposes widget ids
+try {
+  if (typeof turnstile !== 'undefined' && typeof turnstile.execute === 'function') {
+    try { turnstile.execute(); } catch (e2) {}
+  }
+} catch (e) {}
 return true;
             """
         )
@@ -2670,12 +2714,13 @@ return false;
         pass
 
 
-def getTurnstileToken(timeout=50):
+def getTurnstileToken(timeout=50, log_callback=None):
     """
     求解最终注册页 Turnstile。
     优先长等自动通过；若控件长期 1x1 折叠则中途 soft reset + 宿主框点击。
-    点击阶段：折叠态最多 4 次，正常最多 3 次；点击前滚入视口。
+    折叠态：缩短 auto-wait 并尽早进入宿主框点击（AA: 长等 1x1 浪费且无 token）。
     """
+    _ = log_callback  # optional; hybrid passes log_callback=
     refresh_active_page()
     _apply_stealth_patches(page)
     _scroll_turnstile_into_view()
@@ -2685,8 +2730,9 @@ def getTurnstileToken(timeout=50):
     reset_count = 0
     mid_reset_done = False
     max_clicks = 3
+    collapsed_mid_resets = 0
 
-    # 自动通过：30 ~ n 秒随机（n = config turnstile.auto_wait_max，默认 60）
+    # 自动通过：30 ~ n 秒随机；若持续 1x1 则提前截断到 ~12–16s 进点击
     auto_wait_secs = _pick_turnstile_auto_wait_secs(timeout)
     auto_wait_until = time.time() + auto_wait_secs
     print(
@@ -2703,24 +2749,23 @@ def getTurnstileToken(timeout=50):
         if state.get("failure"):
             print("[Warn] 自动等待阶段检测到 Turnstile failure 反馈页。")
             break
-        # 折叠态：更早 mid soft reset（~5s），允许最多 2 次 mid，给 widget 重渲染
         elapsed = time.time() - auto_start
         if (
-            elapsed >= 5
+            elapsed >= 4
             and state.get("collapsedOnly")
             and state.get("hostSized")
             and not state.get("failure")
-            and reset_count < 3
-            and (not mid_reset_done or elapsed >= 14)
+            and reset_count < 4
+            and (not mid_reset_done or elapsed >= 9)
         ):
             print("[*] 自动等待中控件仍 1x1，执行 mid soft reset…")
             _soft_reset_turnstile()
             mid_reset_done = True
             reset_count += 1
-            time.sleep(1.6 + secrets.randbelow(12) / 10.0)
+            collapsed_mid_resets += 1
+            time.sleep(1.2 + secrets.randbelow(10) / 10.0)
             _scroll_turnstile_into_view()
-            # mid 后短等看是否自动出 token / 展开
-            peek_end = time.time() + min(4.0, auto_wait_until - time.time())
+            peek_end = time.time() + min(3.0, auto_wait_until - time.time())
             while time.time() < peek_end:
                 tok = _read_turnstile_token()
                 if tok:
@@ -2729,9 +2774,12 @@ def getTurnstileToken(timeout=50):
                 st2 = _turnstile_widget_state()
                 if st2.get("challenge") or st2.get("sized"):
                     break
-                time.sleep(0.35)
+                time.sleep(0.3)
+            # 两次 mid 仍 1x1：提前进点击（别把 30–60s 烧完）
+            if collapsed_mid_resets >= 2 and elapsed >= 10:
+                print("[*] 1x1 持续折叠，提前结束自动等待 → 宿主框点击阶段。")
+                break
             continue
-        # 已有可点尺寸的 challenge：提前结束自动等待，进入点击
         if state.get("challenge") or state.get("sized"):
             print("[*] 检测到可交互 Turnstile 控件，进入点击阶段。")
             break
@@ -2746,7 +2794,7 @@ def getTurnstileToken(timeout=50):
         state = _turnstile_widget_state()
         # 折叠态多给几次点击机会（host 有尺寸时仍可能出 token）
         if state.get("collapsedOnly"):
-            max_clicks = 6 if state.get("hostSized") else 5
+            max_clicks = 8 if state.get("hostSized") else 6
 
         if state.get("failure"):
             last_diag = f"failure-state frames={state.get('frames')}"
@@ -2814,7 +2862,7 @@ def getTurnstileToken(timeout=50):
         print(f"[*] Turnstile 点击尝试 #{click_attempts}: {detail}")
 
         # 点击后等待：折叠态更长，给 token 生成时间（1x1 host 点中后常 3–12s 才出）
-        wait_slice = min(14.0 if state.get("collapsedOnly") else 5.5, max(2.5, deadline - time.time()))
+        wait_slice = min(12.0 if state.get("collapsedOnly") else 5.5, max(2.5, deadline - time.time()))
         wait_end = time.time() + wait_slice
         while time.time() < wait_end:
             token = _read_turnstile_token()
@@ -2826,9 +2874,46 @@ def getTurnstileToken(timeout=50):
                 print("[Warn] 点击后进入 Turnstile failure 状态。")
                 last_diag = f"post-click-failure #{click_attempts}"
                 break
-            time.sleep(0.35)
+            time.sleep(0.3)
 
-        time.sleep(0.25 + secrets.randbelow(25) / 100.0)
+        # 折叠态：同一次尝试内补点宿主左侧另一偏移（checkbox 横向漂移）
+        if (
+            state.get("collapsedOnly")
+            and state.get("hostSized")
+            and time.time() + 4 < deadline
+            and click_attempts < max_clicks
+        ):
+            try:
+                hb = _host_click_box()
+                if hb:
+                    w = float(hb.get("w") or 300)
+                    h = float(hb.get("h") or 65)
+                    # 第二偏移：略偏右/偏下（常见 checkbox 不在最左 12%）
+                    cx2 = float(hb.get("x") or 0) + max(30.0, min(55.0, w * 0.18)) + (
+                        secrets.randbelow(7) - 3
+                    )
+                    cy2 = float(hb.get("y") or 0) + h * (0.5 + secrets.randbelow(8) / 100.0)
+                    _scroll_turnstile_into_view()
+                    _cdp_human_click(cx2, cy2)
+                    print(
+                        f"[*] Turnstile 折叠态补点 host offset "
+                        f"#{click_attempts}b: {int(cx2)},{int(cy2)}"
+                    )
+                    peek2 = time.time() + min(6.0, deadline - time.time())
+                    while time.time() < peek2:
+                        token = _read_turnstile_token()
+                        if token:
+                            print(
+                                f"[*] Turnstile 补点后已出 token（第 {click_attempts} 次）。"
+                            )
+                            return token
+                        if _turnstile_widget_state().get("failure"):
+                            break
+                        time.sleep(0.3)
+            except Exception as e:
+                print(f"[Debug] Turnstile host offset click: {e}")
+
+        time.sleep(0.2 + secrets.randbelow(20) / 100.0)
 
     # 最终诊断
     try:
