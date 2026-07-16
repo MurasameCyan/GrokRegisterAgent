@@ -70,14 +70,17 @@ def _read_cpa_mint_mode() -> str:
 
 
 def _via_pkce_token(
-    sso: str, *, proxy: str = "", log: LogFn | None = None
+    sso: str,
+    *,
+    proxy: str = "",
+    log: LogFn | None = None,
+    allow_device_fallback: bool = True,
 ) -> dict[str, Any] | None:
-    """PKCE main path; on fail try device first, then short browser Allow.
+    """PKCE main path; optionally device then short browser Allow.
 
-    Field logs: after authorize TLS/OPENSSL or next-action 404, browser consent
-    often hangs at open authorize. With mint-queue workers=1 the pool starves and
-    Auth is never written. Device flow mints with referrer=grok-build without a
-    second Chromium, so it must run before browser consent.
+    allow_device_fallback=False for double-mode *pkce channel* so a device grant
+    is never written as xai-*-pkce.json (Auth B / *-device.json would be missing
+    while the only file is a mislabeled device token).
     """
     log = log or _noop
     log("[auth] mint channel=pkce (Auth Code+PKCE)…")
@@ -90,20 +93,23 @@ def _via_pkce_token(
     if tokens and tokens.get("access_token"):
         return tokens
 
-    # 1) device: curl protocol, no second Chromium
-    log("[auth] PKCE failed → device flow fallback…")
-    try:
-        dev = _via_device_token(sso, proxy=proxy or "", log=log)
-        if dev and dev.get("access_token"):
-            return dev
-    except Exception as de:
-        log(f"[auth] device fallback err: {de}")
+    # 1) device: only when this is a single-channel mint (mode A), not double's pkce slot
+    if allow_device_fallback:
+        log("[auth] PKCE failed → device flow fallback…")
+        try:
+            dev = _via_device_token(sso, proxy=proxy or "", log=log)
+            if dev and dev.get("access_token"):
+                return dev
+        except Exception as de:
+            log(f"[auth] device fallback err: {de}")
+    else:
+        log("[auth] PKCE failed (no device fallback; double mode keeps channels pure)")
 
     # 2) browser Allow: short timeout so mint-queue cannot hang forever
     try:
         from sso_to_auth import sso_to_token_via_browser_consent
 
-        log("[auth] device failed → browser consent fallback (timeout=45s)…")
+        log("[auth] PKCE path → browser consent fallback (timeout=45s)…")
         tokens = sso_to_token_via_browser_consent(
             sso,
             proxy=proxy or "",
@@ -119,25 +125,44 @@ def _via_pkce_token(
 
 
 def _via_device_token(
-    sso: str, *, proxy: str = "", log: LogFn | None = None
+    sso: str,
+    *,
+    proxy: str = "",
+    log: LogFn | None = None,
+    attempts: int = 1,
 ) -> dict[str, Any] | None:
+    """Device Flow mint. attempts>1 retries transient TLS/OPENSSL curl (35)."""
     log = log or _noop
-    log("[auth] mint channel=device (Device Flow)…")
     try:
         from oauth_device_mint import mint_tokens_device_flow
     except ImportError as e:
         log(f"[auth] oauth_device_mint 不可用: {e}")
         return None
-    r = mint_tokens_device_flow(sso, proxy=proxy or "", log=log)
-    if not r or not r.get("ok"):
-        log(f"[auth] device mint 失败: {(r or {}).get('error') or 'unknown'}")
-        return None
-    return {
-        "access_token": r.get("access_token") or "",
-        "refresh_token": r.get("refresh_token") or "",
-        "id_token": r.get("id_token"),
-        "expires_in": r.get("expires_in"),
-    }
+    n = max(1, min(int(attempts or 1), 4))
+    last_err = ""
+    for ai in range(n):
+        log(
+            f"[auth] mint channel=device (Device Flow)"
+            + (f" attempt={ai + 1}/{n}…" if n > 1 else "…")
+        )
+        try:
+            r = mint_tokens_device_flow(sso, proxy=proxy or "", log=log)
+        except Exception as e:
+            last_err = str(e)
+            log(f"[auth] device mint 异常: {e}")
+            r = None
+        if r and r.get("ok") and r.get("access_token"):
+            return {
+                "access_token": r.get("access_token") or "",
+                "refresh_token": r.get("refresh_token") or "",
+                "id_token": r.get("id_token"),
+                "expires_in": r.get("expires_in"),
+            }
+        last_err = str((r or {}).get("error") or last_err or "unknown")
+        log(f"[auth] device mint 失败: {last_err}")
+        if ai + 1 < n:
+            time.sleep(1.2 * (ai + 1))
+    return None
 
 
 def _mint_tokens(
@@ -559,17 +584,28 @@ def sso_to_cpa_auth(
             f"（同时产出 pkce+device 两份 auth，分别测活；两通道互不影响）"
         )
         channels_out: list[dict[str, Any]] = []
-        for ch, mint_fn in (
-            ("pkce", _via_pkce_token),
-            ("device", _via_device_token),
-        ):
+        for ch in ("pkce", "device"):
             tok: dict[str, Any] | None = None
             mint_err = ""
-            # PKCE 偶发 next-action 404：首败后再试一次（discover 可能已缓存新 id）
-            attempts = 2 if ch == "pkce" else 1
+            # pkce slot: pure PKCE (+ browser Allow), never device-fallback (would mislabel Auth B)
+            # device slot: retry TLS flakiness (curl 35 OPENSSL)
+            attempts = 2 if ch == "pkce" else 3
             for ai in range(attempts):
                 try:
-                    tok = mint_fn(sso, proxy=proxy or "", log=log)
+                    if ch == "pkce":
+                        tok = _via_pkce_token(
+                            sso,
+                            proxy=proxy or "",
+                            log=log,
+                            allow_device_fallback=False,
+                        )
+                    else:
+                        tok = _via_device_token(
+                            sso,
+                            proxy=proxy or "",
+                            log=log,
+                            attempts=1,
+                        )
                 except Exception as e:
                     mint_err = str(e)
                     log(f"[auth] channel={ch} mint 异常 attempt={ai + 1}/{attempts}: {e}")
@@ -577,8 +613,8 @@ def sso_to_cpa_auth(
                 if tok and tok.get("access_token"):
                     break
                 if ai + 1 < attempts:
-                    log(f"[auth] channel={ch} mint 失败，1s 后重试…")
-                    time.sleep(1.0)
+                    log(f"[auth] channel={ch} mint 失败，{1.0 + ai}s 后重试…")
+                    time.sleep(1.0 + ai)
             if not tok or not tok.get("access_token"):
                 channels_out.append(
                     {
