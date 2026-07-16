@@ -808,13 +808,15 @@ export async function syncSingBoxFromSettings(
     return getSingBoxStatus(settings);
   }
   try {
-    logStream = createWriteStream(lastLogPath, { flags: 'a' });
-    if (opts.rotate || opts.forRegister) {
-      const note = opts.rotate
+    // 每次启动截断日志，避免旧 FATAL 与成功启动混在一起误导排查
+    logStream = createWriteStream(lastLogPath, { flags: 'w' });
+    const head =
+      opts.rotate
         ? `[rotate] ${opts.reason || 'node degrade'} → ${node.name} (${node.tag})\n`
-        : `[register] pick ${node.name} (${node.tag})\n`;
-      logStream.write(note);
-    }
+        : opts.forRegister
+          ? `[register] pick ${node.name} (${node.tag})\n`
+          : `[start] ${node.name} (${node.tag}) port=${listenPort}\n`;
+    logStream.write(head);
   } catch (e) {
     lastError = `无法写日志: ${String(e)}`;
     logStream = null;
