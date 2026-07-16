@@ -224,14 +224,41 @@ async function readAll(): Promise<AccountRecord[]> {
   return all;
 }
 
-export async function appendAccount(record: AccountRecord): Promise<void> {
+/**
+ * 写入号池。按 sso 去重：已存在则返回已有 id（不插新行）。
+ * 调用方必须用返回的 id 做 ssoCheck / 事件推送，否则验活会写到「不存在的新 UUID」。
+ */
+export async function appendAccount(
+  record: AccountRecord
+): Promise<{ id: string; created: boolean }> {
   const all = await readAll();
-  // 按 sso 去重，避免重复跑写双份
-  if (record.sso && all.some((a) => a.sso && a.sso === record.sso)) {
-    return;
+  const sso = String(record.sso || '').trim();
+  if (sso) {
+    const existing = all.find((a) => a.sso && a.sso === sso);
+    if (existing) {
+      // 可选补全空邮箱/密码（不覆盖已有）
+      let touched = false;
+      const email = String(record.email || '').trim();
+      const password = String(record.password || '').trim();
+      const patch: AccountRecord = { ...existing };
+      if (email && !String(existing.email || '').trim()) {
+        patch.email = email;
+        touched = true;
+      }
+      if (password && !String(existing.password || '').trim()) {
+        patch.password = password;
+        touched = true;
+      }
+      if (touched) {
+        const next = all.map((a) => (a.id === existing.id ? patch : a));
+        await writeAll(next);
+      }
+      return { id: existing.id, created: false };
+    }
   }
   all.push(record);
   await writeAll(all);
+  return { id: record.id, created: true };
 }
 
 export async function listAccounts(): Promise<AccountRecord[]> {

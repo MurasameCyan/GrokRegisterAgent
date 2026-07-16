@@ -758,24 +758,34 @@ export class RegisterBot extends EventEmitter {
 
   /** 写号池后可选自动 SSO 验活（不阻塞注册主流程） */
   private async persistAccountAndMaybeSsoCheck(runId: string, record: AccountRecord) {
+    // 号池稳定 id：append 可能因 sso 去重返回已有 id，后续验活必须用这个 id
+    let stableId = record.id;
     try {
-      await appendAccount(record);
+      const saved = await appendAccount(record);
+      stableId = saved?.id || record.id;
+      if (saved && saved.created === false && saved.id !== record.id) {
+        this.log(
+          runId,
+          `[sso-check] 号池已有同 SSO，复用 id=${String(saved.id).slice(0, 8)}…（验活写回此 id）`
+        );
+      }
     } catch (e) {
       this.error(runId, `账号记录写入失败: ${e instanceof Error ? e.message : String(e)}`);
       return;
     }
+    const base: AccountRecord = { ...record, id: stableId };
     try {
       const settings = await loadSettings();
       if (settings.autoSsoCheckOnRegister === false) return;
       const sso = String(record.sso || '').trim();
       if (!sso) return;
       const proxy = resolveHttpProxy(settings, 'ssoCheck');
-      this.log(runId, `[sso-check] 自动验活… email=${record.email || '-'}`);
+      this.log(runId, `[sso-check] 自动验活… email=${record.email || '-'} id=${String(stableId).slice(0, 8)}…`);
       const outcome = await checkSso(sso, proxy);
       const checkedAt = new Date().toISOString();
-      await applyAccountSsoChecks([
+      const applied = await applyAccountSsoChecks([
         {
-          id: record.id,
+          id: stableId,
           alive: outcome.alive,
           status: outcome.status,
           checkedAt,
@@ -790,13 +800,19 @@ export class RegisterBot extends EventEmitter {
           isBotFlag1: outcome.isBotFlag1
         }
       ]);
+      if (!applied || applied.updated === 0) {
+        this.log(
+          runId,
+          `[sso-check] ⚠ 验活结果未写入号池 updated=0 id=${String(stableId).slice(0, 8)}…（请刷新号池）`
+        );
+      }
       const emailOut = outcome.email || record.email || '';
       this.push({
         type: 'account',
         runId,
         record: {
-          ...record,
-          email: emailOut || record.email,
+          ...base,
+          email: emailOut || base.email,
           ssoCheck: {
             alive: outcome.alive,
             status: outcome.status,
@@ -816,8 +832,8 @@ export class RegisterBot extends EventEmitter {
       this.log(
         runId,
         outcome.alive
-          ? `[sso-check] ✔ 存活 status=${outcome.status} email=${outcome.email || record.email || '-'}`
-          : `[sso-check] ✘ 失效 status=${outcome.status} ${outcome.error || ''}`
+          ? `[sso-check] ✔ 存活 status=${outcome.status} email=${outcome.email || record.email || '-'} updated=${applied?.updated ?? 0}`
+          : `[sso-check] ✘ 失效 status=${outcome.status} ${outcome.error || ''} updated=${applied?.updated ?? 0}`
       );
     } catch (e) {
       this.log(

@@ -344,6 +344,17 @@ export function PoolPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase]);
 
+  // 注册运行中：轻量轮询号池，把后端自动验活写回的 ssoCheck 刷到徽章
+  // （仅靠 WS account 事件时，若用户切页/丢事件会一直「未验」）
+  useEffect(() => {
+    if (phase !== 'running' && phase !== 'starting') return;
+    const id = window.setInterval(() => {
+      void reload().catch(() => undefined);
+    }, 8000);
+    return () => window.clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [phase, reload]);
+
   // 号池 SSO → hash（增量缓存：仅 id/sso 签名变化时重算）
   const accountsHashKey = useMemo(
     () =>
