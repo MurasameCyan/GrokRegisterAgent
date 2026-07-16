@@ -6,11 +6,16 @@ import {
   Clipboard,
   Github,
   KeyRound,
+  Layers,
   Loader2,
+  Network,
   RefreshCw,
   Save,
+  Send,
   Terminal
 } from 'lucide-react';
+import { CardHeaderIcon } from '@renderer/components/domain/CardHeaderIcon';
+import { MailConnectivityIcon } from '@renderer/components/domain/MailConnectivityIcon';
 import { Card, CardBody, CardHeader } from '@renderer/components/ui/Card';
 import { Button } from '@renderer/components/ui/Button';
 import { Input } from '@renderer/components/ui/Input';
@@ -413,13 +418,20 @@ export function SettingsForm() {
                 : 'Cloudflare Temp Email'
           }
           right={
-            <div className="flex flex-wrap items-center gap-2">
-              <RepoLink
-                href="https://github.com/dreamhunter2333/cloudflare_temp_email"
-                label="文档"
-              />
-              <ConnectionTestButton onTest={() => window.api.testMail(draft.mail)} disabled={!valid} />
-            </div>
+            <MailConnectivityIcon
+              mail={draft.mail}
+              enabled={
+                Boolean(String(draft.mail?.apiBase || '').trim()) &&
+                (
+                  (draft.mailProvider || 'cloudflare') === 'cloudflare'
+                    ? Boolean(
+                        String(draft.mail?.adminAuth || '').trim() ||
+                          draft.cloudflareAuthMode === 'none'
+                      )
+                    : Boolean(String(draft.mail?.adminAuth || '').trim())
+                )
+              }
+            />
           }
         />
         <CardBody className="space-y-4">
@@ -599,6 +611,7 @@ export function SettingsForm() {
         <CardHeader
           title="代理设置"
           description={draft.singBoxEnabled ? 'Sing-Box' : '直连'}
+          right={<CardHeaderIcon icon={Network} title="代理" />}
         />
         <CardBody className="grid gap-4 lg:grid-cols-2">
           {/* 单行：Sing-Box | 直连 */}
@@ -862,6 +875,88 @@ export function SettingsForm() {
 
             <Card collapsible defaultCollapsed>
         <CardHeader
+          title="注册方案"
+          right={<CardHeaderIcon icon={Layers} title="注册方案" />}
+          description={(() => {
+            const plans: string[] = [];
+            if (draft.registerPlanAEnabled !== false) plans.push('A');
+            if (draft.registerPlanBEnabled !== false) plans.push('B');
+            if (
+              draft.registerPlanCEnabled === true ||
+              draft.registerMode === 'hybrid'
+            ) {
+              plans.push('C');
+            }
+            const planText = plans.length
+              ? `Plan ${plans.join(' · ')}`
+              : '未启用方案';
+            const fp = draft.randomFingerprint ? '随机指纹' : '固定指纹';
+            const wait = draft.turnstileAutoWaitMax ?? 60;
+            return `${planText} · ${fp} · Turnstile ≤${wait}s`;
+          })()}
+        />
+        <CardBody className="space-y-3">
+          <div className="rounded-xl bg-muted/70 p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="field-label">人机验证 · 自动等待上限</div>
+                <div className="mt-1 text-[12px] text-muted-foreground">
+                  Turnstile：每次随机等待 30～{draft.turnstileAutoWaitMax ?? 60}s，再尝试点击
+                </div>
+              </div>
+              <span className="chip tabular-nums">{draft.turnstileAutoWaitMax ?? 60}s</span>
+            </div>
+            <div className="mt-3">
+              <Slider
+                min={30}
+                max={180}
+                value={draft.turnstileAutoWaitMax ?? 60}
+                onValueChange={(v) => update('turnstileAutoWaitMax', v)}
+              />
+            </div>
+            {errors.turnstileAutoWaitMax && (
+              <p className="mt-2 text-xs text-danger">{errors.turnstileAutoWaitMax}</p>
+            )}
+          </div>
+          <ToggleRow
+            label="随机注册特征"
+            hint="UA / 语言 / 时区 / 分辨率等指纹随机化"
+            checked={draft.randomFingerprint}
+            onChange={(v) => update('randomFingerprint', v)}
+          />
+          <ToggleRow
+            label="Plan A · 浏览器主流程"
+            hint="临时邮 + Drission 填表 + Turnstile（约 1～3 分钟）"
+            checked={draft.registerPlanAEnabled !== false}
+            onChange={(v) => {
+              update('registerPlanAEnabled', v);
+            }}
+          />
+          <ToggleRow
+            label="Plan B · 拟人兜底"
+            hint="重启浏览器、更长延迟、等 Turnstile 自然成功、模拟点击；CF 拦截则放弃（约 2～5 分钟）"
+            checked={draft.registerPlanBEnabled !== false}
+            onChange={(v) => update('registerPlanBEnabled', v)}
+          />
+          <ToggleRow
+            label="Plan C · Hybrid 协议"
+            hint="短浏览器采 token + 协议注册（约 1～2 分钟；失败不影响已开的 A/B）"
+            checked={
+              draft.registerPlanCEnabled === true ||
+              draft.registerMode === 'hybrid'
+            }
+            onChange={(v) => {
+              patch({
+                registerPlanCEnabled: v,
+                registerMode: v ? 'hybrid' : 'browser'
+              });
+            }}
+          />
+        </CardBody>
+      </Card>
+
+<Card collapsible defaultCollapsed>
+        <CardHeader
           title="授权管理"
           description={(() => {
             // 显示顺序：Mint（核心）→ 自动 Auth → 401 保活
@@ -881,11 +976,7 @@ export function SettingsForm() {
             if (draft.autoResignOn401 === true) bits.push('401重签');
             return bits.join(' · ');
           })()}
-          right={
-            <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-muted text-muted-foreground">
-              <KeyRound className="h-4 w-4" aria-hidden />
-            </span>
-          }
+          right={<CardHeaderIcon icon={KeyRound} title="授权管理" />}
         />
         <CardBody className="space-y-4">
           {/* —— 核心：出 Auth 流水线 —— */}
@@ -1134,87 +1225,6 @@ export function SettingsForm() {
 
 <Card collapsible defaultCollapsed>
         <CardHeader
-          title="注册方案"
-          description={(() => {
-            const plans: string[] = [];
-            if (draft.registerPlanAEnabled !== false) plans.push('A');
-            if (draft.registerPlanBEnabled !== false) plans.push('B');
-            if (
-              draft.registerPlanCEnabled === true ||
-              draft.registerMode === 'hybrid'
-            ) {
-              plans.push('C');
-            }
-            const planText = plans.length
-              ? `Plan ${plans.join(' · ')}`
-              : '未启用方案';
-            const fp = draft.randomFingerprint ? '随机指纹' : '固定指纹';
-            const wait = draft.turnstileAutoWaitMax ?? 60;
-            return `${planText} · ${fp} · Turnstile ≤${wait}s`;
-          })()}
-        />
-        <CardBody className="space-y-3">
-          <div className="rounded-xl bg-muted/70 p-4">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <div className="field-label">人机验证 · 自动等待上限</div>
-                <div className="mt-1 text-[12px] text-muted-foreground">
-                  Turnstile：每次随机等待 30～{draft.turnstileAutoWaitMax ?? 60}s，再尝试点击
-                </div>
-              </div>
-              <span className="chip tabular-nums">{draft.turnstileAutoWaitMax ?? 60}s</span>
-            </div>
-            <div className="mt-3">
-              <Slider
-                min={30}
-                max={180}
-                value={draft.turnstileAutoWaitMax ?? 60}
-                onValueChange={(v) => update('turnstileAutoWaitMax', v)}
-              />
-            </div>
-            {errors.turnstileAutoWaitMax && (
-              <p className="mt-2 text-xs text-danger">{errors.turnstileAutoWaitMax}</p>
-            )}
-          </div>
-          <ToggleRow
-            label="随机注册特征"
-            hint="UA / 语言 / 时区 / 分辨率等指纹随机化"
-            checked={draft.randomFingerprint}
-            onChange={(v) => update('randomFingerprint', v)}
-          />
-          <ToggleRow
-            label="Plan A · 浏览器主流程"
-            hint="临时邮 + Drission 填表 + Turnstile（约 1～3 分钟）"
-            checked={draft.registerPlanAEnabled !== false}
-            onChange={(v) => {
-              update('registerPlanAEnabled', v);
-            }}
-          />
-          <ToggleRow
-            label="Plan B · 拟人兜底"
-            hint="重启浏览器、更长延迟、等 Turnstile 自然成功、模拟点击；CF 拦截则放弃（约 2～5 分钟）"
-            checked={draft.registerPlanBEnabled !== false}
-            onChange={(v) => update('registerPlanBEnabled', v)}
-          />
-          <ToggleRow
-            label="Plan C · Hybrid 协议"
-            hint="短浏览器采 token + 协议注册（约 1～2 分钟；失败不影响已开的 A/B）"
-            checked={
-              draft.registerPlanCEnabled === true ||
-              draft.registerMode === 'hybrid'
-            }
-            onChange={(v) => {
-              patch({
-                registerPlanCEnabled: v,
-                registerMode: v ? 'hybrid' : 'browser'
-              });
-            }}
-          />
-        </CardBody>
-      </Card>
-
-      <Card collapsible defaultCollapsed>
-        <CardHeader
           title="推送设置"
           description={(() => {
             const bits: string[] = [];
@@ -1233,11 +1243,7 @@ export function SettingsForm() {
             else if (allowAuthG2) bits.push('Auth→g2 允许');
             return bits.length ? bits.join(' · ') : '未开启推送';
           })()}
-          right={
-            <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-muted text-muted-foreground">
-              <KeyRound className="h-4 w-4" aria-hidden />
-            </span>
-          }
+          right={<CardHeaderIcon icon={Send} title="推送设置" />}
         />
         <CardBody className="space-y-4">
           {(() => {
