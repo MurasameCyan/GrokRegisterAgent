@@ -862,8 +862,8 @@ export function PoolPage() {
       )}
 
       <div className="ios-group">
-        <div className="space-y-3 border-b border-border/70 px-4 py-3.5">
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+        <div className="space-y-2.5 border-b border-border/70 px-4 py-3">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0">
               <h3 className="text-[17px] font-semibold tracking-[-0.02em]">账号列表</h3>
               <p className="mt-0.5 text-[12px] text-muted-foreground">
@@ -897,9 +897,9 @@ export function PoolPage() {
             </div>
           </div>
 
-          {/* 筛选行：SSO → Auth → 验活 */}
-          <div className="flex flex-col gap-1.5">
-            <div className="flex flex-wrap items-center gap-1">
+          {/* 筛选：三组并排（宽屏）/ 换行（窄屏），减少纵向占位 */}
+          <div className="flex flex-col gap-1.5 lg:flex-row lg:flex-wrap lg:items-center lg:gap-x-3 lg:gap-y-1.5">
+            <div className="flex min-w-0 flex-wrap items-center gap-1">
               <span className="mr-0.5 w-8 shrink-0 text-[10px] text-muted-foreground">SSO</span>
               {(
                 [
@@ -931,7 +931,7 @@ export function PoolPage() {
                 </button>
               ))}
             </div>
-            <div className="flex flex-wrap items-center gap-1">
+            <div className="flex min-w-0 flex-wrap items-center gap-1">
               <span className="mr-0.5 w-8 shrink-0 text-[10px] text-muted-foreground">Auth</span>
               {(
                 [
@@ -963,7 +963,7 @@ export function PoolPage() {
                 </button>
               ))}
             </div>
-            <div className="flex flex-wrap items-center gap-1">
+            <div className="flex min-w-0 flex-wrap items-center gap-1">
               <span className="mr-0.5 w-8 shrink-0 text-[10px] text-muted-foreground">验活</span>
               {(
                 [
@@ -995,10 +995,10 @@ export function PoolPage() {
             </div>
           </div>
 
-          {/* 操作：选择 | 业务 | 导入导出 | 删除 */}
-          <div className="flex flex-col gap-2">
+          {/* 操作：一行优先折行，标签仅宽屏显示 */}
+          <div className="flex flex-col gap-1.5">
             <div className="flex flex-wrap items-center gap-1.5">
-              <span className="mr-0.5 hidden text-[10px] text-muted-foreground sm:inline">选择</span>
+              <span className="mr-0.5 hidden text-[10px] text-muted-foreground xl:inline">选择</span>
               <Button
                 variant="secondary"
                 size="sm"
@@ -1083,7 +1083,7 @@ export function PoolPage() {
               </Button>
             </div>
             <div className="flex flex-wrap items-center gap-1.5">
-              <span className="mr-0.5 hidden text-[10px] text-muted-foreground sm:inline">
+              <span className="mr-0.5 hidden text-[10px] text-muted-foreground xl:inline">
                 导入导出
               </span>
               <Button

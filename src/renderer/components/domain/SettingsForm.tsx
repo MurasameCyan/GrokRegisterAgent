@@ -182,6 +182,8 @@ export function SettingsForm() {
   /** 推送设置：连接设定默认折叠 */
   const [cpaConnOpen, setCpaConnOpen] = useState(false);
   const [g2ConnOpen, setG2ConnOpen] = useState(false);
+  /** 外置 Turnstile Solver：默认折叠 */
+  const [solverOpen, setSolverOpen] = useState(false);
   /** sing-box 运行状态 / 日志 / 解析节点 */
   const [sbStatus, setSbStatus] = useState<SingBoxStatus | null>(null);
   const [sbBusy, setSbBusy] = useState(false);
@@ -959,19 +961,41 @@ export function SettingsForm() {
               });
             }}
           />
-          <div className="space-y-3 rounded-xl border border-border/60 bg-muted/40 p-4">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0 flex-1">
-                <div className="field-label">外置 Turnstile Solver</div>
-                <div className="mt-1 text-[12px] text-muted-foreground">
-                  可选子容器：页内 1×1 失败时 HTTP 外解。默认不拉取。
-                  启动：
-                  <code className="mx-1 rounded bg-background/80 px-1">
-                    docker compose --profile solver up -d
-                  </code>
-                  或 .env 写 COMPOSE_PROFILES=solver
+          <div className="space-y-0 rounded-xl border border-border/60 bg-muted/40">
+            <div className="flex items-center gap-2 px-3 py-2.5">
+              <button
+                type="button"
+                className="flex min-w-0 flex-1 items-start gap-2 text-left"
+                onClick={() => setSolverOpen((v) => !v)}
+                aria-expanded={solverOpen}
+              >
+                {solverOpen ? (
+                  <ChevronDown className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                ) : (
+                  <ChevronRight className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                )}
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-[14px] font-medium text-foreground">
+                      外置 Turnstile Solver
+                    </span>
+                    <span
+                      className={
+                        draft.turnstileSolverEnabled === true
+                          ? 'rounded-full bg-ok/15 px-2 py-0.5 text-[10px] font-medium text-ok'
+                          : 'rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground'
+                      }
+                    >
+                      {draft.turnstileSolverEnabled === true ? '已启用' : '默认关'}
+                    </span>
+                  </div>
+                  {!solverOpen && (
+                    <div className="mt-0.5 truncate text-[11px] text-muted-foreground">
+                      页内失败时 HTTP 外解 · compose --profile solver
+                    </div>
+                  )}
                 </div>
-              </div>
+              </button>
               <TurnstileSolverIcon
                 enabled={draft.turnstileSolverEnabled === true}
                 url={
@@ -980,34 +1004,47 @@ export function SettingsForm() {
                 }
               />
             </div>
-            <ToggleRow
-              label="启用外置 Solver"
-              hint="写入 config 后注册页内失败可回落；需 solver 容器在跑或可达 URL"
-              checked={draft.turnstileSolverEnabled === true}
-              onChange={(v) => update('turnstileSolverEnabled', v)}
-            />
-            <Field
-              label="Solver URL"
-              hint="compose 内网默认 http://turnstile-solver:5072；宿主机调试可用 http://127.0.0.1:5072"
-            >
-              <Input
-                value={draft.turnstileSolverUrl || ''}
-                placeholder="http://turnstile-solver:5072"
-                onChange={(e) => update('turnstileSolverUrl', e.target.value)}
-              />
-            </Field>
-            <Field
-              label="YesCaptcha Key（可选）"
-              hint="有 key 时外解可走第三方；留空则仅本地 solver"
-            >
-              <Input
-                type="password"
-                autoComplete="off"
-                value={draft.yescaptchaKey || ''}
-                placeholder="可选"
-                onChange={(e) => update('yescaptchaKey', e.target.value)}
-              />
-            </Field>
+            {solverOpen && (
+              <div className="space-y-3 border-t border-border/50 px-3 py-3">
+                <div className="text-[12px] leading-5 text-muted-foreground">
+                  可选子容器：页内 1×1 失败时 HTTP 外解。默认不拉取。启动：
+                  <code className="mx-1 rounded bg-background/80 px-1">
+                    docker compose --profile solver up -d
+                  </code>
+                  或 .env 写 COMPOSE_PROFILES=solver
+                </div>
+                <ToggleRow
+                  label="启用外置 Solver"
+                  hint="写入 config 后注册页内失败可回落；需 solver 容器在跑或可达 URL"
+                  checked={draft.turnstileSolverEnabled === true}
+                  onChange={(v) => update('turnstileSolverEnabled', v)}
+                />
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Field
+                    label="Solver URL"
+                    hint="compose 内网默认 turnstile-solver:5072"
+                  >
+                    <Input
+                      value={draft.turnstileSolverUrl || ''}
+                      placeholder="http://turnstile-solver:5072"
+                      onChange={(e) => update('turnstileSolverUrl', e.target.value)}
+                    />
+                  </Field>
+                  <Field
+                    label="YesCaptcha Key（可选）"
+                    hint="有 key 时外解可走第三方"
+                  >
+                    <Input
+                      type="password"
+                      autoComplete="off"
+                      value={draft.yescaptchaKey || ''}
+                      placeholder="可选"
+                      onChange={(e) => update('yescaptchaKey', e.target.value)}
+                    />
+                  </Field>
+                </div>
+              </div>
+            )}
           </div>
         </CardBody>
       </Card>

@@ -2009,9 +2009,9 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
       )}
 
       <div className="ios-group">
-        <div className="space-y-3 border-b border-border/70 px-4 py-3.5">
+        <div className="space-y-2.5 border-b border-border/70 px-4 py-3">
           {/* 标题行：隐私 + 刷新 */}
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <div className="min-w-0">
               <h3 className="text-[17px] font-semibold tracking-[-0.02em]">CPA 凭证</h3>
               <p
@@ -2034,7 +2034,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
               <Button
                 variant="secondary"
                 size="sm"
-                className="min-w-[6.5rem] justify-center"
+                className="min-w-[5.75rem] justify-center"
                 onClick={toggleEmailPrivacy}
                 title={emailMasked ? '显示完整邮箱' : '遮蔽邮箱（仅前5位）'}
               >
@@ -2054,8 +2054,9 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
             </div>
           </div>
 
-          {/* 筛选行：标记 */}
-          <div className="flex flex-wrap items-center gap-1">
+          {/* 筛选：标记 + 状态 宽屏并排 */}
+          <div className="flex flex-col gap-1.5 lg:flex-row lg:flex-wrap lg:items-center lg:gap-x-3 lg:gap-y-1.5">
+          <div className="flex min-w-0 flex-wrap items-center gap-1">
             <span className="mr-0.5 w-8 shrink-0 text-[10px] text-muted-foreground">标记</span>
             {(
               [
@@ -2095,8 +2096,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
             ))}
           </div>
 
-          {/* 筛选行：状态（测活 HTTP） */}
-          <div className="flex flex-wrap items-center gap-1">
+          <div className="flex min-w-0 flex-wrap items-center gap-1">
             <span className="mr-0.5 w-8 shrink-0 text-[10px] text-muted-foreground">状态</span>
             {(
               [
@@ -2146,14 +2146,16 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
             ))}
           </div>
 
-          {/* 操作：选择 | 业务 */}
-          <div className="flex flex-col gap-2">
+          </div>
+
+          {/* 操作：选择 | 业务 — 紧凑折行 */}
+          <div className="flex flex-col gap-1.5">
             <div className="flex flex-wrap items-center gap-1.5">
-              <span className="mr-0.5 hidden text-[10px] text-muted-foreground sm:inline">选择</span>
+              <span className="mr-0.5 hidden text-[10px] text-muted-foreground xl:inline">选择</span>
               <Button
                 variant="secondary"
                 size="sm"
-                className="min-w-[5.5rem] justify-center"
+                className="min-w-[4.75rem] justify-center"
                 onClick={selectAll}
                 disabled={filteredItems.length === 0 || busy}
                 title={
@@ -2174,7 +2176,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
               <Button
                 variant="secondary"
                 size="sm"
-                className="min-w-[5.5rem] justify-center"
+                className="min-w-[4.75rem] justify-center"
                 onClick={selectPage}
                 disabled={pageItems.length === 0 || busy}
                 title={pageAllSelected ? '取消本页选择' : '仅选择当前分页'}
@@ -2186,7 +2188,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
               <span className="mr-0.5 hidden text-[10px] text-muted-foreground sm:inline">业务</span>
               <Button
                 size="sm"
-                className="min-w-[5.75rem] justify-center tabular-nums"
+                className="min-w-[5rem] justify-center tabular-nums"
                 {...batchBtnProps('probe', () => void probeBatch())}
                 variant={batchBusy === 'probe' ? 'danger' : 'primary'}
                 disabled={
@@ -2213,7 +2215,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
               </Button>
               <Button
                 size="sm"
-                className="min-w-[5.75rem] justify-center tabular-nums"
+                className="min-w-[5rem] justify-center tabular-nums"
                 {...batchBtnProps('relogin', () => void reloginBatch())}
                 disabled={
                   (Boolean(busy) && batchBusy !== 'relogin') ||
@@ -2238,7 +2240,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
               </Button>
               <Button
                 size="sm"
-                className="min-w-[5.75rem] justify-center tabular-nums"
+                className="min-w-[5rem] justify-center tabular-nums"
                 {...batchBtnProps('resign', () => void resignBatch())}
                 disabled={
                   (Boolean(busy) && batchBusy !== 'resign') ||
@@ -2264,7 +2266,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
               </Button>
               <Button
                 size="sm"
-                className="min-w-[5.75rem] justify-center tabular-nums"
+                className="min-w-[5rem] justify-center tabular-nums"
                 {...batchBtnProps('refresh401', () => void refresh401Batch())}
                 disabled={
                   (Boolean(busy) && batchBusy !== 'refresh401') ||
@@ -2289,7 +2291,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
               </Button>
               <Button
                 size="sm"
-                className="min-w-[5.75rem] justify-center tabular-nums"
+                className="min-w-[5rem] justify-center tabular-nums"
                 {...batchBtnProps('push', () => void pushRemoteBatch())}
                 disabled={
                   (Boolean(busy) && batchBusy !== 'push') ||
@@ -2317,7 +2319,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
               <Button
                 variant={batchBusy === 'backfill' ? 'danger' : 'secondary'}
                 size="sm"
-                className="min-w-[6.25rem] justify-center"
+                className="min-w-[5.5rem] justify-center"
                 disabled={
                   (Boolean(busy) && batchBusy !== 'backfill') ||
                   (batchBusy !== 'backfill' && items.length === 0)
@@ -2361,7 +2363,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
               <Button
                 variant="secondary"
                 size="sm"
-                className="min-w-[6.5rem] justify-center"
+                className="min-w-[5.75rem] justify-center"
                 onClick={() => {
                   setResignPushRemote((v) => {
                     const next = !v;
@@ -2422,7 +2424,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
               <Button
                 variant={batchBusy === 'delete' ? 'danger' : 'secondary'}
                 size="sm"
-                className="min-w-[5.5rem] justify-center"
+                className="min-w-[4.75rem] justify-center"
                 onClick={() => {
                   if (batchBusy === 'delete') cancelBatch('delete');
                   else void deleteBatch();
