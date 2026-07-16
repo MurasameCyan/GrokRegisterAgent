@@ -76,7 +76,10 @@ function isNoiseStdoutLine(msg: string): boolean {
   const rules: RegExp[] = [
     // ── 代理/本机就绪噪声（用户要求不显示）──
     /CF\/本机代理端口就绪/i,
-    /recycle_every\s*=/i,
+    /IP\s*使用间隔未到/i,
+    /IP\s*间隔累计等待/i,
+    /\[gc\]\s*cleanup_runtime_memory/i,
+    /register\s*build:/i,    /recycle_every\s*=/i,
     /set_proxy\/本地转发/i,
     /邮件\s*API\s*:/i,
     /email_register\s+build/i,

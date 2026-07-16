@@ -2651,7 +2651,7 @@ def getTurnstileToken(timeout=50):
         elapsed = time.time() - auto_start
         if (
             not mid_reset_done
-            and elapsed >= 12
+            and elapsed >= 8
             and state.get("collapsedOnly")
             and state.get("hostSized")
             and not state.get("failure")
@@ -2677,9 +2677,9 @@ def getTurnstileToken(timeout=50):
             return token
 
         state = _turnstile_widget_state()
-        # 折叠态多给几次点击机会
+        # 折叠态多给几次点击机会（host 有尺寸时仍可能出 token）
         if state.get("collapsedOnly"):
-            max_clicks = 4
+            max_clicks = 6 if state.get("hostSized") else 5
 
         if state.get("failure"):
             last_diag = f"failure-state frames={state.get('frames')}"
@@ -2747,7 +2747,7 @@ def getTurnstileToken(timeout=50):
         print(f"[*] Turnstile 点击尝试 #{click_attempts}: {detail}")
 
         # 点击后等待：折叠态稍长，给 token 生成时间
-        wait_slice = min(7.0 if state.get("collapsedOnly") else 5.0, max(2.5, deadline - time.time()))
+        wait_slice = min(10.0 if state.get("collapsedOnly") else 5.0, max(2.5, deadline - time.time()))
         wait_end = time.time() + wait_slice
         while time.time() < wait_end:
             token = _read_turnstile_token()
@@ -3996,7 +3996,7 @@ def run_single_registration(
     # 收码失败：换邮箱最多 max_mail_retry 次（AccountRetryNeeded），不整轮失败。
     plan_mode = "b" if str(plan or "a").lower() in ("b", "plan_b", "plan-b", "2") else "a"
     if plan_mode == "b":
-        print("[plan-b] ═══ Plan B 兜底注册开始 ═══")
+        print("[plan-b] ═══ Plan B 注册开始 ═══")
 
     max_mail_retry = 3
     try:
@@ -4794,7 +4794,7 @@ def main():
             # ---------- Plan A ----------
             if result is None and plan_a_enabled:
                 try:
-                    print("[plan-a] 浏览器主流程…")
+                    print("[plan-a] ═══ Plan A 注册开始 ═══")
                     result = run_single_registration(
                         args.output, extract_numbers=args.extract_numbers, plan="a"
                     )
@@ -4826,7 +4826,7 @@ def main():
 
             if result is None and plan_b_enabled and not skip_b_hard:
                 try:
-                    print("[plan-b] 拟人兜底…")
+                    print("[plan-b] ═══ Plan B 注册开始 ═══")
                     try:
                         stop_browser()
                     except Exception:
@@ -4854,7 +4854,7 @@ def main():
                 try:
                     from hybrid_register import run_hybrid_registration
 
-                    print("[plan-c] Hybrid 协议…")
+                    print("[plan-c] ═══ Plan C 注册开始 ═══")
                     hy = run_hybrid_registration(
                         args.output, extract_numbers=args.extract_numbers
                     )

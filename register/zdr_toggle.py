@@ -23,6 +23,9 @@ DEFAULT_FEATURE_ATTEMPTS: list[tuple[str, int]] = [
     ("zero_retention", 0),
     ("zdr", 0),
     ("disable_zero_data_retention", 1),
+    ("data_retention", 0),
+    ("enterprise_zero_retention", 0),
+    ("disable_zdr", 1),
     ("allow_file_uploads", 1),
     ("allow_file_content", 1),
 ]
@@ -175,8 +178,8 @@ def disable_zdr_for_sso(
     cf_clearance: str = "",
     proxy: str = "",
     timeout: float = 20.0,
-    max_attempts: int = 2,
-    retry_delay_sec: float = 2.0,
+    max_attempts: int = 5,
+    retry_delay_sec: float = 3.0,
     feature_attempts: list[tuple[str, int]] | None = None,
     log: Optional[LogFn] = None,
 ) -> dict[str, Any]:
@@ -216,7 +219,7 @@ def disable_zdr_for_sso(
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
     )
-    n_att = max(1, min(int(max_attempts or 2), 4))
+    n_att = max(1, min(int(max_attempts or 5), 6))
     last: dict[str, Any] = {
         "ok": False,
         "zdr_status": "open",
@@ -272,15 +275,28 @@ def disable_zdr_for_sso(
                         "attempts": attempt,
                     }
                 else:
+                    # 无 X-Zero-Retention 头：多试几轮；全部用尽再标 unknown（仍不谎报 closed）
+                    any_feat_ok = any(
+                        bool(x.get("ok_http")) for x in (steps.get("features") or [])
+                    )
                     last = {
                         "ok": False,
-                        "zdr_status": "open",
-                        "error": "probe inconclusive; conservatively mark open",
+                        "zdr_status": "unknown",
+                        "error": (
+                            "probe inconclusive; will retry"
+                            if attempt < n_att
+                            else "probe inconclusive after retries; mark unknown (not proven closed)"
+                        ),
                         "steps": steps,
                         "probe": probe,
                         "attempts": attempt,
+                        "any_feature_http_ok": any_feat_ok,
                     }
-                    log(f"[zdr] ✘ 第 {attempt}/{n_att} probe 无结论: {last['error']}")
+                    log(
+                        f"[zdr] … 第 {attempt}/{n_att} probe 无结论"
+                        + ("，继续重试" if attempt < n_att else "，结束")
+                        + f": {last['error']}"
+                    )
         except Exception as e:
             last = {
                 "ok": False,

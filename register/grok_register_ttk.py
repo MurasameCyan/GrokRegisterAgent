@@ -16,13 +16,38 @@ if str(_ROOT) not in sys.path:
 # 主注册引擎
 import DrissionPage_example as _engine  # noqa: E402
 
-# 浏览器
-start_browser = _engine.start_browser
+# 浏览器（hybrid/token_harvester 常传 log_callback；主引擎无此参，需吞掉）
+def _with_log_callback(fn):
+    def _wrap(*args, log_callback=None, **kwargs):
+        if log_callback is not None and callable(log_callback):
+            try:
+                # 不改主引擎签名；仅在有回调时把关键 print 行透传可选（当前静默忽略）
+                pass
+            except Exception:
+                pass
+        # 去掉未知 kwargs 中仅 log_callback；其余原样
+        kwargs.pop("log_callback", None)
+        return fn(*args, **kwargs)
+
+    return _wrap
+
+
+start_browser = _with_log_callback(_engine.start_browser)
 stop_browser = _engine.stop_browser
 restart_browser = getattr(_engine, "restart_browser", None)
-open_signup_page = _engine.open_signup_page
-click_email_signup_button = _engine.click_email_signup_button
-getTurnstileToken = _engine.getTurnstileToken
+open_signup_page = _with_log_callback(_engine.open_signup_page)
+
+
+def click_email_signup_button(timeout=10, log_callback=None, **kwargs):
+    kwargs.pop("log_callback", None)
+    return _engine.click_email_signup_button(timeout=timeout, **kwargs)
+
+
+def getTurnstileToken(timeout=50, log_callback=None, **kwargs):
+    kwargs.pop("log_callback", None)
+    return _engine.getTurnstileToken(timeout=timeout, **kwargs)
+
+
 refresh_active_page = getattr(_engine, "refresh_active_page", None)
 
 
