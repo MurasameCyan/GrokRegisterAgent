@@ -2013,8 +2013,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
           {/* 标题行：隐私 + 刷新 */}
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
             <div className="min-w-0">
-              <p className="page-kicker">Auth</p>
-              <h3 className="mt-0.5 text-[17px] font-semibold tracking-[-0.02em]">CPA 凭证</h3>
+              <h3 className="text-[17px] font-semibold tracking-[-0.02em]">CPA 凭证</h3>
               <p
                 className="mt-0.5 min-h-[1.125rem] truncate text-[12px] text-muted-foreground"
                 title={dir}

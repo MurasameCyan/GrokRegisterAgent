@@ -72,7 +72,7 @@ export function SettingsPage({
   }, [data, reload]);
 
   return (
-    <div className="mx-auto max-w-5xl space-y-5 pb-20">
+    <div className="mx-auto w-full max-w-6xl space-y-5 pb-16">
       <CredentialsPanel username={username} onAuthChanged={onAuthChanged} />
       <SettingsErrorBoundary>
         <SettingsForm />

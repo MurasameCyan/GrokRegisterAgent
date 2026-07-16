@@ -104,17 +104,26 @@
 }
 
 @layer components {
-  /* 布局 */
+  /* 布局：桌面侧栏 + 主内容；移动端顶栏粘性 */
   .app-shell {
-    @apply mx-auto flex min-h-full w-full max-w-[1200px] flex-col gap-0 px-0 sm:px-3 sm:py-3 lg:flex-row lg:gap-4 lg:px-5 lg:py-5;
+    @apply mx-auto flex min-h-full w-full max-w-[1440px] flex-col gap-0 px-0 sm:px-3 sm:py-3 lg:flex-row lg:items-start lg:gap-5 lg:px-5 lg:py-5;
   }
 
   .app-nav {
-    @apply w-full shrink-0 border-b border-border bg-card lg:sticky lg:top-5 lg:h-[calc(100vh-2.5rem)] lg:w-[180px] lg:rounded-2xl lg:border lg:border-border lg:shadow-[var(--ios-shadow)];
+    @apply sticky top-0 z-30 w-full shrink-0 border-b border-border bg-card/95 backdrop-blur-md lg:top-5 lg:z-20 lg:h-[calc(100vh-2.5rem)] lg:w-[196px] lg:rounded-2xl lg:border lg:border-border lg:bg-card lg:shadow-[var(--ios-shadow)] lg:backdrop-blur-none;
   }
 
   .app-main {
-    @apply min-w-0 flex-1 px-4 py-4 sm:px-2 lg:px-1 lg:py-0;
+    @apply flex min-w-0 flex-1 flex-col px-4 py-4 pb-10 sm:px-2 lg:px-1 lg:py-0 lg:pb-6;
+  }
+
+  /* 各页顶栏：标题 + 状态元信息 */
+  .page-header {
+    @apply mb-5 flex flex-col gap-3 border-b border-border/50 pb-4 sm:mb-6 sm:flex-row sm:items-end sm:justify-between sm:border-0 sm:pb-0;
+  }
+
+  .page-content {
+    @apply min-w-0 flex-1;
   }
 
   /* 导航：总宽 180 — 图标与三行站名等高对齐 */
@@ -290,7 +299,16 @@
   }
 
   .nav-link {
-    @apply flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-[15px] font-medium leading-none text-muted-foreground transition-colors duration-100 active:opacity-70;
+    @apply flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-[14px] font-medium leading-none text-muted-foreground transition-colors duration-100 active:opacity-70 lg:gap-3 lg:text-[15px];
+  }
+
+  /* 移动端横向导航：避免挤成一团 */
+  .app-nav-links {
+    @apply flex gap-1 overflow-x-auto px-3 pb-2.5 [-ms-overflow-style:none] [scrollbar-width:none] lg:flex-col lg:overflow-visible lg:px-3 lg:pb-3;
+  }
+
+  .app-nav-links::-webkit-scrollbar {
+    display: none;
   }
 
   /* Lucide 与中文并排时强制光学居中，避免 baseline 错位 */
@@ -317,11 +335,15 @@
 
   /* 页面标题 */
   .page-kicker {
-    @apply text-[13px] font-medium text-muted-foreground;
+    @apply text-[13px] font-medium leading-5 text-muted-foreground;
   }
 
   .page-heading {
-    @apply text-[28px] font-bold tracking-[-0.03em] text-foreground sm:text-[32px];
+    @apply text-[24px] font-bold tracking-[-0.03em] text-foreground sm:text-[28px] lg:text-[30px];
+  }
+
+  .page-header-meta {
+    @apply flex flex-wrap items-center gap-2;
   }
 
   /* iOS 分组卡片 */

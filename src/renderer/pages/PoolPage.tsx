@@ -854,8 +854,7 @@ export function PoolPage() {
         <div className="space-y-3 border-b border-border/70 px-4 py-3.5">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
             <div className="min-w-0">
-              <p className="page-kicker">SSO</p>
-              <h3 className="mt-0.5 text-[17px] font-semibold tracking-[-0.02em]">账号列表</h3>
+              <h3 className="text-[17px] font-semibold tracking-[-0.02em]">账号列表</h3>
               <p className="mt-0.5 text-[12px] text-muted-foreground">
                 {selected.size > 0 ? `已选 ${selected.size} 项` : '未选择'}
                 {hasActiveFilter

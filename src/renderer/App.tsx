@@ -29,11 +29,41 @@ import type { AuthState, ChangeCredentialsInput, UpdateInfo } from '@shared/ipc'
 
 type Tab = 'register' | 'pool' | 'auth' | 'settings';
 
-const tabs: { id: Tab; label: string; Icon: typeof PlayCircle }[] = [
-  { id: 'register', label: '注册机', Icon: PlayCircle },
-  { id: 'pool', label: 'SSO', Icon: Database },
-  { id: 'auth', label: 'Auth', Icon: KeyRound },
-  { id: 'settings', label: '配置', Icon: Settings2 }
+const tabs: {
+  id: Tab;
+  label: string;
+  title: string;
+  description: string;
+  Icon: typeof PlayCircle;
+}[] = [
+  {
+    id: 'register',
+    label: '注册机',
+    title: '注册机',
+    description: '并行注册任务、运行设置与实时日志',
+    Icon: PlayCircle
+  },
+  {
+    id: 'pool',
+    label: 'SSO',
+    title: 'SSO 号池',
+    description: '账号验活、筛选导出与 Auth 转换',
+    Icon: Database
+  },
+  {
+    id: 'auth',
+    label: 'Auth',
+    title: 'Auth',
+    description: 'CPA Token 管理、测活、重签与推送',
+    Icon: KeyRound
+  },
+  {
+    id: 'settings',
+    label: '配置',
+    title: '配置',
+    description: '邮箱、代理、推送目标与运行环境',
+    Icon: Settings2
+  }
 ];
 
 const emptyAuth: AuthState = {
@@ -160,6 +190,8 @@ export default function App() {
           ? 'pill-ok'
           : 'pill-idle';
 
+  const currentTab = tabs.find((t) => t.id === tab) ?? tabs[0];
+
   return (
     <div className="app-shell">
       <aside className="app-nav">
@@ -168,20 +200,21 @@ export default function App() {
             <div className="nav-logo" aria-hidden title="Grok Register Agent">
               GRA
             </div>
-            <div className="site-name" aria-label="Grok Register Agent">
+            <div className="site-name hidden min-[380px]:flex" aria-label="Grok Register Agent">
               <span>Grok</span>
               <span>Register</span>
               <span>Agent</span>
             </div>
           </div>
 
-          <nav className="flex gap-1 overflow-x-auto px-3 pb-3 lg:flex-col lg:overflow-visible">
+          <nav className="app-nav-links" aria-label="主导航">
             {tabs.map(({ id, label, Icon }) => (
               <button
                 key={id}
                 type="button"
                 onClick={() => setTab(id)}
                 className={cn('nav-link shrink-0', tab === id && 'nav-link-active')}
+                aria-current={tab === id ? 'page' : undefined}
               >
                 <Icon className="h-4 w-4 shrink-0" strokeWidth={2} aria-hidden />
                 <span className="leading-none">{label}</span>
@@ -189,7 +222,7 @@ export default function App() {
             ))}
           </nav>
 
-          <div className="mt-auto space-y-2 border-t border-border p-3">
+          <div className="mt-auto hidden space-y-2 border-t border-border p-3 lg:block">
             {/* 版本 + 检查更新（窄侧栏：一行紧凑） */}
             <SidebarUpdateBar
               update={update}
@@ -230,21 +263,40 @@ export default function App() {
               </button>
             </div>
           </div>
+
+          {/* 移动端：紧凑底栏（主题 / 用户 / 退出） */}
+          <div className="flex items-center gap-2 border-t border-border px-3 py-2 lg:hidden">
+            <div className="min-w-0 flex-1">
+              <ThemeToggle />
+            </div>
+            <span className="truncate text-[12px] font-medium text-muted-foreground">
+              {auth.username}
+            </span>
+            <button
+              type="button"
+              onClick={logout}
+              className="inline-flex h-8 shrink-0 items-center gap-1 rounded-lg px-2 text-[12px] font-medium text-primary"
+              title="退出登录"
+            >
+              <LogOut className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />
+              退出
+            </button>
+          </div>
         </div>
       </aside>
 
       <main className="app-main">
-        <header className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <p className="page-kicker mb-0">Grok Register Agent</p>
+        <header className="page-header">
+          <div className="min-w-0">
+            <h1 className="page-heading">{currentTab.title}</h1>
+            <p className="page-kicker mt-1">{currentTab.description}</p>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <span className={cn('pill', phasePill)}>
+          <div className="page-header-meta">
+            <span className={cn('pill', phasePill)} title="注册机运行阶段">
               <Activity className="h-3.5 w-3.5" />
               {status.phase}
             </span>
-            {/* 时间在日期左边 */}
-            <span className="chip tabular-nums">
+            <span className="chip tabular-nums" title="北京时间">
               {nowTick.toLocaleTimeString('zh-CN', {
                 timeZone: 'Asia/Shanghai',
                 hour12: false,
@@ -252,21 +304,23 @@ export default function App() {
                 minute: '2-digit'
               })}
             </span>
-            <span className="chip">
+            <span className="chip hidden sm:inline-flex" title="北京日期">
               {nowTick.toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' })}
             </span>
           </div>
         </header>
 
-        {tab === 'register' && <RegisterPage onOpenSettings={() => setTab('settings')} />}
-        {tab === 'pool' && <PoolPage />}
-        {tab === 'auth' && <AuthPage onOpenPool={() => setTab('pool')} />}
-        {tab === 'settings' && (
-          <SettingsPage
-            username={auth.username ?? 'admin'}
-            onAuthChanged={(next) => setAuth(next)}
-          />
-        )}
+        <div className="page-content">
+          {tab === 'register' && <RegisterPage onOpenSettings={() => setTab('settings')} />}
+          {tab === 'pool' && <PoolPage />}
+          {tab === 'auth' && <AuthPage onOpenPool={() => setTab('pool')} />}
+          {tab === 'settings' && (
+            <SettingsPage
+              username={auth.username ?? 'admin'}
+              onAuthChanged={(next) => setAuth(next)}
+            />
+          )}
+        </div>
       </main>
 
       {auth.mustChangePassword && (
