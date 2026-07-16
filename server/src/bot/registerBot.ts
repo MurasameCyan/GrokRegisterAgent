@@ -61,11 +61,23 @@ function isNoiseStdoutLine(msg: string): boolean {
   if (!m) return true;
   // 纯时间戳行
   if (/^\d{2}:\d{2}:\d{2}$/.test(m)) return true;
-  // 代理诊断/注入结果必须可见（排查「开了代理却直连」）
-  if (/^\[proxy\]/i.test(m) || /代理配置失败|本地转发失败|未拿到节点|误直连/i.test(m)) {
+  // 仅硬错误/误直连必须可见
+  if (
+    /^\[proxy\]\[!\]/i.test(m) ||
+    /代理配置失败|本地转发失败|未拿到节点|误直连|本轮中止/i.test(m)
+  ) {
     return false;
   }
+  // 常规 [proxy] 启动/本轮摘要一律不进实时日志
+  if (/^\[proxy\]/i.test(m)) {
+    return true;
+  }
+
   const rules: RegExp[] = [
+    // ── 代理/本机就绪噪声（用户要求不显示）──
+    /CF\/本机代理端口就绪/i,
+    /recycle_every\s*=/i,
+    /set_proxy\/本地转发/i,
     /邮件\s*API\s*:/i,
     /email_register\s+build/i,
     /邮箱域名池\s*:/,
@@ -232,6 +244,7 @@ export class RegisterBot extends EventEmitter {
   }
 
   private log(runId: string, text: string, level: LogLevel = 'info') {
+    if (isNoiseStdoutLine(text)) return;
     this.push({ type: 'stdout', runId, level, text, ts: Date.now() });
   }
 
