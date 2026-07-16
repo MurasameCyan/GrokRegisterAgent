@@ -14,6 +14,29 @@ const colorByLevel = {
   stderr: 'text-danger'
 } as const;
 
+/** 汇总行：成功绿 / 失败红 / 共计蓝 */
+const SUMMARY_RE =
+  /^(.*?)(成功\s*[:：]\s*\d+)(.*?)(失败\s*[:：]\s*\d+)(.*?)(共计\s*[:：]\s*\d+)(.*)$/u;
+
+function renderLogText(text: string, levelClass: string) {
+  const m = String(text || '').match(SUMMARY_RE);
+  if (!m) {
+    return <span className={cn('break-all text-[12px]', levelClass)}>{text}</span>;
+  }
+  const [, pre, okPart, mid1, failPart, mid2, totalPart, post] = m;
+  return (
+    <span className="break-all text-[12px] font-medium">
+      {pre ? <span className={levelClass}>{pre}</span> : null}
+      <span className="text-emerald-600 dark:text-emerald-400">{okPart}</span>
+      {mid1 ? <span className="text-muted-foreground">{mid1}</span> : null}
+      <span className="text-danger">{failPart}</span>
+      {mid2 ? <span className="text-muted-foreground">{mid2}</span> : null}
+      <span className="text-info">{totalPart}</span>
+      {post ? <span className={levelClass}>{post}</span> : null}
+    </span>
+  );
+}
+
 export function LogPanel() {
   const logs = useRunStore((s) => s.logs);
   const focusRunId = useRunStore((s) => s.focusRunId);
@@ -132,9 +155,7 @@ export function LogPanel() {
                     #{l.runId.slice(0, 6)}
                   </span>
                 )}
-                <span className={cn('break-all text-[12px]', colorByLevel[l.level] || 'text-foreground')}>
-                  {l.text}
-                </span>
+                {renderLogText(l.text, colorByLevel[l.level] || 'text-foreground')}
               </div>
             </div>
           ))
