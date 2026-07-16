@@ -8,7 +8,10 @@ import asyncio
 from typing import Optional, Union
 import argparse
 from quart import Quart, request, jsonify
-from camoufox.async_api import AsyncCamoufox
+try:
+    from camoufox.async_api import AsyncCamoufox  # optional; not required for chromium path
+except Exception:  # pragma: no cover
+    AsyncCamoufox = None  # type: ignore
 from patchright.async_api import async_playwright
 from db_results import init_db, save_result, load_result, cleanup_old_results
 from browser_configs import browser_config
@@ -163,6 +166,11 @@ class TurnstileAPIServer:
         if self.browser_type in ['chromium', 'chrome', 'msedge']:
             playwright = await async_playwright().start()
         elif self.browser_type == "camoufox":
+            if AsyncCamoufox is None:
+                raise RuntimeError(
+                    "camoufox is not installed; use --browser_type chromium "
+                    "(recommended for multi-arch Docker)"
+                )
             camoufox = AsyncCamoufox(headless=self.headless)
 
         browser_configs = []
@@ -210,11 +218,31 @@ class TurnstileAPIServer:
 
             browser = None
             if self.browser_type in ['chromium', 'chrome', 'msedge'] and playwright:
-                browser = await playwright.chromium.launch(
-                    channel=self.browser_type,
-                    headless=self.headless,
-                    args=browser_args
-                )
+                # Docker multi-arch: prefer patchright-bundled Chromium (no channel).
+                # channel=chrome/msedge only when host has that browser installed.
+                launch_kwargs = {
+                    "headless": self.headless,
+                    "args": browser_args
+                    + [
+                        "--no-sandbox",
+                        "--disable-dev-shm-usage",
+                        "--disable-gpu",
+                        "--disable-software-rasterizer",
+                    ],
+                }
+                if self.browser_type in ("chrome", "msedge"):
+                    launch_kwargs["channel"] = self.browser_type
+                # Optional system chromium (Debian package) when PATCHRIGHT_USE_SYSTEM=1
+                import os as _os
+
+                sys_chrome = (
+                    _os.environ.get("CHROMIUM_PATH")
+                    or _os.environ.get("BROWSER_PATH")
+                    or ""
+                ).strip()
+                if sys_chrome and _os.path.isfile(sys_chrome):
+                    launch_kwargs["executable_path"] = sys_chrome
+                browser = await playwright.chromium.launch(**launch_kwargs)
             elif self.browser_type == "camoufox" and camoufox:
                 browser = await camoufox.start()
 

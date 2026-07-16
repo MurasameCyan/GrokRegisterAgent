@@ -39,6 +39,8 @@ services:
   # 可选：本地 Turnstile 浏览器解算（默认不拉取/不启动）
   # 启用：docker compose --profile solver up -d
   # 或 .env 写 COMPOSE_PROFILES=solver
+  # multi-arch: linux/amd64 + linux/arm64（chromium/patchright；非 camoufox）
+  # ARM 可跑，但 Turnstile 通过率通常仍低于 x86（WebGL/指纹）
   turnstile-solver:
     profiles: ["solver"]
     image: ghcr.io/murasamecyan/grok-turnstile-solver:beta

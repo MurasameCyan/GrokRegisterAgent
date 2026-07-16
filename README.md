@@ -24,10 +24,12 @@ cp .env.example .env
 docker compose up -d
 # 默认拉取 :beta；也可在 docker-compose.yml 改用 :latest
 
-# 可选：外置 Turnstile Solver 子容器（默认不拉取）
+# 可选：外置 Turnstile Solver 子容器（默认不拉取；multi-arch amd64/arm64）
 # docker compose --profile solver up -d
 # 或 .env 写 COMPOSE_PROFILES=solver 且 TURNSTILE_SOLVER_ENABLED=1
 # 设置页「注册方案 → 外置 Turnstile Solver」开关 + 探活图标
+# 镜像：ghcr.io/murasamecyan/grok-turnstile-solver:beta
+# ARM 可运行；Turnstile 成功率通常仍低于 x86
 ```
 
 若 GHCR 包为私有，先登录：

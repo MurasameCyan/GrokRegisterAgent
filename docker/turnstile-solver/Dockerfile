@@ -1,6 +1,8 @@
 # syntax=docker/dockerfile:1.6
 # Optional Turnstile local solver (compose profile: solver)
-# Prefer linux/amd64 — Camoufox/Chromium WebGL is weaker on ARM.
+# Multi-arch: linux/amd64 + linux/arm64 (default browser_type=chromium via patchright).
+# Camoufox is optional and not installed in this image (ARM-friendlier).
+# Note: Turnstile pass rate on ARM may still be lower than x86 (WebGL/fingerprint).
 
 FROM python:3.12-slim-bookworm
 
@@ -39,7 +41,9 @@ RUN apt-get update \
 COPY requirements.txt /app/requirements.txt
 RUN python -m pip install --upgrade pip \
  && python -m pip install -r /app/requirements.txt \
- && python -m patchright install chromium || true
+ && python -m patchright install --with-deps chromium \
+ || python -m patchright install chromium \
+ || true
 
 COPY app/ /app/
 COPY entrypoint.sh /entrypoint.sh

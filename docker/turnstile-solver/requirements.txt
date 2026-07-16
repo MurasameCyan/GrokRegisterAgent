@@ -1,3 +1,4 @@
+# multi-arch (amd64/arm64): chromium via patchright; camoufox not required
 quart>=0.19.0
 patchright>=1.49.0
 rich>=13.0.0
