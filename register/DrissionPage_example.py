@@ -4164,12 +4164,11 @@ def run_single_registration(
                 em = str(pe)
                 # Turnstile 通过后提交触发导航时 Drission 偶发整段抛刷新
                 if "刷新" in em or "连接已断开" in em or "disconnected" in em.lower():
-                    print(f"[Warn] 资料提交遇导航断开，视为可能已提交: {em[:120]}")
-                    given_name, family_name, password = build_profile()
+                    print(f"[Warn] 资料提交遇导航断开，继续等 SSO（密码可能未落盘）: {em[:120]}")
                     profile = {
-                        "given_name": given_name,
-                        "family_name": family_name,
-                        "password": password,
+                        "given_name": "",
+                        "family_name": "",
+                        "password": "",
                         "plan": plan_mode,
                         "nav_soft": True,
                     }
