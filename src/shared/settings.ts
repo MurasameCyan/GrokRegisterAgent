@@ -1232,7 +1232,7 @@ export function validateSettings(s: AppSettings): Record<string, string> {
     ) {
       errors.proxyProbeConcurrency = '测活并发须在 1 到 20 之间';
     }
-    // 互斥模式校验：sing-box / CF / 普通
+    // 仅 sing-box / 直连
     if (s.singBoxEnabled) {
       const nodes = String(s.singBoxNodes || '')
         .split(/\r?\n/)
@@ -1240,26 +1240,6 @@ export function validateSettings(s: AppSettings): Record<string, string> {
         .filter((l) => l && !l.startsWith('#'));
       if (nodes.length === 0) {
         errors.singBoxNodes = '已开启 sing-box，请粘贴至少一个节点分享链接';
-      }
-      // 端口固定 2080，不再校验用户输入
-    } else if (s.cfProxyEnabled) {
-      if (!String(s.cfProxyDomain || '').trim()) {
-        errors.cfProxyDomain =
-          '已开启 CF 独立代理，请填写 Workers/Pages/自定义域名（域名:端口）';
-      }
-      const port = Number(s.cfProxyPort);
-      if (!Number.isInteger(port) || port < 1 || port > 65535) {
-        errors.cfProxyPort = '本地端口须在 1～65535';
-      }
-      const scheme = String(s.cfProxyLocalScheme || 'socks5').toLowerCase();
-      if (scheme !== 'socks5' && scheme !== 'http') {
-        errors.cfProxyLocalScheme = '本地协议须为 socks5 或 http';
-      }
-    } else if (s.proxyEnabled && !s.proxyPoolEnabled) {
-      // 代理池（待测/可用）允许为空；仅「未开池、只开单代理」且单代理也空时提示
-      const http = String(s.proxy || '').trim();
-      if (!http) {
-        errors.proxy = '已开启代理且未使用代理池，请填写 HTTP 代理';
       }
     }
   } catch (err) {
@@ -1301,28 +1281,13 @@ export function buildSingBoxLocalProxyUrl(
  * - 普通代理开 → 关 CF / sing-box
  */
 export function enforceProxyModeMutex(s: AppSettings): AppSettings {
-  if (s.singBoxEnabled) {
-    return {
-      ...s,
-      cfProxyEnabled: false,
-      proxyEnabled: false,
-      proxyPoolEnabled: false
-    };
-  }
-  if (s.cfProxyEnabled) {
-    return {
-      ...s,
-      singBoxEnabled: false,
-      proxyEnabled: false,
-      proxyPoolEnabled: false
-    };
-  }
-  if (s.proxyEnabled) {
-    return {
-      ...s,
-      singBoxEnabled: false,
-      cfProxyEnabled: false
-    };
-  }
-  return s;
+  // 仅保留 Sing-Box / 直连；CF 与普通代理/池已移除
+  return {
+    ...s,
+    cfProxyEnabled: false,
+    proxyEnabled: false,
+    proxyPoolEnabled: false,
+    // 保留字段兼容旧配置文件，运行时一律不走
+    proxy: s.singBoxEnabled ? s.proxy : '',
+  };
 }

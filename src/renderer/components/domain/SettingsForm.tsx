@@ -1,18 +1,15 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   Activity,
   ChevronDown,
   ChevronRight,
   Clipboard,
-  Download,
   Github,
   KeyRound,
   Loader2,
   RefreshCw,
   Save,
-  Terminal,
-  Trash2,
-  X
+  Terminal
 } from 'lucide-react';
 import { Card, CardBody, CardHeader } from '@renderer/components/ui/Card';
 import { Button } from '@renderer/components/ui/Button';
@@ -28,29 +25,15 @@ import type {
   CpaMintMode,
   MailProvider,
   PoolMode,
-  ProxyPoolEntry,
   RegisterMode
 } from '@shared/settings';
 import {
-  appendProxiesToPoolTextDetailed,
-  buildCfLocalProxyUrl,
   buildSingBoxLocalProxyUrl,
   DEFAULT_SETTINGS,
   enforceProxyModeMutex,
-  moveProxiesToAlivePool,
-  parseProxyPoolEntries,
-  proxySchemeBadgeLabel,
-  removeProxiesFromPoolText,
-  sanitizeProxyPoolText,
-  stripProxyComment,
   validateSettings
 } from '@shared/settings';
-import type {
-  CfProxyLogResult,
-  CfProxyStatus,
-  SingBoxLogResult,
-  SingBoxStatus
-} from '@shared/ipc';
+import type { SingBoxLogResult, SingBoxStatus } from '@shared/ipc';
 import { cn } from '@renderer/lib/cn';
 
 /** 合并默认值，避免旧 settings 缺字段 / null 导致渲染崩溃 */
@@ -68,36 +51,12 @@ function normalizeSettingsDraft(raw: AppSettings | null | undefined): AppSetting
       adminAuth: String(mailIn.adminAuth ?? DEFAULT_SETTINGS.mail.adminAuth ?? ''),
       domain: String(mailIn.domain ?? DEFAULT_SETTINGS.mail.domain ?? '')
     },
-    proxy: String(r.proxy ?? ''),
-    proxyPool: String(r.proxyPool ?? ''),
-    proxyPoolAlive: sanitizeProxyPoolText(String(r.proxyPoolAlive ?? '')),
-    proxyEnabled: !!r.proxyEnabled,
-    proxyPoolEnabled: !!r.proxyPoolEnabled,
-    proxyMode:
-      r.proxyMode === 'random' || r.proxyMode === 'round_robin'
-        ? r.proxyMode
-        : DEFAULT_SETTINGS.proxyMode,
-    proxyProbeConcurrency: (() => {
-      const n = Number(r.proxyProbeConcurrency);
-      return Number.isInteger(n) && n >= 1 && n <= 20
-        ? n
-        : DEFAULT_SETTINGS.proxyProbeConcurrency;
-    })(),
-    cfProxyEnabled: !!r.cfProxyEnabled,
-    cfProxyDomain: String(r.cfProxyDomain ?? DEFAULT_SETTINGS.cfProxyDomain),
-    cfProxyToken: String(r.cfProxyToken ?? DEFAULT_SETTINGS.cfProxyToken),
-    cfProxyPort: (() => {
-      const n = Number(r.cfProxyPort);
-      return Number.isInteger(n) && n >= 1 && n <= 65535
-        ? n
-        : DEFAULT_SETTINGS.cfProxyPort;
-    })(),
-    cfProxyCdnip: String(r.cfProxyCdnip || DEFAULT_SETTINGS.cfProxyCdnip),
-    cfProxyPyip: String(r.cfProxyPyip ?? DEFAULT_SETTINGS.cfProxyPyip),
-    cfProxyDns: String(r.cfProxyDns || DEFAULT_SETTINGS.cfProxyDns),
-    cfProxyEnableEch: r.cfProxyEnableEch !== false,
-    cfProxyCnrule: r.cfProxyCnrule !== false,
-    cfProxyLocalScheme: r.cfProxyLocalScheme === 'http' ? 'http' : 'socks5',
+    proxy: '',
+    proxyPool: '',
+    proxyPoolAlive: '',
+    proxyEnabled: false,
+    proxyPoolEnabled: false,
+    cfProxyEnabled: false,
     singBoxEnabled: !!r.singBoxEnabled,
     singBoxNodes: String(r.singBoxNodes ?? DEFAULT_SETTINGS.singBoxNodes),
     singBoxSelected: String(
@@ -106,37 +65,6 @@ function normalizeSettingsDraft(raw: AppSettings | null | undefined): AppSetting
     // 固定端口，UI 不可改
     singBoxPort: 2080
   };
-}
-
-/** 行内协议徽章着色：HTTP 蓝 / SOCKS5 紫 / SOCKS4 橙 / HTTPS 青 */
-function proxySchemeChipClass(scheme?: string): string {
-  const s = String(scheme || 'http').toLowerCase();
-  if (s === 'socks5' || s === 'socks5h') {
-    return 'bg-violet-500/15 text-violet-700 dark:text-violet-300 border border-violet-500/25';
-  }
-  if (s === 'socks4' || s === 'socks4a') {
-    return 'bg-amber-500/15 text-amber-800 dark:text-amber-300 border border-amber-500/25';
-  }
-  if (s === 'https') {
-    return 'bg-cyan-500/15 text-cyan-800 dark:text-cyan-300 border border-cyan-500/25';
-  }
-  // http 默认
-  return 'bg-sky-500/15 text-sky-800 dark:text-sky-300 border border-sky-500/25';
-}
-
-function ProxySchemeBadge({ scheme }: { scheme?: string }) {
-  const sch = scheme || 'http';
-  return (
-    <span
-      className={cn(
-        'chip shrink-0 px-1.5 py-0 text-[10px] font-semibold tracking-wide',
-        proxySchemeChipClass(sch)
-      )}
-      title={`协议 ${proxySchemeBadgeLabel(sch)}（${sch}://）`}
-    >
-      {proxySchemeBadgeLabel(sch)}
-    </span>
-  );
 }
 
 const TEXTAREA_CLASS =
@@ -239,135 +167,15 @@ function PoolModeSelect({
   );
 }
 
-type ProxyProbeUi = {
-  status: 'idle' | 'loading' | 'ok' | 'fail';
-  message?: string;
-};
-
-function ProxyPoolPreview({
-  entries,
-  probes,
-  probingKey,
-  failCount,
-  onProbeOne,
-  onRemoveOne
-}: {
-  entries: ProxyPoolEntry[];
-  probes: Record<string, ProxyProbeUi>;
-  probingKey: string | null;
-  failCount: number;
-  onProbeOne: (proxy: string) => void;
-  /** 批量删除/全部测活仅用折叠条顶部按钮，此处不再重复 */
-  onRemoveOne: (proxy: string) => void;
-}) {
-  if (entries.length === 0) return null;
-  return (
-    <div className="mt-3 space-y-2 rounded-xl border border-border/60 bg-muted/40 p-3">
-      <p className="text-[12px] text-muted-foreground">
-        已识别 {entries.length} 条
-        {failCount > 0 ? ` · 失败 ${failCount}` : ''}
-      </p>
-      <ul className="max-h-56 space-y-1.5 overflow-y-auto">
-        {entries.map((e) => {
-          const probe = probes[e.proxy] || { status: 'idle' as const };
-          const loading =
-            probe.status === 'loading' ||
-            probingKey === e.proxy ||
-            probingKey === '__all__';
-          return (
-            <li
-              key={e.proxy}
-              className="flex flex-wrap items-center gap-2 rounded-lg bg-card/80 px-2.5 py-2 text-[12px]"
-            >
-              <ProxySchemeBadge scheme={e.scheme} />
-              {e.label ? (
-                <span className="chip shrink-0 bg-primary/10 text-primary">{e.label}</span>
-              ) : (
-                <span className="chip shrink-0 text-muted-foreground">无标签</span>
-              )}
-              <span
-                className="min-w-0 flex-1 truncate font-mono text-muted-foreground"
-                title={e.proxy}
-              >
-                {e.host}
-              </span>
-              {probe.status === 'ok' && (
-                <span
-                  className="max-w-[12rem] truncate text-emerald-600 dark:text-emerald-400"
-                  title={probe.message}
-                >
-                  {probe.message || 'OK'}
-                </span>
-              )}
-              {probe.status === 'fail' && (
-                <span className="max-w-[12rem] truncate text-danger" title={probe.message}>
-                  {probe.message || '失败'}
-                </span>
-              )}
-              {probe.status === 'fail' && (
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  className="h-7 shrink-0 px-2 text-danger"
-                  disabled={loading}
-                  onClick={() => onRemoveOne(e.proxy)}
-                  title="从池中删除此条"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </Button>
-              )}
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                className="h-7 shrink-0 px-2"
-                disabled={loading}
-                onClick={() => onProbeOne(e.proxy)}
-              >
-                {loading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : '测活'}
-              </Button>
-            </li>
-          );
-        })}
-      </ul>
-    </div>
-  );
-}
-
 export function SettingsForm() {
   const data = useSettingsStore((s) => s.data);
   const reload = useSettingsStore((s) => s.reload);
   const push = useToastStore((s) => s.push);
   const [draft, setDraft] = useState<AppSettings | null>(null);
   const [saving, setSaving] = useState(false);
-  const [proxyProbes, setProxyProbes] = useState<Record<string, ProxyProbeUi>>({});
-  const [probingKey, setProbingKey] = useState<string | null>(null);
-  /** 可用池默认折叠 */
-  const [alivePoolOpen, setAlivePoolOpen] = useState(false);
-  /** 待定池折叠（与可用池同风格） */
-  const [pendingPoolOpen, setPendingPoolOpen] = useState(true);
   /** 推送设置：连接设定默认折叠 */
   const [cpaConnOpen, setCpaConnOpen] = useState(false);
   const [g2ConnOpen, setG2ConnOpen] = useState(false);
-  const [fetchingProxies, setFetchingProxies] = useState(false);
-  /** 拉列表时是否走当前 HTTP 代理（被墙时） */
-  const [fetchViaProxy, setFetchViaProxy] = useState(false);
-  /** hide.mn 翻页数（每页约 64 条） */
-  const [fetchPages, setFetchPages] = useState(1);
-  /** 网页拉取结果条（持久展示，避免 toast 一闪而过看不清） */
-  const [fetchResult, setFetchResult] = useState<{
-    tone: 'ok' | 'warn' | 'danger' | 'info';
-    title: string;
-    detail: string;
-  } | null>(null);
-  const pendingPoolRef = useRef<HTMLTextAreaElement | null>(null);
-  /** CF cfwp 运行状态（必须在 early return 前声明 hooks） */
-  const [cfStatus, setCfStatus] = useState<CfProxyStatus | null>(null);
-  const [cfBusy, setCfBusy] = useState(false);
-  const [cfLog, setCfLog] = useState<CfProxyLogResult | null>(null);
-  const [cfLogLoading, setCfLogLoading] = useState(false);
-  const [cfLogCleared, setCfLogCleared] = useState(false);
   /** sing-box 运行状态 / 日志 / 解析节点 */
   const [sbStatus, setSbStatus] = useState<SingBoxStatus | null>(null);
   const [sbBusy, setSbBusy] = useState(false);
@@ -393,58 +201,9 @@ export function SettingsForm() {
     }
   }, [data]);
 
-  /** 刷新 CF cfwp 状态（hooks 必须在 early return 之前） */
-  const refreshCfStatus = async () => {
-    try {
-      if (typeof window.api?.getCfProxyStatus !== 'function') return;
-      const st = await window.api.getCfProxyStatus();
-      setCfStatus(st);
-    } catch {
-      /* ignore */
-    }
-  };
 
-  /** 读取 cfwp 最近日志 */
-  const refreshCfLog = async () => {
-    try {
-      if (typeof window.api?.getCfProxyLog !== 'function') return;
-      setCfLogLoading(true);
-      const log = await window.api.getCfProxyLog(200);
-      setCfLog(log);
-      setCfLogCleared(false);
-    } catch (err) {
-      setCfLog({
-        ok: false,
-        logPath: cfStatus?.logPath ?? null,
-        content: '',
-        truncated: false,
-        error: err instanceof Error ? err.message : String(err)
-      });
-    } finally {
-      setCfLogLoading(false);
-    }
-  };
 
-  const copyCfLog = async () => {
-    const text = cfLog?.content || '';
-    if (!text) return;
-    try {
-      await navigator.clipboard.writeText(text);
-      push({ tone: 'ok', title: '已复制 cfwp 日志' });
-    } catch (err) {
-      push({ tone: 'danger', title: '复制失败', description: String(err) });
-    }
-  };
 
-  useEffect(() => {
-    void refreshCfStatus();
-    if (draft?.cfProxyEnabled) void refreshCfLog();
-    const t = window.setInterval(() => {
-      if (draft?.cfProxyEnabled) void refreshCfStatus();
-    }, 8000);
-    return () => window.clearInterval(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draft?.cfProxyEnabled]);
 
   /** 刷新 sing-box 状态 */
   const refreshSbStatus = async () => {
@@ -527,11 +286,7 @@ export function SettingsForm() {
   const errors = useMemo(() => {
     if (!draft) return {} as Record<string, string>;
     try {
-      const e = { ...validateSettings(draft) };
-      // 代理池允许空：不因待测/可用均为空而拦截保存
-      delete e.proxyPool;
-      delete e.proxyPoolAlive;
-      return e;
+      return { ...validateSettings(draft) };
     } catch (err) {
       console.error('[SettingsForm] validateSettings failed', err);
       return {
@@ -540,64 +295,18 @@ export function SettingsForm() {
     }
   }, [draft]);
 
-  const proxyPoolEntries = useMemo(() => {
-    if (!draft?.proxyPool) return [] as ProxyPoolEntry[];
-    return parseProxyPoolEntries(draft.proxyPool);
-  }, [draft?.proxyPool]);
-
-  const alivePoolEntries = useMemo(() => {
-    if (!draft?.proxyPoolAlive) return [] as ProxyPoolEntry[];
-    const list = parseProxyPoolEntries(draft.proxyPoolAlive);
-    // 成功次数多的排前，便于扫「#成功N」
-    return list.slice().sort((a, b) => (b.successCount || 0) - (a.successCount || 0));
-  }, [draft?.proxyPoolAlive]);
-
-  const aliveSuccessTotal = useMemo(
-    () =>
-      alivePoolEntries.reduce(
-        (sum, e) => sum + (typeof e.successCount === 'number' ? e.successCount : 0),
-        0
-      ),
-    [alivePoolEntries]
-  );
-
-  const failedProxies = useMemo(() => {
-    return proxyPoolEntries
-      .filter((e) => proxyProbes[e.proxy]?.status === 'fail')
-      .map((e) => e.proxy);
-  }, [proxyPoolEntries, proxyProbes]);
-
-  const failedAliveProxies = useMemo(() => {
-    return alivePoolEntries
-      .filter((e) => proxyProbes[e.proxy]?.status === 'fail')
-      .map((e) => e.proxy);
-  }, [alivePoolEntries, proxyProbes]);
-
   /** 一次改多个字段，避免连点 update 互相覆盖（推送目标开关必须用这个） */
   const patch = (partial: Partial<AppSettings>) =>
     setDraft((prev) => (prev ? { ...prev, ...partial } : prev));
 
-  /** 开 sing-box / CF → 关其它；开普通 → 关独立代理 */
-  const setProxyMode = (mode: 'off' | 'normal' | 'cf' | 'singbox') => {
+  /** 仅 Sing-Box / 直连；强制关闭已移除的 CF / 普通代理 */
+  const setProxyMode = (mode: 'off' | 'singbox') => {
     if (mode === 'singbox') {
       patch({
         singBoxEnabled: true,
         cfProxyEnabled: false,
         proxyEnabled: false,
         proxyPoolEnabled: false
-      });
-    } else if (mode === 'cf') {
-      patch({
-        singBoxEnabled: false,
-        cfProxyEnabled: true,
-        proxyEnabled: false,
-        proxyPoolEnabled: false
-      });
-    } else if (mode === 'normal') {
-      patch({
-        singBoxEnabled: false,
-        cfProxyEnabled: false,
-        proxyEnabled: true
       });
     } else {
       patch({
@@ -609,36 +318,6 @@ export function SettingsForm() {
     }
   };
 
-  const runCfAction = async (action: 'start' | 'stop' | 'sync') => {
-    setCfBusy(true);
-    try {
-      const api = window.api;
-      const r =
-        action === 'start'
-          ? await api.startCfProxy()
-          : action === 'stop'
-            ? await api.stopCfProxy()
-            : await api.syncCfProxy();
-      setCfStatus(r);
-      void refreshCfLog();
-      if (r.lastError && !r.running) {
-        push({ tone: 'danger', title: 'CF 代理异常', description: r.lastError });
-      } else if (action === 'stop') {
-        push({ tone: 'ok', title: '已停止 CF 代理' });
-      } else if (r.running) {
-        push({
-          tone: 'ok',
-          title: 'CF 代理运行中',
-          description: r.localUrl || `127.0.0.1:${r.port}`
-        });
-      }
-    } catch (err) {
-      push({ tone: 'danger', title: 'CF 代理操作失败', description: String(err) });
-      void refreshCfLog();
-    } finally {
-      setCfBusy(false);
-    }
-  };
 
   const runSbAction = async (action: 'start' | 'stop' | 'sync') => {
     setSbBusy(true);
@@ -684,454 +363,23 @@ export function SettingsForm() {
   const update = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) =>
     setDraft({ ...draft, [key]: value });
 
-  /** 从网页拉取代理并追加到待测池（默认 hide.mn） */
-  const fetchProxiesFromWeb = async () => {
-    if (!draft) return;
-    const url = String(
-      draft.proxyFetchUrl || 'https://hide.mn/en/proxy-list/'
-    ).trim();
-    if (!/^https?:\/\//i.test(url)) {
-      const msg = 'URL 须以 http(s):// 开头';
-      setFetchResult({ tone: 'danger', title: '拉取失败', detail: msg });
-      push({ tone: 'warn', title: '拉取失败', description: msg });
-      return;
-    }
-    if (fetchViaProxy && !String(draft.proxy || '').trim()) {
-      const msg = '已勾选「经代理拉取」，请先填写上方 HTTP 代理，或关闭该开关直连';
-      setFetchResult({ tone: 'warn', title: '未配置 HTTP 代理', detail: msg });
-      push({ tone: 'warn', title: '未配置 HTTP 代理', description: msg });
-      return;
-    }
-    setFetchingProxies(true);
-    setFetchResult({
-      tone: 'info',
-      title: '正在拉取…',
-      detail: `${url}${fetchPages > 1 ? ` · ${fetchPages} 页` : ''}${fetchViaProxy ? ' · 经代理' : ''}`
-    });
-    try {
-      const r = await window.api.fetchProxiesFromUrl({
-        url,
-        viaProxy: fetchViaProxy,
-        pages: fetchPages
-      });
-      if (!r.ok || !r.lines?.length) {
-        const detail =
-          (r.message || '未解析到代理') +
-          (fetchViaProxy ? '' : ' · 若本机打不开 hide.mn，可开「经 HTTP 代理拉取」');
-        setFetchResult({ tone: 'danger', title: '拉取失败 · 未写入池', detail });
-        push({
-          tone: 'danger',
-          title: '拉取失败 · 未写入池',
-          description: detail,
-          duration: 10000
-        });
-        return;
-      }
-
-      const beforeEntries = parseProxyPoolEntries(draft.proxyPool).length;
-      // 待定池可写导入戳；可用池绝对不走此路径
-      const append = appendProxiesToPoolTextDetailed(
-        draft.proxyPool || '',
-        r.lines,
-        r.lines.join('\n'),
-        { stamp: true }
-      );
-      const afterEntries = parseProxyPoolEntries(append.text).length;
-      // 以实际解析条数为准（比 added 更直观）
-      const delta = Math.max(0, afterEntries - beforeEntries);
-      const added = Math.max(append.added, delta);
-
-      if (added <= 0) {
-        const detail =
-          `解析到 ${r.count} 条，但待测池无新增` +
-          (append.skipped > 0 ? `（已存在跳过 ${append.skipped}` : '（') +
-          (append.invalid > 0 ? ` · 无效 ${append.invalid}` : '') +
-          (append.skipped > 0 || append.invalid > 0 ? '）' : '）') +
-          ` · 当前待测 ${afterEntries} 条` +
-          (r.sample?.length ? ` · 例 ${r.sample[0]}` : '');
-        setFetchResult({
-          tone: 'warn',
-          title: '拉取完成 · 无新条目写入',
-          detail
-        });
-        push({
-          tone: 'warn',
-          title: '拉取完成 · 无新条目',
-          description: detail,
-          duration: 9000
-        });
-        // 仍更新 URL 记忆
-        setDraft({ ...draft, proxyFetchUrl: url });
-        return;
-      }
-
-      const nextDraft = {
-        ...draft,
-        proxyPool: append.text,
-        proxyFetchUrl: url
-      };
-      setDraft(nextDraft);
-
-      // 立即落盘，避免「看起来入了 / 一刷新就没了」
-      let saved = false;
-      try {
-        await window.api.saveSettings(nextDraft);
-        // 用 store.set 同步 data，避免 reload 竞态把 draft 打回旧值
-        useSettingsStore.getState().set(nextDraft);
-        saved = true;
-      } catch {
-        saved = false;
-      }
-
-      const detail =
-        `新增 ${added} 条 → 待定池现 ${afterEntries} 条` +
-        (append.skipped > 0 ? ` · 跳过重复 ${append.skipped}` : '') +
-        (r.pagesFetched && r.pagesFetched > 1 ? ` · 抓取 ${r.pagesFetched} 页` : '') +
-        (r.sample?.length ? ` · 例 ${r.sample.slice(0, 2).join(' | ')}` : '') +
-        (saved
-          ? ' · 已自动保存 · 请在「待定池」点全部测活（三绿进可用池）'
-          : ' · 自动保存失败，请手动点右下角「保存」');
-
-      setFetchResult({
-        tone: saved ? 'ok' : 'warn',
-        title: saved
-          ? `网页导入成功 · 已写入待定池并保存 +${added}`
-          : `已写入待定池 +${added}（未保存）`,
-        detail
-      });
-      push({
-        tone: saved ? 'ok' : 'warn',
-        title: saved ? `已入待定池并保存 +${added}` : `已入待定池 +${added}（请手动保存）`,
-        description: detail,
-        duration: 12000
-      });
-      setPendingPoolOpen(true);
-
-      // 滚到待测池文本框，让用户立刻看到内容
-      requestAnimationFrame(() => {
-        const el = pendingPoolRef.current;
-        if (!el) return;
-        el.focus();
-        el.scrollTop = el.scrollHeight;
-        el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-      });
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
-      setFetchResult({ tone: 'danger', title: '拉取异常 · 未写入池', detail });
-      push({
-        tone: 'danger',
-        title: '拉取异常 · 未写入池',
-        description: detail,
-        duration: 10000
-      });
-    } finally {
-      setFetchingProxies(false);
-    }
-  };
-
-  /** 测活成功 → 移入可用池，从待测池移除 */
-  const promoteOkProxies = (okProxies: string[], base?: AppSettings) => {
-    const src = base || draft;
-    if (!src || okProxies.length === 0) return src;
-    const { proxyPool, proxyPoolAlive, moved } = moveProxiesToAlivePool(
-      src.proxyPool || '',
-      src.proxyPoolAlive || '',
-      okProxies
-    );
-    if (moved <= 0) return src;
-    const nextDraft = { ...src, proxyPool, proxyPoolAlive };
-    setDraft(nextDraft);
-    setProxyProbes((prev) => {
-      const next = { ...prev };
-      for (const p of okProxies) {
-        delete next[p];
-        const stripped = stripProxyComment(p);
-        if (stripped) delete next[stripped];
-      }
-      return next;
-    });
-    // 有新成功项时自动展开可用池，方便确认
-    setAlivePoolOpen(true);
-    return nextDraft;
-  };
-
-  const probeOne = async (proxy: string) => {
-    setProbingKey(proxy);
-    setProxyProbes((prev) => ({ ...prev, [proxy]: { status: 'loading' } }));
-    try {
-      const r = await window.api.testProxy(proxy);
-      if (r.ok) {
-        const next = promoteOkProxies([proxy]);
-        // 去掉 HTML 碎片（旧版把错误页正文拼进 message）
-        const cleanMsg = String(r.message || '')
-          .replace(/<[^>]+>/g, ' ')
-          .replace(/\s+/g, ' ')
-          .trim()
-          .slice(0, 160);
-        push({
-          tone: 'ok',
-          title: '测活成功 → 已移入可用池',
-          description: cleanMsg || proxy.slice(0, 48),
-          duration: 6000
-        });
-        // 自动保存在 probe 结束后由外层可选触发（见 proxyAutoSaveOnRemoveFailed）
-        if (next && draft.proxyAutoSaveOnRemoveFailed) {
-          try {
-            await window.api.saveSettings(next);
-            await reload();
-          } catch {
-            /* 保存失败不阻断测活结果 */
-          }
-        }
-      } else {
-        setProxyProbes((prev) => ({
-          ...prev,
-          [proxy]: {
-            status: 'fail',
-            message: r.message || '失败'
-          }
-        }));
-      }
-    } catch (err) {
-      setProxyProbes((prev) => ({
-        ...prev,
-        [proxy]: { status: 'fail', message: String(err) }
-      }));
-    } finally {
-      setProbingKey(null);
-    }
-  };
-
-  const probeAll = async () => {
-    if (proxyPoolEntries.length === 0) return;
-    setProbingKey('__all__');
-    const loadingMap: Record<string, ProxyProbeUi> = {};
-    for (const e of proxyPoolEntries) loadingMap[e.proxy] = { status: 'loading' };
-    setProxyProbes((prev) => ({ ...prev, ...loadingMap }));
-
-    // 分块测活：单条正常、批量全灭多为高并发打爆 xAI/CF。
-    // 块更小、并发更低；结果按 proxy 字段对齐，避免 index 错位。
-    const CHUNK = 8;
-    const conc = Math.max(1, Math.min(3, Number(draft.proxyProbeConcurrency) || 3));
-    const timeoutMs = 10000;
-    const proxies = proxyPoolEntries.map((e) => e.proxy);
-    let totalOk = 0;
-    let totalFail = 0;
-    let hardError: string | null = null;
-    const allOk: string[] = [];
-    let workingDraft = draft;
-
-    /** 块内按 proxy 对齐结果；块 HTTP 失败则回退串行单条（与单测同一路径） */
-    const probeChunk = async (
-      chunk: string[]
-    ): Promise<Array<{ proxy: string; ok: boolean; message: string }>> => {
-      try {
-        const batch = await window.api.testProxyBatch({
-          proxies: chunk,
-          concurrency: conc,
-          timeoutMs
-        });
-        const byKey = new Map<string, { ok: boolean; message: string }>();
-        const indexResult = (key: string, ok: boolean, message: string) => {
-          const k = String(key || '').trim();
-          if (!k) return;
-          const row = { ok, message };
-          byKey.set(k, row);
-          byKey.set(k.replace(/^https?:\/\//i, ''), row);
-          try {
-            const u = new URL(k.includes('://') ? k : `http://${k}`);
-            const hp = `${u.hostname}:${u.port || '80'}`;
-            byKey.set(hp, row);
-            byKey.set(`http://${hp}`, row);
-          } catch {
-            /* ignore */
-          }
-        };
-        for (let i = 0; i < (batch.results || []).length; i++) {
-          const r = batch.results[i];
-          const ok = Boolean(r?.ok);
-          const message = String(r?.message || (ok ? 'ok' : '失败'));
-          indexResult(String(r?.proxy || ''), ok, message);
-          // 保序：也用请求侧原始串索引
-          if (chunk[i]) indexResult(chunk[i], ok, message);
-        }
-        return chunk.map((proxy, i) => {
-          const r =
-            byKey.get(proxy) ||
-            byKey.get(proxy.replace(/^https?:\/\//i, '')) ||
-            (batch.results?.[i]
-              ? {
-                  ok: Boolean(batch.results[i].ok),
-                  message: String(batch.results[i].message || '失败')
-                }
-              : null);
-          if (r) {
-            return {
-              proxy,
-              ok: Boolean(r.ok),
-              message: String(r.message || '失败')
-            };
-          }
-          return { proxy, ok: false, message: '无测活结果' };
-        });
-      } catch (err) {
-        const msg = String(err);
-        hardError = msg;
-        // 整块 HTTP 失败：回退逐条 testProxy（与「单条测活」一致）
-        const out: Array<{ proxy: string; ok: boolean; message: string }> = [];
-        for (const proxy of chunk) {
-          try {
-            const r = await window.api.testProxy(proxy);
-            out.push({
-              proxy,
-              ok: Boolean(r.ok),
-              message: String(r.message || (r.ok ? 'ok' : '失败'))
-                .replace(/<[^>]+>/g, ' ')
-                .replace(/\s+/g, ' ')
-                .trim()
-                .slice(0, 160)
-            });
-          } catch (e2) {
-            out.push({
-              proxy,
-              ok: false,
-              message: msg.includes('524')
-                ? '请求超时(524)，单条回退仍失败'
-                : String(e2).slice(0, 120)
-            });
-          }
-        }
-        return out;
-      }
-    };
-
-    try {
-      for (let offset = 0; offset < proxies.length; offset += CHUNK) {
-        const chunk = proxies.slice(offset, offset + CHUNK);
-        const chunkNo = Math.floor(offset / CHUNK) + 1;
-        const chunkTotal = Math.ceil(proxies.length / CHUNK);
-        const rows = await probeChunk(chunk);
-        const chunkOk: string[] = [];
-        setProxyProbes((prev) => {
-          const next = { ...prev };
-          for (const row of rows) {
-            if (row.ok) {
-              chunkOk.push(row.proxy);
-              delete next[row.proxy];
-            } else {
-              next[row.proxy] = {
-                status: 'fail',
-                message: row.message || '失败'
-              };
-            }
-          }
-          return next;
-        });
-        if (chunkOk.length > 0) {
-          allOk.push(...chunkOk);
-          const promoted = promoteOkProxies(chunkOk, workingDraft);
-          if (promoted) workingDraft = promoted;
-        }
-        const chunkFail = Math.max(0, chunk.length - chunkOk.length);
-        totalOk += chunkOk.length;
-        totalFail += chunkFail;
-        if (chunkNo === chunkTotal || chunkNo % 2 === 0) {
-          push({
-            tone: totalOk > 0 ? 'ok' : 'warn',
-            title: `测活进度 ${chunkNo}/${chunkTotal}`,
-            description: `已完成 ${Math.min(offset + chunk.length, proxies.length)}/${proxies.length} · 成功 ${totalOk} · 失败 ${totalFail}`
-          });
-        }
-        // 块间稍歇，降低 xAI/CF 限流导致「全灭」
-        if (offset + CHUNK < proxies.length) {
-          await new Promise((r) => window.setTimeout(r, 400));
-        }
-      }
-      if (allOk.length > 0 && draft.proxyAutoSaveOnRemoveFailed && workingDraft) {
-        try {
-          await window.api.saveSettings(workingDraft);
-          await reload();
-        } catch {
-          /* ignore */
-        }
-      }
-      const aliveNow = parseProxyPoolEntries(workingDraft?.proxyPoolAlive || '').length;
-      const pendingNow = parseProxyPoolEntries(workingDraft?.proxyPool || '').length;
-      push({
-        tone: totalFail > 0 ? 'warn' : 'ok',
-        title: '代理池测活完成',
-        description:
-          `共测 ${proxies.length} · 成功 ${totalOk}（已迁入「可用池」）· 失败 ${totalFail}` +
-          ` · 可用池 ${aliveNow} · 待定剩 ${pendingNow}` +
-          `（分块 ${CHUNK} · 并发 ${conc}${hardError ? ' · 含块错误' : ''}）` +
-          (totalOk > 0 ? ' · 待定变少是迁入可用，正常' : ''),
-        duration: 12000
-      });
-      if (totalOk > 0) {
-        setFetchResult({
-          tone: 'ok',
-          title: `测活完成 · ${totalOk} 条已进可用池`,
-          detail: `失败 ${totalFail} 仍在待测 · 可用池现 ${aliveNow} 条 · 请确认已保存`
-        });
-        setAlivePoolOpen(true);
-      }
-    } catch (err) {
-      setProxyProbes((prev) => {
-        const next = { ...prev };
-        for (const e of proxyPoolEntries) {
-          if (next[e.proxy]?.status === 'loading') {
-            next[e.proxy] = { status: 'fail', message: String(err) };
-          }
-        }
-        return next;
-      });
-      push({ tone: 'danger', title: '代理池测活失败', description: String(err) });
-    } finally {
-      setProbingKey(null);
-    }
-  };
-
-  const removeProxiesFromDraft = (
-    proxies: string[],
-    which: 'pending' | 'alive' = 'pending'
-  ): AppSettings | null => {
-    if (!proxies.length) return null;
-    const key = which === 'alive' ? 'proxyPoolAlive' : 'proxyPool';
-    let nextText = removeProxiesFromPoolText(draft[key] || '', proxies);
-    // 可用池删除后顺带清掉 # 注释垃圾行
-    if (which === 'alive') nextText = sanitizeProxyPoolText(nextText);
-    const nextDraft = { ...draft, [key]: nextText };
-    setDraft(nextDraft);
-    setProxyProbes((prev) => {
-      const next = { ...prev };
-      for (const p of proxies) {
-        delete next[p];
-        const stripped = stripProxyComment(p);
-        if (stripped) delete next[stripped];
-      }
-      return next;
-    });
-    return nextDraft;
-  };
-
   const save = async (override?: AppSettings, opts?: { silentOk?: boolean; okTitle?: string; okDesc?: string }) => {
     const base = override || draft;
-    // 持久化前强制清洗可用池：禁止 # 网页导入 等垃圾写入 settings
-    // sing-box / CF / 普通代理互斥
-    let payload: AppSettings = {
+    let payload: AppSettings = enforceProxyModeMutex({
       ...base!,
-      proxyPoolAlive: sanitizeProxyPoolText(base!.proxyPoolAlive || '')
-    };
-    payload = enforceProxyModeMutex(payload);
+      cfProxyEnabled: false,
+      proxyEnabled: false,
+      proxyPoolEnabled: false,
+      proxyPool: '',
+      proxyPoolAlive: '',
+      proxy: ''
+    });
     setSaving(true);
     try {
       await window.api.saveSettings(payload);
       setDraft(payload);
       await reload();
-      // 保存后服务端会 sync sing-box / cfwp；刷新状态条与日志
-      void refreshCfStatus();
       void refreshSbStatus();
-      if (payload.cfProxyEnabled) void refreshCfLog();
       if (payload.singBoxEnabled) void refreshSbLog();
       if (!opts?.silentOk) {
         push({
@@ -1140,177 +388,17 @@ export function SettingsForm() {
           description: opts?.okDesc
         });
       }
-      return true;
     } catch (err) {
-      push({ tone: 'danger', title: '保存失败', description: String(err) });
-      return false;
+      push({
+        tone: 'danger',
+        title: '保存失败',
+        description: err instanceof Error ? err.message : String(err)
+      });
     } finally {
       setSaving(false);
     }
   };
 
-  const removeFailed = async (which: 'pending' | 'alive' = 'pending') => {
-    const list = which === 'alive' ? failedAliveProxies : failedProxies;
-    if (list.length === 0) return;
-    const n = list.length;
-    const nextDraft = removeProxiesFromDraft(list, which);
-    if (!nextDraft) return;
-    if (draft.proxyAutoSaveOnRemoveFailed) {
-      await save(nextDraft, {
-        okTitle: which === 'alive' ? '已从可用池删除失败项并保存' : '已删除失败代理并保存',
-        okDesc: `已移除 ${n} 条`
-      });
-    } else {
-      push({
-        tone: 'ok',
-        title: which === 'alive' ? '已从可用池删除失败项' : '已删除失败代理',
-        description: `已移除 ${n} 条（未保存，请点保存）`
-      });
-    }
-  };
-
-  const removeOne = async (proxy: string, which: 'pending' | 'alive' = 'pending') => {
-    const nextDraft = removeProxiesFromDraft([proxy], which);
-    if (!nextDraft) return;
-    if (draft.proxyAutoSaveOnRemoveFailed) {
-      await save(nextDraft, {
-        okTitle: '已删除并保存',
-        okDesc: proxy.slice(0, 48)
-      });
-    } else {
-      push({
-        tone: 'ok',
-        title: '已删除',
-        description: `${proxy.slice(0, 48)}（未保存，请点保存）`
-      });
-    }
-  };
-
-  /** 可用池单条测活：失败则标红，成功保持；失败不自动移出 */
-  const probeOneAlive = async (proxy: string) => {
-    setProbingKey(proxy);
-    setProxyProbes((prev) => ({ ...prev, [proxy]: { status: 'loading' } }));
-    try {
-      const r = await window.api.testProxy(proxy);
-      setProxyProbes((prev) => ({
-        ...prev,
-        [proxy]: {
-          status: r.ok ? 'ok' : 'fail',
-          message: r.message || (r.ok ? 'OK' : '失败')
-        }
-      }));
-      if (r.ok) {
-        push({ tone: 'ok', title: '可用池测活 OK', description: r.message || proxy.slice(0, 48) });
-      } else {
-        push({
-          tone: 'warn',
-          title: '可用池测活失败',
-          description: r.message || '可点删除移除此项'
-        });
-      }
-    } catch (err) {
-      setProxyProbes((prev) => ({
-        ...prev,
-        [proxy]: { status: 'fail', message: String(err) }
-      }));
-    } finally {
-      setProbingKey(null);
-    }
-  };
-
-  const probeAllAlive = async () => {
-    if (alivePoolEntries.length === 0) return;
-    setProbingKey('__alive_all__');
-    const loadingMap: Record<string, ProxyProbeUi> = {};
-    for (const e of alivePoolEntries) loadingMap[e.proxy] = { status: 'loading' };
-    setProxyProbes((prev) => ({ ...prev, ...loadingMap }));
-    const CHUNK = 24;
-    const conc = Math.max(1, Math.min(12, Number(draft.proxyProbeConcurrency) || 8));
-    const proxies = alivePoolEntries.map((e) => e.proxy);
-    let totalOk = 0;
-    let totalFail = 0;
-    try {
-      for (let offset = 0; offset < proxies.length; offset += CHUNK) {
-        const chunk = proxies.slice(offset, offset + CHUNK);
-        try {
-          const batch = await window.api.testProxyBatch({
-            proxies: chunk,
-            concurrency: conc,
-            timeoutMs: 6000
-          });
-          setProxyProbes((prev) => {
-            const next = { ...prev };
-            for (let i = 0; i < chunk.length; i++) {
-              const proxy = chunk[i];
-              const r = batch.results[i];
-              next[proxy] = {
-                status: r?.ok ? 'ok' : 'fail',
-                message: r?.message || (r?.ok ? 'OK' : '失败')
-              };
-            }
-            return next;
-          });
-          totalOk += batch.ok || 0;
-          totalFail += batch.fail || 0;
-        } catch (err) {
-          const msg = String(err);
-          setProxyProbes((prev) => {
-            const next = { ...prev };
-            for (const proxy of chunk) {
-              next[proxy] = { status: 'fail', message: msg.slice(0, 120) };
-            }
-            return next;
-          });
-          totalFail += chunk.length;
-        }
-      }
-      push({
-        tone: totalFail > 0 ? 'warn' : 'ok',
-        title: '可用池测活完成',
-        description: `成功 ${totalOk} · 失败 ${totalFail}（失败可点「删除失败」）`
-      });
-    } finally {
-      setProbingKey(null);
-    }
-  };
-
-  const clearAlivePool = async () => {
-    if (alivePoolEntries.length === 0) return;
-    if (!window.confirm(`清空可用池（${alivePoolEntries.length} 条）？`)) return;
-    const nextDraft = { ...draft, proxyPoolAlive: '' };
-    setDraft(nextDraft);
-    setProxyProbes((prev) => {
-      const next = { ...prev };
-      for (const e of alivePoolEntries) {
-        delete next[e.proxy];
-      }
-      return next;
-    });
-    if (draft.proxyAutoSaveOnRemoveFailed) {
-      await save(nextDraft, { okTitle: '可用池已清空并保存' });
-    } else {
-      push({ tone: 'ok', title: '可用池已清空', description: '未保存，请点保存' });
-    }
-  };
-
-  const clearPendingPool = async () => {
-    if (proxyPoolEntries.length === 0) return;
-    if (!window.confirm(`清空待定池（${proxyPoolEntries.length} 条）？`)) return;
-    const nextDraft = { ...draft, proxyPool: '' };
-    setDraft(nextDraft);
-    setProxyProbes((prev) => {
-      const next = { ...prev };
-      for (const e of proxyPoolEntries) {
-        delete next[e.proxy];
-      }
-      return next;
-    });
-    if (draft.proxyAutoSaveOnRemoveFailed) {
-      await save(nextDraft, { okTitle: '待定池已清空并保存' });
-    } else {
-      push({ tone: 'ok', title: '待定池已清空', description: '未保存，请点保存' });
-    }
-  };
 
   return (
     <div className="space-y-5">
@@ -1510,78 +598,52 @@ export function SettingsForm() {
       <Card collapsible defaultCollapsed>
         <CardHeader
           title="代理设置"
-          description="四种模式互斥：直连 / 普通代理（单条或池）/ CF 独立代理 / sing-box 独立代理"
+          description={draft.singBoxEnabled ? 'Sing-Box' : '直连'}
         />
         <CardBody className="grid gap-4 lg:grid-cols-2">
-          {/* 模式互斥：sing-box ↔ CF ↔ 普通代理/池 */}
-          <div className="lg:col-span-2 space-y-2">
-            <div className="text-[13px] font-medium tracking-tight">代理模式</div>
-            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-              {(
-                [
-                  {
-                    id: 'off' as const,
-                    label: '直连',
-                    hint: '不走任何代理'
-                  },
-                  {
-                    id: 'normal' as const,
-                    label: '普通代理 / 池',
-                    hint: '单条 HTTP 或代理池轮换'
-                  },
-                  {
-                    id: 'cf' as const,
-                    label: 'CF 独立代理',
-                    hint: 'Workers/Pages → 本地 SOCKS/HTTP'
-                  },
-                  {
-                    id: 'singbox' as const,
-                    label: 'sing-box',
-                    hint: '节点分享链接 → 本地 mixed'
-                  }
-                ] as const
-              ).map((opt) => {
-                const active =
-                  opt.id === 'singbox'
-                    ? !!draft.singBoxEnabled
-                    : opt.id === 'cf'
-                      ? !draft.singBoxEnabled && !!draft.cfProxyEnabled
-                      : opt.id === 'normal'
-                        ? !draft.singBoxEnabled &&
-                          !draft.cfProxyEnabled &&
-                          !!draft.proxyEnabled
-                        : !draft.singBoxEnabled &&
-                          !draft.cfProxyEnabled &&
-                          !draft.proxyEnabled;
-                return (
-                  <button
-                    key={opt.id}
-                    type="button"
-                    onClick={() => setProxyMode(opt.id)}
-                    className={cn(
-                      'rounded-xl border px-3 py-2.5 text-left transition-colors',
-                      active
-                        ? 'border-primary/50 bg-primary/10 ring-1 ring-primary/30'
-                        : 'border-border/60 bg-muted/30 hover:bg-muted/50'
-                    )}
-                  >
-                    <div className="text-[13px] font-semibold tracking-tight">{opt.label}</div>
-                    <p className="mt-0.5 text-[11px] leading-4 text-muted-foreground">
-                      {opt.hint}
-                    </p>
-                  </button>
-                );
-              })}
+          {/* 单行：Sing-Box | 直连 */}
+          <div className="lg:col-span-2">
+            <div className="flex items-center justify-between gap-3">
+              <div className="text-[13px] font-medium tracking-tight">代理</div>
+              <div
+                role="group"
+                aria-label="代理"
+                className="inline-flex h-9 w-full max-w-[280px] rounded-full bg-muted p-0.5"
+              >
+                {(
+                  [
+                    { id: 'singbox' as const, label: 'Sing-Box' },
+                    { id: 'off' as const, label: '直连' }
+                  ] as const
+                ).map((opt) => {
+                  const active =
+                    opt.id === 'singbox'
+                      ? !!draft.singBoxEnabled
+                      : !draft.singBoxEnabled;
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      aria-pressed={active}
+                      onClick={() => setProxyMode(opt.id)}
+                      className={cn(
+                        'inline-flex h-full min-w-0 flex-1 items-center justify-center rounded-full px-3 text-[13px] font-semibold tracking-tight transition-all duration-150',
+                        active
+                          ? 'bg-primary text-primary-foreground shadow-sm'
+                          : 'text-muted-foreground hover:text-foreground'
+                      )}
+                    >
+                      {opt.label}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-            <p className="text-[11px] text-muted-foreground">
-              sing-box / CF / 普通代理<strong>三选一</strong>；镜像内仅打包 Linux
-              cfwp 与 sing-box（amd64/arm64），不含 Windows 客户端。
-            </p>
           </div>
 
           {/* —— sing-box 独立代理面板 —— */}
           {draft.singBoxEnabled && (
-            <div className="lg:col-span-2 space-y-3 rounded-xl border border-violet-500/30 bg-violet-500/5 p-3.5">
+            <div className="lg:col-span-2 space-y-3 rounded-xl border border-border/70 bg-muted/25 p-3.5">
               <div className="flex flex-wrap items-start justify-between gap-2">
                 <div className="min-w-0">
                   <div className="text-[13px] font-semibold tracking-tight">
@@ -1652,7 +714,7 @@ export function SettingsForm() {
                 error={errors.singBoxNodes}
               >
                 <textarea
-                  className="min-h-[120px] w-full rounded-lg border border-border/60 bg-background px-3 py-2 font-mono text-[12px] leading-5 outline-none focus:border-primary/50"
+                  className={cn(TEXTAREA_CLASS, 'min-h-[120px] font-mono text-[13px]')}
                   value={draft.singBoxNodes || ''}
                   onChange={(e) => update('singBoxNodes', e.target.value)}
                   placeholder="vless://...  ss://...  vmess://...  #备注可写行尾"
@@ -1669,7 +731,7 @@ export function SettingsForm() {
                 }
               >
                 <select
-                  className="h-10 w-full rounded-lg border border-border/60 bg-background px-3 text-[13px] outline-none focus:border-primary/50"
+                  className={SELECT_CLASS}
                   value={
                     draft.singBoxSelected === '' || !draft.singBoxSelected
                       ? '__random__'
@@ -1688,7 +750,7 @@ export function SettingsForm() {
                 </select>
               </Field>
 
-              <div className="rounded-lg border border-border/50 bg-card/60 px-3 py-2 text-[12px]">
+              <div className="rounded-xl border border-border/60 bg-muted/40 px-3.5 py-3 text-[12px]">
                 <div className="font-medium">本地代理（固定端口）</div>
                 <code className="mt-0.5 block break-all font-mono text-[11px] text-muted-foreground">
                   {buildSingBoxLocalProxyUrl(draft)}
@@ -1715,8 +777,8 @@ export function SettingsForm() {
                 )}
               </div>
 
-              <div className="rounded-lg border border-border/50 bg-card/60">
-                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/50 px-3 py-2">
+              <div className="rounded-xl border border-border/60 bg-muted/40">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 px-3.5 py-2.5">
                   <div className="flex items-center gap-2 text-[12px] font-medium">
                     <Terminal className="h-3.5 w-3.5 text-muted-foreground" />
                     sing-box 日志
@@ -1763,11 +825,11 @@ export function SettingsForm() {
                     </Button>
                   </div>
                 </div>
-                <div className="px-3 py-2">
+                <div className="px-3.5 py-2.5">
                   <div className="mb-1 truncate font-mono text-[10px] text-muted-foreground">
                     {sbLog?.logPath || sbStatus?.logPath || '暂无日志路径'}
                   </div>
-                  <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded-md bg-slate-950/90 p-3 font-mono text-[11px] leading-5 text-slate-100">
+                  <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded-[12px] border border-border/50 bg-muted/60 p-3 font-mono text-[11px] leading-5 text-foreground">
                     {sbLogCleared
                       ? '已清空当前显示，点击「刷新」重新读取日志。'
                       : sbLog?.error
@@ -1795,834 +857,24 @@ export function SettingsForm() {
             </div>
           )}
 
-          {/* —— CF 独立代理面板（对齐 cfsh.sh 参数）—— */}
-          {draft.cfProxyEnabled && (
-            <div className="lg:col-span-2 space-y-3 rounded-xl border border-sky-500/30 bg-sky-500/5 p-3.5">
-              <div className="flex flex-wrap items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <div className="text-[13px] font-semibold tracking-tight">
-                    Cloudflare Socks5/HTTP 本地代理
-                  </div>
-                  <p className="mt-0.5 text-[11px] leading-4 text-muted-foreground">
-                    参数对齐{' '}
-                    <code className="text-[10px]">cfsh.sh</code>
-                    ：域名、token、本地端口、优选 IP、ProxyIP、DoH、ECH、分流。保存设置后自动启停
-                    cfwp。
-                  </p>
-                </div>
-                <div className="flex shrink-0 flex-wrap items-center gap-1.5">
-                  <span
-                    className={cn(
-                      'chip text-[11px]',
-                      cfStatus?.running
-                        ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
-                        : 'bg-muted text-muted-foreground'
-                    )}
-                  >
-                    {cfStatus?.running
-                      ? `运行中 · pid ${cfStatus.pid ?? '?'}`
-                      : '未运行'}
-                  </span>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="secondary"
-                    className="h-7"
-                    disabled={cfBusy}
-                    onClick={() => void runCfAction('sync')}
-                  >
-                    {cfBusy ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <Activity className="h-3.5 w-3.5" />
-                    )}
-                    同步
-                  </Button>
-                  {cfStatus?.running ? (
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="danger"
-                      className="h-7"
-                      disabled={cfBusy}
-                      onClick={() => void runCfAction('stop')}
-                    >
-                      停止
-                    </Button>
-                  ) : (
-                    <Button
-                      type="button"
-                      size="sm"
-                      className="h-7"
-                      disabled={cfBusy}
-                      onClick={() => void runCfAction('start')}
-                      title="需先保存设置且开启 CF"
-                    >
-                      启动
-                    </Button>
-                  )}
-                </div>
-              </div>
-
-              <div className="grid gap-3 sm:grid-cols-2">
-                <Field
-                  label="1. CF 域名（Workers/Pages/自定义）"
-                  hint="格式：域名:443 系或 80 系端口"
-                  error={errors.cfProxyDomain}
-                >
-                  <Input
-                    value={draft.cfProxyDomain || ''}
-                    onChange={(e) => update('cfProxyDomain', e.target.value)}
-                    invalid={!!errors.cfProxyDomain}
-                    placeholder="xxx.workers.dev:443"
-                    spellCheck={false}
-                    className="font-mono text-[13px]"
-                  />
-                </Field>
-                <Field label="2. 密钥 token" hint="可空；对应 cfsh 密钥">
-                  <PasswordInput
-                    value={draft.cfProxyToken || ''}
-                    onChange={(e) => update('cfProxyToken', e.target.value)}
-                    placeholder="回车默认不设"
-                  />
-                </Field>
-                <Field
-                  label="3. 本地端口"
-                  hint="默认 30000 → client_ip=:port"
-                  error={errors.cfProxyPort}
-                >
-                  <Input
-                    type="number"
-                    min={1}
-                    max={65535}
-                    value={draft.cfProxyPort ?? 30000}
-                    onChange={(e) =>
-                      update(
-                        'cfProxyPort',
-                        Math.max(1, Math.min(65535, Number(e.target.value) || 30000))
-                      )
-                    }
-                    invalid={!!errors.cfProxyPort}
-                  />
-                </Field>
-                <Field label="4. 优选 IP/域名" hint="默认 yg1.ygkkk.dpdns.org">
-                  <Input
-                    value={draft.cfProxyCdnip || ''}
-                    onChange={(e) => update('cfProxyCdnip', e.target.value)}
-                    placeholder="yg1.ygkkk.dpdns.org"
-                    spellCheck={false}
-                    className="font-mono text-[13px]"
-                  />
-                </Field>
-                <Field label="5. ProxyIP" hint="可空：使用服务端 ProxyIP">
-                  <Input
-                    value={draft.cfProxyPyip || ''}
-                    onChange={(e) => update('cfProxyPyip', e.target.value)}
-                    placeholder="可空"
-                    spellCheck={false}
-                    className="font-mono text-[13px]"
-                  />
-                </Field>
-                <Field label="6. DoH 服务器" hint="默认 dns.alidns.com/dns-query">
-                  <Input
-                    value={draft.cfProxyDns || ''}
-                    onChange={(e) => update('cfProxyDns', e.target.value)}
-                    placeholder="dns.alidns.com/dns-query"
-                    spellCheck={false}
-                    className="font-mono text-[13px]"
-                  />
-                </Field>
-              </div>
-
-              <div className="grid gap-3 sm:grid-cols-2">
-                <ToggleRow
-                  label="7. ECH 开关"
-                  hint="开：ECH-TLS；关：普通 TLS/无 TLS 由服务端决定"
-                  checked={draft.cfProxyEnableEch !== false}
-                  onChange={(v) => update('cfProxyEnableEch', v)}
-                />
-                <ToggleRow
-                  label="8. 国内外分流"
-                  hint="开：分流代理；关：全局代理"
-                  checked={draft.cfProxyCnrule !== false}
-                  onChange={(v) => update('cfProxyCnrule', v)}
-                />
-              </div>
-
-              <Field
-                label="本地协议（写入注册机）"
-                hint="cfwp 同时提供 HTTP 与 SOCKS；此处选择写入 config 的 scheme"
-                error={errors.cfProxyLocalScheme}
-              >
-                <select
-                  className={SELECT_CLASS}
-                  value={draft.cfProxyLocalScheme || 'socks5'}
-                  onChange={(e) =>
-                    update(
-                      'cfProxyLocalScheme',
-                      e.target.value === 'http' ? 'http' : 'socks5'
-                    )
-                  }
-                >
-                  <option value="socks5">socks5://127.0.0.1:端口（推荐）</option>
-                  <option value="http">http://127.0.0.1:端口</option>
-                </select>
-              </Field>
-
-              <div className="rounded-lg border border-border/50 bg-card/60 px-3 py-2 text-[12px]">
-                <div className="font-medium">将使用本地代理</div>
-                <code className="mt-0.5 block break-all font-mono text-[11px] text-muted-foreground">
-                  {buildCfLocalProxyUrl(draft)}
-                </code>
-                {cfStatus?.lastError && (
-                  <p className="mt-1 text-[11px] text-danger">{cfStatus.lastError}</p>
-                )}
-                {cfStatus && !cfStatus.binaryExists && (
-                  <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-300">
-                    未找到 Linux cfwp 二进制（register/bin/cfwp/linux-amd64|arm64）。请在
-                    Docker 镜像中构建。
-                  </p>
-                )}
-              </div>
-
-              <div className="rounded-lg border border-border/50 bg-card/60">
-                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/50 px-3 py-2">
-                  <div className="flex items-center gap-2 text-[12px] font-medium">
-                    <Terminal className="h-3.5 w-3.5 text-muted-foreground" />
-                    cfwp 日志
-                    {cfLog?.truncated && (
-                      <span className="text-[11px] text-amber-600">仅显示最近内容</span>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="secondary"
-                      className="h-7"
-                      disabled={cfLogLoading}
-                      onClick={() => void refreshCfLog()}
-                    >
-                      {cfLogLoading ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      ) : (
-                        <RefreshCw className="h-3.5 w-3.5" />
-                      )}
-                      刷新
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="secondary"
-                      className="h-7"
-                      disabled={!cfLog?.content}
-                      onClick={() => void copyCfLog()}
-                    >
-                      <Clipboard className="h-3.5 w-3.5" />
-                      复制
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="secondary"
-                      className="h-7"
-                      disabled={!cfLog?.content && !cfLog?.error}
-                      onClick={() => setCfLogCleared(true)}
-                    >
-                      清空显示
-                    </Button>
-                  </div>
-                </div>
-                <div className="px-3 py-2">
-                  <div className="mb-1 truncate font-mono text-[10px] text-muted-foreground">
-                    {cfLog?.logPath || cfStatus?.logPath || '暂无日志路径'}
-                  </div>
-                  <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded-md bg-slate-950/90 p-3 font-mono text-[11px] leading-5 text-slate-100">
-                    {cfLogCleared
-                      ? '已清空当前显示，点击「刷新」重新读取日志。'
-                      : cfLog?.error
-                        ? `读取日志失败：${cfLog.error}`
-                        : cfLog?.content ||
-                          '暂无日志，保存或启动 CF 独立代理后刷新。'}
-                  </pre>
-                </div>
-              </div>
-
-              <div className="grid gap-3 sm:grid-cols-2">
-                <ToggleRow
-                  label="SSO 验活走代理"
-                  hint="经 CF 本地代理"
-                  checked={draft.ssoCheckUseProxy !== false}
-                  onChange={(v) => update('ssoCheckUseProxy', v)}
-                />
-                <ToggleRow
-                  label="Auth 转换/重签/测活走代理"
-                  hint="经 CF 本地代理"
-                  checked={draft.cpaAuthUseProxy !== false}
-                  onChange={(v) => update('cpaAuthUseProxy', v)}
-                />
-              </div>
-            </div>
-          )}
-
-          {/* —— 普通代理 / 池 —— */}
-          {!draft.singBoxEnabled && !draft.cfProxyEnabled && draft.proxyEnabled && (
-            <>
-              <div className="lg:col-span-2 grid gap-3 sm:grid-cols-2">
-                <ToggleRow
-                  label="SSO 验活走代理"
-                  hint="开：号池 SSO 验活经 HTTP 代理；关：直连。mint 前预检始终直连（不耗代理 IP）"
-                  checked={draft.ssoCheckUseProxy !== false}
-                  onChange={(v) => update('ssoCheckUseProxy', v)}
-                />
-                <ToggleRow
-                  label="Auth 转换/重签/测活走代理"
-                  hint="开：mint/重签/CPA 测活经代理；关：直连。预检(probe_sso)固定直连省 IP"
-                  checked={draft.cpaAuthUseProxy !== false}
-                  onChange={(v) => update('cpaAuthUseProxy', v)}
-                />
-              </div>
-
-              <div className="lg:col-span-2">
-                <ToggleRow
-                  label="使用代理池"
-                  hint="开：从池中轮换（仅注册机浏览器）；关：注册机也用上方 HTTP 代理"
-                  checked={!!draft.proxyPoolEnabled}
-                  onChange={(v) => update('proxyPoolEnabled', v)}
-                />
-              </div>
-
-              {/* 单条 HTTP 代理：SSO 验活 / Auth mint·重签·测活 出站（非代理池；与注册机池无关） */}
-              <Field
-                label="HTTP 代理（验活 / Auth 出站）"
-                hint="代理池仅给注册机浏览器轮换；此处单条给 SSO 验活、Auth 转换/重签/测活"
-                error={errors.proxy}
-              >
-                <Input
-                  value={draft.proxy}
-                  onChange={(e) => update('proxy', e.target.value)}
-                  invalid={!!errors.proxy}
-                  placeholder="http://127.0.0.1:7890"
-                />
-              </Field>
-              {/* 浏览器代理字段已隐藏：注册机走代理池轮换，单条仅用 HTTP 代理出站 */}
-
-              {draft.proxyPoolEnabled && (
-                <>
-                  <div className="lg:col-span-2 space-y-3 rounded-xl border border-primary/25 bg-primary/5 p-3.5">
-                    <div className="flex flex-wrap items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <div className="text-[13px] font-semibold tracking-tight">
-                          从网页拉取代理
-                        </div>
-                        <p className="mt-0.5 text-[11px] leading-4 text-muted-foreground">
-                          默认{' '}
-                          <a
-                            href="https://hide.mn/en/proxy-list/"
-                            target="_blank"
-                            rel="noreferrer"
-                            className="text-primary underline-offset-2 hover:underline"
-                          >
-                            hide.mn/proxy-list
-                          </a>
-                          （表格 IP/Port/国家/类型）。写入下方「待测池」→ 测活 →
-                          可用池 → 保存。备注/CSV 含 SOCKS4/5 自动补{' '}
-                          <code className="text-[10px]">socks5://</code>；HTTP/HTTPS
-                          列表标记均补 <code className="text-[10px]">http://</code>
-                          （HTTPS≠https 代理协议）。
-                        </p>
-                      </div>
-                      <Button
-                        type="button"
-                        size="sm"
-                        className="shrink-0"
-                        disabled={fetchingProxies}
-                        onClick={() => void fetchProxiesFromWeb()}
-                        title="拉取并追加到待测池"
-                      >
-                        {fetchingProxies ? (
-                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        ) : (
-                          <Download className="h-3.5 w-3.5" />
-                        )}
-                        {fetchingProxies ? '拉取中…' : '一键拉取'}
-                      </Button>
-                    </div>
-                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                      <Input
-                        className="min-w-0 flex-1 font-mono text-[13px]"
-                        value={
-                          draft.proxyFetchUrl ||
-                          'https://hide.mn/en/proxy-list/'
-                        }
-                        onChange={(e) => update('proxyFetchUrl', e.target.value)}
-                        placeholder="https://hide.mn/en/proxy-list/"
-                        spellCheck={false}
-                      />
-                      <label className="flex shrink-0 items-center gap-1.5 text-[12px] text-muted-foreground">
-                        <span className="whitespace-nowrap">页数</span>
-                        <select
-                          className={cn(SELECT_CLASS, 'h-9 w-[4.5rem] px-2 text-[13px]')}
-                          value={fetchPages}
-                          onChange={(e) =>
-                            setFetchPages(Math.min(20, Math.max(1, Number(e.target.value) || 1)))
-                          }
-                          title="hide.mn 每页约 64 条，可多页合并去重"
-                        >
-                          {[1, 2, 3, 5, 10, 15, 20].map((n) => (
-                            <option key={n} value={n}>
-                              {n}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                    </div>
-                    <ToggleRow
-                      label="经 HTTP 代理拉取页面"
-                      hint="本机打不开 hide.mn 时开启（用上方「HTTP 代理」出站）"
-                      checked={fetchViaProxy}
-                      onChange={setFetchViaProxy}
-                      className="bg-card/70"
-                    />
-                    {fetchResult && (
-                      <div
-                        className={cn(
-                          'relative rounded-xl border px-3.5 py-2.5 text-[12px] leading-5',
-                          fetchResult.tone === 'ok' &&
-                            'border-emerald-500/35 bg-emerald-500/10 text-emerald-800 dark:text-emerald-300',
-                          fetchResult.tone === 'warn' &&
-                            'border-amber-500/35 bg-amber-500/10 text-amber-900 dark:text-amber-200',
-                          fetchResult.tone === 'danger' &&
-                            'border-destructive/40 bg-destructive/10 text-destructive',
-                          fetchResult.tone === 'info' &&
-                            'border-primary/30 bg-primary/10 text-foreground'
-                        )}
-                        role="status"
-                      >
-                        <button
-                          type="button"
-                          className="absolute right-2 top-2 rounded-md p-0.5 text-current/60 hover:bg-black/5 hover:text-current"
-                          onClick={() => setFetchResult(null)}
-                          title="关闭"
-                        >
-                          <X className="h-3.5 w-3.5" />
-                        </button>
-                        <div className="pr-6 font-semibold tracking-tight">
-                          {fetchResult.title}
-                        </div>
-                        <p className="mt-0.5 break-all opacity-90">{fetchResult.detail}</p>
-                        {fetchResult.tone === 'ok' && (
-                          <p className="mt-1 text-[11px] opacity-80">
-                            写入「待定池」。三条件测活全过才进「可用池」；注册失败会从可用降回待定。
-                          </p>
-                        )}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* 待定池：与可用池同风格折叠条 */}
-                  <div className="lg:col-span-2">
-                    <div className="rounded-xl border border-border/60 bg-muted/30">
-                      <div className="flex flex-wrap items-center justify-between gap-2 px-3.5 py-2.5">
-                        <button
-                          type="button"
-                          className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                          onClick={() => setPendingPoolOpen((v) => !v)}
-                        >
-                          {pendingPoolOpen ? (
-                            <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
-                          ) : (
-                            <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
-                          )}
-                          <span className="text-[13px] font-medium">待定池</span>
-                          <span className="chip tabular-nums bg-amber-500/15 text-amber-800 dark:text-amber-300">
-                            {proxyPoolEntries.length}
-                          </span>
-                          <span className="truncate text-[12px] text-muted-foreground">
-                            导入 / 测活未过 / 注册失败降级 · 不参与注册
-                          </span>
-                        </button>
-                        <div className="flex shrink-0 flex-wrap items-center gap-1.5">
-                          {failedProxies.length > 0 && (
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="danger"
-                              className="h-7"
-                              disabled={probingKey !== null}
-                              onClick={() => void removeFailed('pending')}
-                              title="删除待定池中测活失败的项"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                              删除失败 ({failedProxies.length})
-                            </Button>
-                          )}
-                          {proxyPoolEntries.length > 0 && (
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="secondary"
-                              className="h-7"
-                              disabled={probingKey !== null}
-                              onClick={() => void probeAll()}
-                              title="对待定池全部测活（三绿进可用池）"
-                            >
-                              {probingKey === '__all__' ? (
-                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                              ) : (
-                                <Activity className="h-3.5 w-3.5" />
-                              )}
-                              全部测活
-                            </Button>
-                          )}
-                          {proxyPoolEntries.length > 0 && (
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="ghost"
-                              className="h-7 text-muted-foreground hover:text-danger"
-                              disabled={probingKey !== null}
-                              onClick={() => void clearPendingPool()}
-                              title="清空待定池全部条目"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                              清空
-                            </Button>
-                          )}
-                        </div>
-                      </div>
-                      {pendingPoolOpen && (
-                        <div className="space-y-2 border-t border-border/50 px-3.5 pb-3.5 pt-3">
-
-                          <textarea
-                            ref={pendingPoolRef}
-                            className={cn(TEXTAREA_CLASS, 'min-h-[120px] font-mono text-[13px]')}
-                            value={draft.proxyPool}
-                            onChange={(e) => update('proxyPool', e.target.value)}
-                            placeholder={
-                              '拉取 / 注册失败降级后出现在此…\n18,172.64.149.71:80,美国,HTTP,平均\n8.216.35.12:8888（日本，elite，HTTPS）'
-                            }
-                            spellCheck={false}
-                            rows={5}
-                          />
-                          {proxyPoolEntries.length > 0 && (
-                            <ProxyPoolPreview
-                              entries={proxyPoolEntries}
-                              probes={proxyProbes}
-                              probingKey={probingKey}
-                              failCount={failedProxies.length}
-                              onProbeOne={probeOne}
-                              onRemoveOne={(p) => void removeOne(p, 'pending')}
-                            />
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* 可用池：注册专用；测活成功迁入，注册失败可降回待定 */}
-                  <div className="lg:col-span-2">
-                    <div className="rounded-xl border border-border/60 bg-muted/30">
-                      <div className="flex flex-wrap items-center justify-between gap-2 px-3.5 py-2.5">
-                        <button
-                          type="button"
-                          className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                          onClick={() => setAlivePoolOpen((v) => !v)}
-                        >
-                          {alivePoolOpen ? (
-                            <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
-                          ) : (
-                            <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
-                          )}
-                          <span className="text-[13px] font-medium">可用池</span>
-                          <span className="chip tabular-nums bg-emerald-500/15 text-emerald-700 dark:text-emerald-400">
-                            {alivePoolEntries.length}
-                          </span>
-                          {aliveSuccessTotal > 0 && (
-                            <span
-                              className="chip tabular-nums bg-emerald-500/20 font-semibold text-emerald-700 dark:text-emerald-400"
-                              title="可用池全部代理注册成功次数合计"
-                            >
-                              #成功{aliveSuccessTotal}
-                            </span>
-                          )}
-                          <span className="truncate text-[12px] text-muted-foreground">
-                            仅此池参与注册 · 可复测
-                          </span>
-                        </button>
-                        <div className="flex shrink-0 flex-wrap items-center gap-1.5">
-                          {failedAliveProxies.length > 0 && (
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="danger"
-                              className="h-7"
-                              disabled={probingKey !== null}
-                              onClick={() => void removeFailed('alive')}
-                              title="删除可用池中测活失败的项"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                              删除失败 ({failedAliveProxies.length})
-                            </Button>
-                          )}
-                          {alivePoolEntries.length > 0 && (
-                            <>
-                              <Button
-                                type="button"
-                                size="sm"
-                                variant="secondary"
-                                className="h-7"
-                                disabled={probingKey !== null}
-                                onClick={() => void probeAllAlive()}
-                                title="对可用池全部复测"
-                              >
-                                {probingKey === '__alive_all__' ? (
-                                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                ) : (
-                                  <Activity className="h-3.5 w-3.5" />
-                                )}
-                                全部测活
-                              </Button>
-                              <Button
-                                type="button"
-                                size="sm"
-                                variant="ghost"
-                                className="h-7 px-2 text-danger"
-                                disabled={probingKey !== null}
-                                onClick={() => void clearAlivePool()}
-                                title="清空可用池"
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                                清空
-                              </Button>
-                            </>
-                          )}
-                        </div>
-                      </div>
-                      {alivePoolOpen && (
-                        <div className="space-y-2 border-t border-border/50 px-3.5 pb-3.5 pt-3">
-
-                          <textarea
-                            className={TEXTAREA_CLASS}
-                            value={draft.proxyPoolAlive || ''}
-                            onChange={(e) => update('proxyPoolAlive', e.target.value)}
-                            placeholder="测活成功后自动填入…"
-                            rows={4}
-                          />
-                          {alivePoolEntries.length > 0 && (
-                            <ul className="max-h-48 space-y-1.5 overflow-y-auto">
-                              {alivePoolEntries.map((e) => {
-                                const probe = proxyProbes[e.proxy] || {
-                                  status: 'idle' as const
-                                };
-                                const loading =
-                                  probe.status === 'loading' ||
-                                  probingKey === e.proxy ||
-                                  probingKey === '__alive_all__';
-                                return (
-                                  <li
-                                    key={e.proxy}
-                                    className="flex flex-wrap items-center gap-2 rounded-lg bg-card/80 px-2.5 py-2 text-[12px]"
-                                  >
-                                    <ProxySchemeBadge scheme={e.scheme} />
-                                    {e.label ? (
-                                      <span className="chip shrink-0 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400">
-                                        {e.label}
-                                      </span>
-                                    ) : (
-                                      <span className="chip shrink-0 text-muted-foreground">
-                                        无标签
-                                      </span>
-                                    )}
-                                    <span
-                                      className="min-w-0 flex-1 truncate font-mono text-muted-foreground"
-                                      title={e.proxy}
-                                    >
-                                      {e.host}
-                                    </span>
-                                    {typeof e.successCount === 'number' &&
-                                      e.successCount > 0 && (
-                                        <span
-                                          className="shrink-0 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] font-semibold tabular-nums text-emerald-700 dark:text-emerald-400"
-                                          title={`注册成功 ${e.successCount} 次（行尾 #成功N）`}
-                                        >
-                                          #成功{e.successCount}
-                                        </span>
-                                      )}
-                                    {probe.status === 'ok' && (
-                                      <span
-                                        className="max-w-[10rem] truncate text-emerald-600 dark:text-emerald-400"
-                                        title={probe.message}
-                                      >
-                                        {probe.message || 'OK'}
-                                      </span>
-                                    )}
-                                    {probe.status === 'fail' && (
-                                      <span
-                                        className="max-w-[10rem] truncate text-danger"
-                                        title={probe.message}
-                                      >
-                                        {probe.message || '失败'}
-                                      </span>
-                                    )}
-                                    {probe.status === 'idle' &&
-                                      !(
-                                        typeof e.successCount === 'number' &&
-                                        e.successCount > 0
-                                      ) && (
-                                      <span className="text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
-                                        可用
-                                      </span>
-                                    )}
-                                    <Button
-                                      type="button"
-                                      size="sm"
-                                      variant="ghost"
-                                      className="h-7 shrink-0 px-2 text-danger"
-                                      disabled={loading || probingKey !== null}
-                                      onClick={() => void removeOne(e.proxy, 'alive')}
-                                      title="从可用池删除"
-                                    >
-                                      <Trash2 className="h-3.5 w-3.5" />
-                                    </Button>
-                                    <Button
-                                      type="button"
-                                      size="sm"
-                                      variant="secondary"
-                                      className="h-7 shrink-0"
-                                      disabled={loading || probingKey !== null}
-                                      onClick={() => void probeOneAlive(e.proxy)}
-                                      title="复测此代理"
-                                    >
-                                      {loading ? (
-                                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                      ) : (
-                                        <Activity className="h-3.5 w-3.5" />
-                                      )}
-                                      测活
-                                    </Button>
-                                  </li>
-                                );
-                              })}
-                            </ul>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                  {/* 池运行参数：三列等宽卡片，避免原先 2 列网格错位 */}
-                  <div className="lg:col-span-2 space-y-3">
-                    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                      <div className="flex flex-col gap-2.5 rounded-xl border border-border/60 bg-muted/40 p-3.5">
-                        <div>
-                          <div className="text-[13px] font-medium tracking-tight">
-                            代理池模式
-                          </div>
-                          <p className="mt-0.5 text-[11px] leading-4 text-muted-foreground">
-                            注册取代理时的轮换策略
-                          </p>
-                        </div>
-                        <PoolModeSelect
-                          value={draft.proxyMode}
-                          onChange={(v) => update('proxyMode', v)}
-                        />
-                      </div>
-
-                      <div className="flex flex-col gap-2.5 rounded-xl border border-border/60 bg-muted/40 p-3.5">
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="min-w-0">
-                            <div className="text-[13px] font-medium tracking-tight">
-                              IP 使用间隔
-                            </div>
-                            <p className="mt-0.5 text-[11px] leading-4 text-muted-foreground">
-                              同一 IP 注册后冷却；0=不限制
-                            </p>
-                          </div>
-                          <span className="chip shrink-0 tabular-nums">
-                            {draft.proxyIpIntervalSec ?? 0}s
-                          </span>
-                        </div>
-                        <Input
-                          type="number"
-                          min={0}
-                          max={86400}
-                          value={draft.proxyIpIntervalSec ?? 0}
-                          onChange={(e) =>
-                            update(
-                              'proxyIpIntervalSec',
-                              Math.max(0, Math.min(86400, Number(e.target.value) || 0))
-                            )
-                          }
-                          placeholder="0"
-                          className={cn(errors.proxyIpIntervalSec && 'border-danger')}
-                        />
-                        {errors.proxyIpIntervalSec && (
-                          <p className="text-xs text-danger">{errors.proxyIpIntervalSec}</p>
-                        )}
-                      </div>
-
-                      <div className="flex flex-col gap-2.5 rounded-xl border border-border/60 bg-muted/40 p-3.5 sm:col-span-2 xl:col-span-1">
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="min-w-0">
-                            <div className="text-[13px] font-medium tracking-tight">
-                              测活并发
-                            </div>
-                            <p className="mt-0.5 text-[11px] leading-4 text-muted-foreground">
-                              全部测活时并发数（1～20）
-                            </p>
-                          </div>
-                          <span className="chip shrink-0 tabular-nums">
-                            {draft.proxyProbeConcurrency ?? 8}
-                          </span>
-                        </div>
-                        <Slider
-                          min={1}
-                          max={20}
-                          value={draft.proxyProbeConcurrency ?? 8}
-                          onValueChange={(v) => update('proxyProbeConcurrency', v)}
-                        />
-                        {errors.proxyProbeConcurrency && (
-                          <p className="text-xs text-danger">{errors.proxyProbeConcurrency}</p>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="grid gap-3 sm:grid-cols-2">
-                      <ToggleRow
-                        label="删除失败后自动保存"
-                        hint="开：删除失败/单条删除后立即写入配置；关：仅改草稿"
-                        checked={!!draft.proxyAutoSaveOnRemoveFailed}
-                        onChange={(v) => update('proxyAutoSaveOnRemoveFailed', v)}
-                      />
-                      <ToggleRow
-                        label="优先本地代理转发"
-                        hint="带账密时代理：开则本地无认证转发；关则先试浏览器扩展"
-                        checked={!!draft.proxyPreferLocalForward}
-                        onChange={(v) => update('proxyPreferLocalForward', v)}
-                      />
-                    </div>
-                  </div>
-                </>
-              )}
-
-              {!draft.proxyPoolEnabled && draft.proxyEnabled && (
-                <div className="lg:col-span-2">
-                  <ToggleRow
-                    label="优先本地代理转发"
-                    hint="带账号密码代理时：开则 127.0.0.1 无认证转发到上游；关则优先浏览器扩展注入代理"
-                    checked={!!draft.proxyPreferLocalForward}
-                    onChange={(v) => update('proxyPreferLocalForward', v)}
-                  />
-                </div>
-              )}
-            </>
-          )}
         </CardBody>
       </Card>
 
       <Card collapsible defaultCollapsed>
         <CardHeader
           title="授权管理"
+          description={(() => {
+            const bits: string[] = [];
+            if (draft.autoAuthExport !== false) {
+              const min = draft.autoAuthDelayMinSec ?? 60;
+              const max = draft.autoAuthDelayMaxSec ?? 120;
+              bits.push(`自动 Auth ${min}–${max}s`);
+            } else {
+              bits.push('Auth 关');
+            }
+            bits.push(draft.sub2apiExportEnabled ? 'sub2api 开' : 'sub2api 关');
+            return bits.join(' · ');
+          })()}
           right={
             <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-muted text-muted-foreground">
               <KeyRound className="h-4 w-4" aria-hidden />
@@ -2855,7 +1107,23 @@ export function SettingsForm() {
       <Card collapsible defaultCollapsed>
         <CardHeader
           title="注册方案"
-          description="人机验证、指纹与 Plan A/B/C；全部开启时按 A→B→C 顺序兜底"
+          description={(() => {
+            const plans: string[] = [];
+            if (draft.registerPlanAEnabled !== false) plans.push('A');
+            if (draft.registerPlanBEnabled !== false) plans.push('B');
+            if (
+              draft.registerPlanCEnabled === true ||
+              draft.registerMode === 'hybrid'
+            ) {
+              plans.push('C');
+            }
+            const planText = plans.length
+              ? `Plan ${plans.join(' · ')}`
+              : '未启用方案';
+            const fp = draft.randomFingerprint ? '随机指纹' : '固定指纹';
+            const wait = draft.turnstileAutoWaitMax ?? 60;
+            return `${planText} · ${fp} · Turnstile ≤${wait}s`;
+          })()}
         />
         <CardBody className="space-y-3">
           <div className="rounded-xl bg-muted/70 p-4">
@@ -2920,7 +1188,23 @@ export function SettingsForm() {
       <Card collapsible defaultCollapsed>
         <CardHeader
           title="推送设置"
-          description="每个目标分「允许推送」与「自动推送」。允许=可手动推；自动=授权队列延迟后推送（与 Auth 转换同一队列，不挡注册）。SSO/Auth 的 g2 互不联动。"
+          description={(() => {
+            const bits: string[] = [];
+            const allowSsoG2 = draft.pushSsoToGrok2api === true;
+            const autoSsoG2 = draft.autoPushSsoToGrok2api === true;
+            const allowAuthCpa =
+              draft.pushAuthToCpa === true || draft.cpaRemotePushEnabled === true;
+            const autoAuthCpa = draft.autoPushAuthToCpa === true;
+            const allowAuthG2 = draft.pushAuthToGrok2api === true;
+            const autoAuthG2 = draft.autoPushAuthToGrok2api === true;
+            if (autoSsoG2) bits.push('SSO→g2 自动');
+            else if (allowSsoG2) bits.push('SSO→g2 允许');
+            if (autoAuthCpa) bits.push('Auth→CPA 自动');
+            else if (allowAuthCpa) bits.push('Auth→CPA 允许');
+            if (autoAuthG2) bits.push('Auth→g2 自动');
+            else if (allowAuthG2) bits.push('Auth→g2 允许');
+            return bits.length ? bits.join(' · ') : '未开启推送';
+          })()}
           right={
             <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-muted text-muted-foreground">
               <KeyRound className="h-4 w-4" aria-hidden />

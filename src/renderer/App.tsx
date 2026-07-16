@@ -1,6 +1,5 @@
 import { FormEvent, useEffect, useState } from 'react';
 import {
-  Activity,
   ArrowUpCircle,
   Database,
   Github,
@@ -32,38 +31,12 @@ type Tab = 'register' | 'pool' | 'auth' | 'settings';
 const tabs: {
   id: Tab;
   label: string;
-  title: string;
-  description: string;
   Icon: typeof PlayCircle;
 }[] = [
-  {
-    id: 'register',
-    label: '注册机',
-    title: '注册机',
-    description: '并行注册任务、运行设置与实时日志',
-    Icon: PlayCircle
-  },
-  {
-    id: 'pool',
-    label: 'SSO',
-    title: 'SSO 号池',
-    description: '账号验活、筛选导出与 Auth 转换',
-    Icon: Database
-  },
-  {
-    id: 'auth',
-    label: 'Auth',
-    title: 'Auth',
-    description: 'CPA Token 管理、测活、重签与推送',
-    Icon: KeyRound
-  },
-  {
-    id: 'settings',
-    label: '配置',
-    title: '配置',
-    description: '邮箱、代理、推送目标与运行环境',
-    Icon: Settings2
-  }
+  { id: 'register', label: '注册机', Icon: PlayCircle },
+  { id: 'pool', label: 'SSO', Icon: Database },
+  { id: 'auth', label: 'Auth', Icon: KeyRound },
+  { id: 'settings', label: '配置', Icon: Settings2 }
 ];
 
 const emptyAuth: AuthState = {
@@ -81,10 +54,8 @@ export default function App() {
   const setStatus = useRunStore((s) => s.setStatus);
   const applyAccount = useAccountsStore((s) => s.applyAccount);
   const reloadSettings = useSettingsStore((s) => s.reload);
-  const status = useRunStore((s) => s.status);
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
   const [updateLoading, setUpdateLoading] = useState(false);
-  const [nowTick, setNowTick] = useState(() => new Date());
 
   const loadUpdate = async () => {
     setUpdateLoading(true);
@@ -124,13 +95,6 @@ export default function App() {
     });
     void loadUpdate();
   }, [auth.authenticated, pushToast, reloadSettings]);
-
-  // 顶栏时钟（北京时间 HH:mm），每 30s 刷新
-  useEffect(() => {
-    if (!auth.authenticated) return;
-    const t = window.setInterval(() => setNowTick(new Date()), 30_000);
-    return () => window.clearInterval(t);
-  }, [auth.authenticated]);
 
   useEffect(() => {
     if (!auth.authenticated) return;
@@ -180,17 +144,6 @@ export default function App() {
       </>
     );
   }
-
-  const phasePill =
-    status.phase === 'running' || status.phase === 'starting'
-      ? 'pill-ok'
-      : status.phase === 'error'
-        ? 'pill-danger'
-        : status.phase === 'done'
-          ? 'pill-ok'
-          : 'pill-idle';
-
-  const currentTab = tabs.find((t) => t.id === tab) ?? tabs[0];
 
   return (
     <div className="app-shell">
@@ -286,30 +239,6 @@ export default function App() {
       </aside>
 
       <main className="app-main">
-        <header className="page-header">
-          <div className="min-w-0">
-            <h1 className="page-heading">{currentTab.title}</h1>
-            <p className="page-kicker mt-1">{currentTab.description}</p>
-          </div>
-          <div className="page-header-meta">
-            <span className={cn('pill', phasePill)} title="注册机运行阶段">
-              <Activity className="h-3.5 w-3.5" />
-              {status.phase}
-            </span>
-            <span className="chip tabular-nums" title="北京时间">
-              {nowTick.toLocaleTimeString('zh-CN', {
-                timeZone: 'Asia/Shanghai',
-                hour12: false,
-                hour: '2-digit',
-                minute: '2-digit'
-              })}
-            </span>
-            <span className="chip hidden sm:inline-flex" title="北京日期">
-              {nowTick.toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' })}
-            </span>
-          </div>
-        </header>
-
         <div className="page-content">
           {tab === 'register' && <RegisterPage onOpenSettings={() => setTab('settings')} />}
           {tab === 'pool' && <PoolPage />}

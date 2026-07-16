@@ -9,7 +9,6 @@ import type { AppSettings } from '@shared/settings';
 import fs from 'fs';
 import path from 'path';
 import { resolveRegisterRuntime, writeConfigForPython } from './registerRuntime.js';
-import { syncCfwpFromSettings } from '../cfwpManager.js';
 import { syncSingBoxFromSettings } from '../singboxManager.js';
 
 interface StartOptions {
@@ -300,7 +299,7 @@ export class RegisterBot extends EventEmitter {
 
   async start(opts: StartOptions = {}): Promise<{ runId: string }> {
     const settings = await loadSettings();
-    // sing-box / CF 独立代理：开注册前确保本地代理进程已按配置运行
+    // sing-box：开注册前确保本地代理进程已按配置运行
     if (settings.singBoxEnabled) {
       const st = await syncSingBoxFromSettings(settings, { forRegister: true });
       if (!st.running && process.platform !== 'win32') {
@@ -317,18 +316,8 @@ export class RegisterBot extends EventEmitter {
       if (process.platform === 'win32' && st.lastError) {
         console.warn('[registerBot] sing-box on Windows:', st.lastError);
       }
-    } else if (settings.cfProxyEnabled) {
-      const st = await syncCfwpFromSettings(settings);
-      if (!st.running && process.platform !== 'win32') {
-        throw new Error(
-          st.lastError ||
-            'CF 独立代理未运行：请检查域名/token 与 register/bin/cfwp 二进制后保存设置再试'
-        );
-      }
-      if (process.platform === 'win32' && st.lastError) {
-        console.warn('[registerBot] cfwp on Windows:', st.lastError);
-      }
     }
+
     const runCount = opts.runCountOverride ?? settings.runCount;
     const maxParallel = Math.min(
       HARD_MAX_PARALLEL,
@@ -541,40 +530,12 @@ export class RegisterBot extends EventEmitter {
     writeConfigForPython(registerDir, settings, count);
     // 启动时在任务日志打一行代理摘要（与 Python [proxy] 双保险）
     try {
-      const pe = settings.proxyEnabled === true;
       const sb = (settings as { singBoxEnabled?: boolean }).singBoxEnabled === true;
-      const cf = !sb && (settings as { cfProxyEnabled?: boolean }).cfProxyEnabled === true;
-      const poolOn = settings.proxyPoolEnabled === true;
-      const aliveN = String(settings.proxyPoolAlive || '')
-        .split(/\r?\n/)
-        .map((l) => l.trim())
-        .filter((l) => l && !l.startsWith('#')).length;
-      const pendingN = String(settings.proxyPool || '')
-        .split(/\r?\n/)
-        .map((l) => l.trim())
-        .filter((l) => l && !l.startsWith('#')).length;
-      const poolN = aliveN > 0 ? aliveN : pendingN;
-      const single = String(settings.proxy || settings.browserProxy || '').trim();
-      const mode = sb
-        ? 'singbox'
-        : cf
-          ? 'cf'
-        : !pe
-          ? 'direct'
-          : poolOn || poolN > 0
-            ? 'pool'
-            : single
-              ? 'single'
-              : 'empty';
+      const mode = sb ? 'singbox' : 'direct';
       this.log(
         runId,
-        `[proxy] 启动写入 config: mode=${mode} enabled=${pe || cf} ` +
-          `alive≈${aliveN} pending≈${pendingN} single=${!!single} poolSwitch=${poolOn}` +
-          (mode === 'direct'
-            ? '（直连：若需代理请打开「启用代理」并保存）'
-            : mode === 'empty'
-              ? '（已启用但无节点：Python 将停止，避免误直连）'
-              : '')
+        `[proxy] 启动写入 config: mode=${mode} enabled=${sb}` +
+          (mode === 'direct' ? '（直连：若需代理请开 Sing-Box 并保存）' : '')
       );
     } catch {
       /* ignore */

@@ -3,11 +3,8 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import type { AppSettings } from '@shared/settings';
 import {
-  buildCfLocalProxyUrl,
   buildSingBoxLocalProxyUrl,
-  parseProxyPool,
-  parseStringList,
-  stripProxyComment
+  parseStringList
 } from '@shared/settings';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -157,170 +154,52 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
     : 'round_robin';
   config.email_domain_mode = config.mail_domain_mode;
 
-  // 代理四模式互斥：sing-box > CF 独立 > 普通池/单条 > 直连
+  // 代理二模式：sing-box > 直连（普通代理/池 与 CF 独立已移除）
   const sbOn = (settings as { singBoxEnabled?: boolean }).singBoxEnabled === true;
-  const cfOn =
-    !sbOn && (settings as { cfProxyEnabled?: boolean }).cfProxyEnabled === true;
   const sbLocalUrl = sbOn
     ? buildSingBoxLocalProxyUrl({
-        // 固定 2080，不对用户开放改端口
         singBoxPort: 2080
       })
     : '';
-  const cfLocalUrl = cfOn
-    ? buildCfLocalProxyUrl({
-        cfProxyPort: Number((settings as { cfProxyPort?: number }).cfProxyPort) || 30000,
-        cfProxyLocalScheme:
-          (settings as { cfProxyLocalScheme?: 'socks5' | 'http' }).cfProxyLocalScheme ===
-          'http'
-            ? 'http'
-            : 'socks5'
-      })
-    : '';
 
-  // 代理：注册优先 **仅可用池**；可用空时回退待定池（尚未测活时）
-  const alivePool = parseProxyPool(
-    (settings as { proxyPoolAlive?: string }).proxyPoolAlive || ''
-  );
-  const pendingPool = parseProxyPool(settings.proxyPool);
-  const poolProxies: string[] =
-    alivePool.length > 0
-      ? alivePool
-      : (() => {
-          const seen = new Set<string>();
-          const out: string[] = [];
-          for (const p of pendingPool) {
-            if (seen.has(p)) continue;
-            seen.add(p);
-            out.push(p);
-          }
-          return out;
-        })();
-  const singleProxy = stripProxyComment(settings.proxy || '');
-  const browserOnly = stripProxyComment(settings.browserProxy || '');
-  // 总开关 proxyEnabled：false = 强制直连（忽略池/单条内容，池文本仅保留编辑）
-  // sing-box / CF 开时强制视为「有代理」但不用池
-  // 注意：默认 settings.proxyEnabled=false；必须用 === true，勿用 !== false（undefined 会误开）
-  const proxyMasterOn = sbOn || cfOn || settings.proxyEnabled === true;
-  // UI「使用代理池」开关（与池是否有 IP 无关；空池由 Python 启动守卫停止）
-  const poolSwitchOn = !sbOn && !cfOn && settings.proxyPoolEnabled === true;
-  // 用户开了普通代理、池里有 IP、但忘开「使用代理池」且单条为空 → 自动按池写入，避免静默直连
-  const autoPoolFallback =
-    !sbOn &&
-    !cfOn &&
-    proxyMasterOn &&
-    !poolSwitchOn &&
-    poolProxies.length > 0 &&
-    !singleProxy &&
-    !browserOnly;
-  const wantPool =
-    !sbOn &&
-    !cfOn &&
-    proxyMasterOn &&
-    poolProxies.length > 0 &&
-    (poolSwitchOn || autoPoolFallback);
-
-  // 写入 Python 可读开关，pools 侧二次保险（即使残留 proxy_pool 也不选用）
-  config.proxy_enabled = proxyMasterOn;
-  config.proxy_pool_enabled = wantPool;
-  config.cf_proxy_enabled = cfOn;
+  config.proxy_enabled = sbOn;
+  config.proxy_pool_enabled = false;
+  config.cf_proxy_enabled = false;
   config.singbox_enabled = sbOn;
-  if (cfOn) {
-    config.cf_proxy_domain = String(
-      (settings as { cfProxyDomain?: string }).cfProxyDomain || ''
-    ).trim();
-    config.cf_proxy_port = Number((settings as { cfProxyPort?: number }).cfProxyPort) || 30000;
-    config.cf_proxy_local_scheme =
-      (settings as { cfProxyLocalScheme?: string }).cfProxyLocalScheme === 'http'
-        ? 'http'
-        : 'socks5';
-  } else {
-    delete config.cf_proxy_domain;
-    delete config.cf_proxy_port;
-    delete config.cf_proxy_local_scheme;
-  }
+  delete config.cf_proxy_domain;
+  delete config.cf_proxy_port;
+  delete config.cf_proxy_local_scheme;
   if (sbOn) {
     config.singbox_port = 2080;
     config.singbox_selected = String(
       (settings as { singBoxSelected?: string }).singBoxSelected || '__random__'
     );
-  } else {
-    delete config.singbox_port;
-    delete config.singbox_selected;
-  }
-
-  if (sbOn) {
-    // sing-box 独立：本地 mixed HTTP → 127.0.0.1:port（进程由 server 管理）
     config.proxy = sbLocalUrl;
     config.browser_proxy = sbLocalUrl;
     delete config.proxy_pool;
-    config.proxy_mode = settings.proxyMode || 'round_robin';
-  } else if (cfOn) {
-    // CF 独立：本地 http/socks5 → 127.0.0.1:port（cfwp 进程由 server 管理）
-    config.proxy = cfLocalUrl;
-    config.browser_proxy = cfLocalUrl;
-    delete config.proxy_pool;
-    config.proxy_mode = settings.proxyMode || 'round_robin';
-  } else if (!proxyMasterOn) {
-    config.proxy = '';
-    config.browser_proxy = '';
-    delete config.proxy_pool;
-    config.proxy_mode = settings.proxyMode || 'round_robin';
-  } else if (wantPool) {
-    config.proxy = '';
-    config.proxy_pool = poolProxies;
-    config.proxy_mode = settings.proxyMode || 'round_robin';
-    // 浏览器每轮 next_proxy，不写死单条
-    config.browser_proxy = '';
-  } else if (poolSwitchOn && poolProxies.length === 0) {
-    // 开了代理池但可用池空：不写单条兜底，便于 Python 直接 Stop
-    config.proxy = '';
-    config.browser_proxy = '';
-    config.proxy_pool = [];
-    config.proxy_mode = settings.proxyMode || 'round_robin';
-  } else if (singleProxy || browserOnly) {
-    // 开代理、不用池（或池空）→ 单条 HTTP / browser_proxy
-    config.proxy = singleProxy;
-    config.browser_proxy = browserOnly || singleProxy;
-    delete config.proxy_pool;
-    config.proxy_mode = settings.proxyMode || 'round_robin';
   } else {
-    // 开代理但无可用条目
+    delete config.singbox_port;
+    delete config.singbox_selected;
     config.proxy = '';
     config.browser_proxy = '';
     delete config.proxy_pool;
-    config.proxy_mode = settings.proxyMode || 'round_robin';
   }
+  config.proxy_mode = settings.proxyMode || 'round_robin';
 
-  // 启动诊断摘要（供 registerBot 打日志；Python 侧也会读 config 打印）
   const proxyDiag = {
-    mode: sbOn
-      ? 'singbox'
-      : cfOn
-        ? 'cf'
-        : !proxyMasterOn
-          ? 'direct'
-          : wantPool
-            ? autoPoolFallback
-              ? 'pool_auto'
-              : 'pool'
-            : singleProxy || browserOnly
-              ? 'single'
-              : 'empty',
-    proxy_enabled: proxyMasterOn,
-    proxy_pool_enabled: wantPool,
-    pool_n: Array.isArray(config.proxy_pool) ? config.proxy_pool.length : 0,
+    mode: sbOn ? 'singbox' : 'direct',
+    proxy_enabled: sbOn,
+    proxy_pool_enabled: false,
+    pool_n: 0,
     has_proxy: !!String(config.proxy || '').trim(),
     has_browser_proxy: !!String(config.browser_proxy || '').trim(),
-    auto_pool_fallback: autoPoolFallback
+    auto_pool_fallback: false
   };
   (config as { _proxy_diag?: typeof proxyDiag })._proxy_diag = proxyDiag;
   try {
     console.log(
       `[writeConfig] proxy mode=${proxyDiag.mode} enabled=${proxyDiag.proxy_enabled} ` +
-        `pool_n=${proxyDiag.pool_n} single=${proxyDiag.has_proxy} ` +
-        `browser=${proxyDiag.has_browser_proxy}` +
-        (autoPoolFallback ? ' (auto pool: 未开「使用代理池」但池内有 IP，已按池写入)' : '')
+        `single=${proxyDiag.has_proxy} browser=${proxyDiag.has_browser_proxy}`
     );
   } catch {
     /* ignore */
@@ -520,18 +399,15 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
     const nPool = Array.isArray(config.proxy_pool) ? config.proxy_pool.length : 0;
     const nDom = Array.isArray(config.mail_domains) ? config.mail_domains.length : 0;
     console.log(
-      `[writeConfig] cf=${!!config.cf_proxy_enabled} ` +
-        `proxyEnabled=${settings.proxyEnabled !== false} ` +
-        `proxyPoolEnabled=${settings.proxyPoolEnabled === true} ` +
-        `proxy_pool=${nPool} proxy=${config.proxy ? 'set' : 'empty'} ` +
+      `[writeConfig] singbox=${!!config.singbox_enabled} ` +
+        `proxy_enabled=${!!config.proxy_enabled} ` +
+        `proxy=${config.proxy ? 'set' : 'empty'} ` +
         `browser_proxy=${config.browser_proxy ? 'set' : 'empty'} ` +
         `mail_domains=${nDom} mail_provider=${config.mail_provider || 'cloudflare'} ` +
         `planA=${config.register_plan_a_enabled !== false} ` +
         `planB=${config.register_plan_b_enabled !== false} ` +
         `planC=${!!config.register_plan_c_enabled} ` +
         `cpa_mint_mode=${config.cpa_mint_mode || 'pkce'} ` +
-        `prefer_local_forward=${!!config.proxy_prefer_local_forward} ` +
-        `ip_interval=${config.proxy_ip_interval_sec || 0}s ` +
         `cpa_remote=${config.cpa_remote_url ? 'set' : 'off'}`
     );
   } catch {

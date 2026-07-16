@@ -31,8 +31,7 @@ import { resolveHttpProxy } from './resolveHttpProxy.js';
 import {
   getCfwpStatus,
   readCfwpLog,
-  stopCfwp,
-  syncCfwpFromSettings
+  stopCfwp
 } from './cfwpManager.js';
 import {
   getSingBoxStatus,
@@ -218,14 +217,17 @@ app.get('/api/settings', async (_req, res) => {
 app.put('/api/settings', async (req: Request, res: Response) => {
   const body = req.body as AppSettings;
   await saveSettings(body);
-  // 保存后同步 sing-box / CF 独立代理进程（开=启动/重载，关=停止）
+  // 保存后同步 sing-box（普通/CF 代理已移除）
   try {
     const s = await loadSettings();
-    const [singbox, cfwp] = await Promise.all([
-      syncSingBoxFromSettings(s),
-      syncCfwpFromSettings(s)
-    ]);
-    res.json({ ok: true, singbox, cfwp });
+    const singbox = await syncSingBoxFromSettings(s);
+    // 确保旧 CF 进程被停掉
+    try {
+      await stopCfwp();
+    } catch {
+      /* ignore */
+    }
+    res.json({ ok: true, singbox });
   } catch (err) {
     console.error('[settings] proxy sync failed', err);
     res.json({ ok: true, syncError: String(err) });
@@ -240,16 +242,10 @@ app.get('/api/cf-proxy/status', async (_req, res) => {
 
 /** 按当前配置启动/重载 cfwp */
 app.post('/api/cf-proxy/start', async (_req, res) => {
-  const s = await loadSettings();
-  if (!s.cfProxyEnabled) {
-    res.status(400).json({
-      ok: false,
-      error: '请先在设置中开启「CF 独立代理」并保存'
-    });
-    return;
-  }
-  const status = await syncCfwpFromSettings(s);
-  res.json({ ok: !status.lastError || status.running, ...status });
+  res.status(410).json({
+    ok: false,
+    error: 'CF 独立代理已移除，请使用 Sing-Box 或直连'
+  });
 });
 
 /** 停止 cfwp（不改 settings；下次保存若仍开启会再启） */
@@ -260,9 +256,8 @@ app.post('/api/cf-proxy/stop', async (_req, res) => {
 
 /** 按当前 settings 同步（与保存时相同） */
 app.post('/api/cf-proxy/sync', async (_req, res) => {
-  const s = await loadSettings();
-  const status = await syncCfwpFromSettings(s);
-  res.json({ ok: true, ...status });
+  const status = await stopCfwp();
+  res.json({ ok: true, ...status, message: 'CF 独立代理已移除' });
 });
 
 /** 读取 cfwp 最近日志（只读） */
@@ -1152,26 +1147,22 @@ httpServer.listen(PORT, HOST, () => {
       console.log(`[Grok Register Agent] web account configured: ${info.username}`);
     }
   });
-  // 启动时按已保存配置同步 sing-box / CF 独立代理（Linux 镜像内可跑）
+  // 启动时同步 sing-box，并停止遗留 cfwp
   void loadSettings()
     .then(async (s) => {
-      const sb = await syncSingBoxFromSettings(s);
-      const cf = await syncCfwpFromSettings(s);
-      return { sb, cf };
+      try {
+        await stopCfwp();
+      } catch {
+        /* ignore */
+      }
+      return syncSingBoxFromSettings(s);
     })
-    .then(({ sb, cf }) => {
+    .then((sb) => {
       if (sb.running || sb.lastError || sb.nodeCount > 0) {
         console.log(
           `[Grok Register Agent] sing-box: ${sb.running ? 'running' : 'stopped'} ` +
             `port=${sb.port} nodes=${sb.nodeCount} binary=${sb.binaryExists ? 'ok' : 'missing'}` +
             (sb.lastError ? ` err=${sb.lastError}` : '')
-        );
-      }
-      if (sLikeEnabled(cf)) {
-        console.log(
-          `[Grok Register Agent] cfwp: ${cf.running ? 'running' : 'stopped'} ` +
-            `port=${cf.port} binary=${cf.binaryExists ? 'ok' : 'missing'}` +
-            (cf.lastError ? ` err=${cf.lastError}` : '')
         );
       }
     })
