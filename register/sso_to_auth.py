@@ -450,9 +450,15 @@ def sso_to_token_via_browser_consent(
     proxy: str = "",
     log=print,
     headless: bool = True,
-    timeout: float = 120.0,
+    timeout: float = 45.0,
 ) -> dict | None:
-    """PKCE 协议 consent next-action 全 404 时：浏览器带 SSO 打开 authorize，点 Allow 拿 code。"""
+    """Open authorize with SSO and click Allow/允许 only (never Continue/Next).
+
+    Hard timeout + watchdog: page.get / missing buttons must not starve mint-queue
+    (workers often = 1).
+    """
+    import threading
+
     sso_cookie = str(sso_cookie or "").strip()
     if not sso_cookie:
         return None
@@ -478,6 +484,7 @@ def sso_to_token_via_browser_consent(
         }
     )
     auth_url = f"{OIDC_ISSUER}/oauth2/authorize?{authorize_params}"
+    hard_timeout = max(25.0, min(float(timeout or 45.0), 90.0))
 
     co = ChromiumOptions()
     try:
@@ -497,11 +504,31 @@ def sso_to_token_via_browser_consent(
             log(f"  ⚠ browser consent set_proxy: {e}")
 
     browser = None
+    done = {"v": False}
+
+    def _watchdog() -> None:
+        time.sleep(hard_timeout + 8.0)
+        if done["v"]:
+            return
+        log(f"  ⚠ browser consent watchdog quit after {hard_timeout:.0f}s")
+        b = browser
+        if b is not None:
+            try:
+                b.quit()
+            except Exception:
+                pass
+
+    threading.Thread(target=_watchdog, name="browser-consent-wd", daemon=True).start()
+
     try:
         browser = Chromium(co)
         page = browser.latest_tab
+        try:
+            page.set.timeouts(base=min(20.0, hard_timeout / 2.0))
+        except Exception:
+            pass
         page.get("https://accounts.x.ai/")
-        time.sleep(0.6)
+        time.sleep(0.5)
         try:
             page.set.cookies(
                 [
@@ -535,15 +562,23 @@ def sso_to_token_via_browser_consent(
 
         log("  🔑 browser consent: open authorize…")
         page.get(auth_url)
-        time.sleep(1.2)
+        time.sleep(1.0)
 
         code = None
-        deadline = time.time() + max(40.0, float(timeout))
+        deadline = time.time() + hard_timeout
+        last_url_log = 0.0
         while time.time() < deadline:
             try:
                 url = page.url or ""
             except Exception:
                 url = ""
+            now = time.time()
+            if now - last_url_log >= 8.0:
+                last_url_log = now
+                log(f"  🔑 browser consent poll url={(url or '')[:120]}")
+            if "auth-error" in url:
+                log(f"  ❌ browser consent auth-error: {url[:160]}")
+                return None
             if "code=" in url:
                 try:
                     q = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
@@ -554,6 +589,19 @@ def sso_to_token_via_browser_consent(
                         break
                 except Exception:
                     pass
+            try:
+                href = page.run_js(
+                    "return (location.href || '') + '|' + "
+                    "((document.querySelector('a[href*=code]') || {}).href || '');"
+                )
+                if href and "code=" in str(href):
+                    m = re.search(r"[?&#]code=([^&]+)", str(href))
+                    if m:
+                        code = urllib.parse.unquote(m.group(1))
+                        log("  🔑 browser consent: got code from href")
+                        break
+            except Exception:
+                pass
             try:
                 clicked = page.run_js(
                     r"""
@@ -566,26 +614,30 @@ function isVisible(n) {
 }
 const deny = /continue|next|sign\s*in|log\s*in|继续|下一步|登录/i;
 const ok = /允许|allow|authorize|approve|同意|批准|grant/i;
-const btns = Array.from(document.querySelectorAll('button, [role="button"]')).filter(isVisible);
+const btns = Array.from(document.querySelectorAll('button, [role="button"], input[type="submit"]')).filter(isVisible);
 const t = btns.find(b => {
-  const text = (b.innerText || b.textContent || '').trim();
+  const text = (b.innerText || b.textContent || b.value || '').trim();
   if (!text || deny.test(text)) return false;
   return ok.test(text);
 });
-if (t) { t.click(); return (t.innerText || '').trim().slice(0, 32); }
+if (t) { t.click(); return (t.innerText || t.value || '').trim().slice(0, 32); }
 return '';
 """
                 )
                 if clicked:
                     log(f"  🔑 browser consent click={clicked}")
-                    time.sleep(1.5)
+                    time.sleep(1.2)
                     continue
             except Exception:
                 pass
-            time.sleep(0.7)
+            time.sleep(0.6)
 
         if not code:
-            log("  ❌ browser consent: no authorization code")
+            try:
+                u = page.url or ""
+            except Exception:
+                u = ""
+            log(f"  ❌ browser consent: no authorization code url={(u or '')[:160]}")
             return None
 
         proxies = {"http": proxy, "https": proxy} if proxy else None
@@ -631,6 +683,7 @@ return '';
         log(f"  ❌ browser consent exception: {e}")
         return None
     finally:
+        done["v"] = True
         if browser is not None:
             try:
                 browser.quit()

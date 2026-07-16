@@ -72,24 +72,50 @@ def _read_cpa_mint_mode() -> str:
 def _via_pkce_token(
     sso: str, *, proxy: str = "", log: LogFn | None = None
 ) -> dict[str, Any] | None:
+    """PKCE main path; on fail try device first, then short browser Allow.
+
+    Field logs: after authorize TLS/OPENSSL or next-action 404, browser consent
+    often hangs at open authorize. With mint-queue workers=1 the pool starves and
+    Auth is never written. Device flow mints with referrer=grok-build without a
+    second Chromium, so it must run before browser consent.
+    """
     log = log or _noop
     log("[auth] mint channel=pkce (Auth Code+PKCE)…")
-    tokens = sso_to_token(sso, proxy=proxy or "", log=log)
+    tokens: dict[str, Any] | None = None
+    try:
+        tokens = sso_to_token(sso, proxy=proxy or "", log=log)
+    except Exception as pe:
+        log(f"[auth] PKCE exception: {pe}")
+        tokens = None
     if tokens and tokens.get("access_token"):
         return tokens
-    # Server Action next-action 常 404：浏览器带 SSO 点 Allow 拿 code
+
+    # 1) device: curl protocol, no second Chromium
+    log("[auth] PKCE failed → device flow fallback…")
+    try:
+        dev = _via_device_token(sso, proxy=proxy or "", log=log)
+        if dev and dev.get("access_token"):
+            return dev
+    except Exception as de:
+        log(f"[auth] device fallback err: {de}")
+
+    # 2) browser Allow: short timeout so mint-queue cannot hang forever
     try:
         from sso_to_auth import sso_to_token_via_browser_consent
 
-        log("[auth] PKCE server-action failed → browser consent fallback…")
+        log("[auth] device failed → browser consent fallback (timeout=45s)…")
         tokens = sso_to_token_via_browser_consent(
-            sso, proxy=proxy or "", log=log, headless=True
+            sso,
+            proxy=proxy or "",
+            log=log,
+            headless=True,
+            timeout=45.0,
         )
         if tokens and tokens.get("access_token"):
             return tokens
     except Exception as be:
         log(f"[auth] browser consent fallback err: {be}")
-    return tokens
+    return None
 
 
 def _via_device_token(
