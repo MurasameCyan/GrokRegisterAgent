@@ -864,7 +864,13 @@ export function SettingsForm() {
         <CardHeader
           title="授权管理"
           description={(() => {
+            // 显示顺序：Mint（核心）→ 自动 Auth → 401 保活
             const bits: string[] = [];
+            const mode = String(draft.cpaMintMode || 'pkce');
+            if (mode === 'device') bits.push('Mint B');
+            else if (mode === 'double' || mode === 'auto' || mode === 'merged')
+              bits.push('Mint C');
+            else bits.push('Mint A');
             if (draft.autoAuthExport !== false) {
               const min = draft.autoAuthDelayMinSec ?? 60;
               const max = draft.autoAuthDelayMaxSec ?? 120;
@@ -872,11 +878,6 @@ export function SettingsForm() {
             } else {
               bits.push('Auth 关');
             }
-            const mode = String(draft.cpaMintMode || 'pkce');
-            if (mode === 'device') bits.push('Mint B');
-            else if (mode === 'double' || mode === 'auto' || mode === 'merged')
-              bits.push('Mint C');
-            else bits.push('Mint A');
             if (draft.autoResignOn401 === true) bits.push('401重签');
             return bits.join(' · ');
           })()}
@@ -892,12 +893,6 @@ export function SettingsForm() {
             <div className="text-[12px] font-semibold tracking-tight text-muted-foreground">
               核心 · SSO → Auth
             </div>
-            <ToggleRow
-              label="自动转换 Auth"
-              hint="注册只交 SSO 到授权队列：延迟后后台 SSO 推送 / mint / Auth 推送，不阻塞注册"
-              checked={draft.autoAuthExport}
-              onChange={(v) => update('autoAuthExport', v)}
-            />
             <Field
               label="CPA Mint 模式"
               hint="A=PKCE；B=Device；C=double 各出一份并分别测活。mint 后无 grok-4.5 不进 CPA。PKCE 失败会自动 device 兜底"
@@ -921,6 +916,12 @@ export function SettingsForm() {
                 </option>
               </select>
             </Field>
+            <ToggleRow
+              label="自动转换 Auth"
+              hint="注册只交 SSO 到授权队列：延迟后后台 SSO 推送 / mint / Auth 推送，不阻塞注册"
+              checked={draft.autoAuthExport}
+              onChange={(v) => update('autoAuthExport', v)}
+            />
             {draft.autoAuthExport !== false && (
               <>
                 <div className="grid gap-3 sm:grid-cols-2">
