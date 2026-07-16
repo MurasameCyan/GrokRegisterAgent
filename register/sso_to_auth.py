@@ -57,8 +57,9 @@ GROK_TOKEN_UA = (
 # consent 提交用的 Next.js Server Action ID（会随前端部署变化；运行时从 HTML/JS 发现）
 # 硬编码仅作最后兜底；x.ai 前端部署后旧 id 会 404 Server action not found
 NEXT_ACTION_ID = "4005315a1d7e426de592990bb54bb37471f39dd6d2"
-# 进程内缓存：成功发现的 action id，避免每次 double/重试都扫全量 chunk
+# 进程内缓存：仅「consent POST 成功」后写入；404 的 id 进黑名单，禁止再 discover/cache
 _CACHED_NEXT_ACTION_ID: str = ""
+_BAD_NEXT_ACTION_IDS: set[str] = set()
 _NEXT_ACTION_RE = re.compile(
     r'createServerReference\)\("([a-f0-9]{40,44})"[^)]*submitOAuth2Consent',
     re.I,
@@ -216,15 +217,45 @@ def _parse_consent_code(body: str) -> str | None:
     return None
 
 
-def _match_next_action_in_text(text: str) -> str:
-    """在任意 HTML/JS 文本中匹配 action id；优先含 submitOAuth2Consent 的模式。"""
+def _match_next_action_in_text(text: str, *, strict: bool = False) -> str:
+    """匹配 action id。
+
+    strict=True：只接受与 submitOAuth2Consent / OAuth2Consent 强绑定的模式，
+    避免把无关 createServerReference 哈希（日志里的 401b73e…）当成 consent action。
+    """
     text = text or ""
     if not text:
         return ""
-    for rx in _NEXT_ACTION_PATTERNS:
+    # 强绑定 consent 的模式优先
+    strong = (
+        _NEXT_ACTION_RE,
+        _NEXT_ACTION_RE4,
+        _NEXT_ACTION_RE5,
+        _NEXT_ACTION_RE6,
+    )
+    weak = (
+        _NEXT_ACTION_RE2,
+        _NEXT_ACTION_RE3,
+        _NEXT_ACTION_RE7,
+    )
+    for rx in strong:
         m = rx.search(text)
         if m:
-            return m.group(1)
+            aid = m.group(1)
+            if aid not in _BAD_NEXT_ACTION_IDS:
+                return aid
+    if strict:
+        return ""
+    # 弱匹配：仅当上下文含 consent 关键词
+    low = text.lower()
+    if "submitoauth2consent" not in low and "oauth2consent" not in low and "consent" not in low:
+        return ""
+    for rx in weak:
+        m = rx.search(text)
+        if m:
+            aid = m.group(1)
+            if aid not in _BAD_NEXT_ACTION_IDS:
+                return aid
     return ""
 
 
@@ -297,9 +328,11 @@ def _discover_next_action(
     global _CACHED_NEXT_ACTION_ID
     html = html or ""
 
-    hit = _match_next_action_in_text(html)
-    if hit:
-        _CACHED_NEXT_ACTION_ID = hit
+    hit = _match_next_action_in_text(html, strict=True)
+    if not hit:
+        hit = _match_next_action_in_text(html, strict=False)
+    if hit and hit not in _BAD_NEXT_ACTION_IDS:
+        # 不在 discover 阶段写缓存；仅 consent POST 成功后再缓存
         return hit
 
     if session is not None:
@@ -309,32 +342,23 @@ def _discover_next_action(
                 try:
                     jr = session.get(src, impersonate="chrome", timeout=12)
                     body = str(jr.text or "")
-                    # 大 chunk 优先找 submitOAuth2Consent 邻域
+                    # 只接受含 OAuth2Consent 的 chunk 中的强匹配
                     if "submitOAuth2Consent" in body or "OAuth2Consent" in body:
-                        mm = _match_next_action_in_text(body)
-                        if mm:
-                            _CACHED_NEXT_ACTION_ID = mm
-                            return mm
-                    mm = _match_next_action_in_text(body)
-                    if mm and (
-                        "submitOAuth2Consent" in body
-                        or "OAuth2Consent" in body
-                        or "createServerReference" in body
-                    ):
-                        # 无函数名时 createServerReference 可能匹配多个；仅当
-                        # 文本含 consent 相关或只有单一强匹配时采用
-                        if "consent" in body.lower() or "submitOAuth2Consent" in body:
-                            _CACHED_NEXT_ACTION_ID = mm
+                        mm = _match_next_action_in_text(body, strict=True)
+                        if mm and mm not in _BAD_NEXT_ACTION_IDS:
                             return mm
                 except Exception:
                     continue
-                _ = i  # keep loop index used for lint silence
+                _ = i
         except Exception:
             pass
 
-    if use_cache and _CACHED_NEXT_ACTION_ID:
+    if use_cache and _CACHED_NEXT_ACTION_ID and _CACHED_NEXT_ACTION_ID not in _BAD_NEXT_ACTION_IDS:
         return _CACHED_NEXT_ACTION_ID
-    return fallback or NEXT_ACTION_ID
+    fb = fallback or NEXT_ACTION_ID
+    if fb in _BAD_NEXT_ACTION_IDS:
+        return ""
+    return fb
 
 
 def access_token_referrer(access_token: str) -> str:
@@ -500,6 +524,18 @@ def sso_to_token(sso_cookie: str, proxy: str = "", log=print) -> dict | None:
         r = None
         last_err_body = ""
         for attempt in range(3):
+            if not action_id or action_id in _BAD_NEXT_ACTION_IDS:
+                # 强制再发现一次再 POST
+                action_id = _discover_next_action(
+                    page_html,
+                    "",
+                    session=s,
+                    use_cache=False,
+                    max_chunks=40,
+                )
+                if not action_id:
+                    log("  ❌ consent next-action 未发现（避免用已知 404 id）")
+                    return None
             for purl in post_urls:
                 try:
                     r = _post_consent(purl, action_id)
@@ -518,9 +554,18 @@ def sso_to_token(sso_cookie: str, proxy: str = "", log=print) -> dict | None:
                         f"重新抓取 consent 页并扫描 JS chunks…"
                     )
                     try:
-                        # 清空缓存强制重新发现
+                        # 404 → 黑名单当前 id，禁止再次选用
                         old_id = action_id
-                        _CACHED_NEXT_ACTION_ID = ""
+                        if old_id:
+                            _BAD_NEXT_ACTION_IDS.add(str(old_id))
+                        if _CACHED_NEXT_ACTION_ID == old_id:
+                            _CACHED_NEXT_ACTION_ID = ""
+                        else:
+                            _CACHED_NEXT_ACTION_ID = ""
+                        log(
+                            f"  🔑 blacklist next-action={str(old_id)[:16]}… "
+                            f"(total_bad={len(_BAD_NEXT_ACTION_IDS)})"
+                        )
                         r2 = s.get(
                             final_url,
                             impersonate="chrome",
@@ -545,8 +590,8 @@ def sso_to_token(sso_cookie: str, proxy: str = "", log=print) -> dict | None:
                             use_cache=False,
                             max_chunks=40,
                         )
-                        if action_id == old_id and attempt == 1:
-                            # 仍相同：再试 accounts 根 build-id 下的 main-app
+                        if (not action_id) or action_id in _BAD_NEXT_ACTION_IDS or action_id == old_id:
+                            # 仍相同/空：再试 accounts 根 + 扩大 chunk
                             try:
                                 root = s.get(
                                     "https://accounts.x.ai/",
@@ -554,17 +599,21 @@ def sso_to_token(sso_cookie: str, proxy: str = "", log=print) -> dict | None:
                                     timeout=12,
                                 )
                                 root_html = str(root.text or "")
-                                # 合并根页 script 再扫
                                 action_id = _discover_next_action(
                                     root_html + "\n" + new_html,
-                                    action_id,
+                                    "",
                                     session=s,
                                     use_cache=False,
-                                    max_chunks=40,
+                                    max_chunks=48,
                                 )
                             except Exception:
                                 pass
-                        log(f"  🔑 retry next-action={action_id[:16]}…")
+                        if action_id in _BAD_NEXT_ACTION_IDS:
+                            action_id = ""
+                        if not action_id:
+                            log("  🔑 retry next-action=（未发现，将 404 后继续尝试）")
+                        else:
+                            log(f"  🔑 retry next-action={action_id[:16]}…")
                         continue
                     except Exception as e2:
                         log(f"  ❌ consent 重试异常: {e2}")
@@ -583,8 +632,8 @@ def sso_to_token(sso_cookie: str, proxy: str = "", log=print) -> dict | None:
     if r.status_code < 200 or r.status_code >= 300:
         log(f"  ❌ consent HTTP {r.status_code}: {str(r.text)[:200]}")
         return None
-    # 成功后缓存 action id
-    if action_id and action_id != NEXT_ACTION_ID:
+    # 成功后缓存 action id（且不得在黑名单中）
+    if action_id and action_id not in _BAD_NEXT_ACTION_IDS:
         _CACHED_NEXT_ACTION_ID = action_id
     code = _parse_consent_code(str(r.text))
     if not code:
