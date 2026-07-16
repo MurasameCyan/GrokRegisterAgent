@@ -388,9 +388,6 @@ function AuthQueueMetricsCard() {
           </div>
         </div>
       </div>
-      <p className="mt-2 text-[11px] text-muted-foreground">
-        注册只交 SSO；队列延迟执行 SSO 推送 / Auth 转换 / Auth 推送 / NSFW
-      </p>
     </div>
   );
 }
