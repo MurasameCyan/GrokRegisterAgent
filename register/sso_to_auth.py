@@ -662,31 +662,176 @@ def sso_to_token_via_browser_consent(
     threading.Thread(target=_watchdog, name="browser-consent-wd", daemon=True).start()
     _start_cb_server()
 
-    def _inject_sso(page) -> None:
-        cookies = []
-        for domain in (".x.ai", "accounts.x.ai", "auth.x.ai", ".auth.x.ai"):
+    def _inject_sso(page, *, reason: str = "") -> int:
+        """多通道写 sso/sso-rw：CDP Network.setCookie > set.cookies > document.cookie。
+
+        返回成功写入的 cookie 条数（约数，仅诊断用）。
+        """
+        ok_n = 0
+        # host-only + parent domain 双写；secure + SameSite=None 适配 HTTPS OAuth
+        domains = (
+            ".x.ai",
+            "x.ai",
+            "accounts.x.ai",
+            ".accounts.x.ai",
+            "auth.x.ai",
+            ".auth.x.ai",
+        )
+        cookie_dicts = []
+        for domain in domains:
             for name in ("sso", "sso-rw"):
-                cookies.append(
+                cookie_dicts.append(
                     {
                         "name": name,
                         "value": sso_cookie,
                         "domain": domain,
                         "path": "/",
+                        "secure": True,
+                        "httpOnly": False,
+                        "sameSite": "None",
                     }
                 )
+
+        # 1) CDP Network.setCookie（最稳：不依赖当前 document 是否可写 cookie）
+        for c in cookie_dicts:
+            try:
+                page.run_cdp(
+                    "Network.setCookie",
+                    name=c["name"],
+                    value=c["value"],
+                    domain=c["domain"],
+                    path=c["path"],
+                    secure=True,
+                    httpOnly=False,
+                    sameSite="None",
+                    url=f"https://{c['domain'].lstrip('.')}/",
+                )
+                ok_n += 1
+            except Exception:
+                try:
+                    # 部分 Drission 版本用 set.cookies 单条
+                    page.set.cookies([c])
+                    ok_n += 1
+                except Exception:
+                    pass
+
+        # 2) 批量 set.cookies 兜底
         try:
-            page.set.cookies(cookies)
+            page.set.cookies(cookie_dicts)
         except Exception as e:
-            log(f"  ⚠ set sso cookies: {e}")
+            if reason:
+                log(f"  ⚠ set sso cookies({reason}): {e}")
+
+        # 3) document.cookie（当前 origin 可见域）
         try:
             page.run_js(
-                "const sso=arguments[0];"
-                "document.cookie='sso='+sso+'; path=/; domain=.x.ai';"
-                "document.cookie='sso-rw='+sso+'; path=/; domain=.x.ai';",
+                """
+const sso = arguments[0];
+const hosts = ['.x.ai', 'accounts.x.ai', 'auth.x.ai'];
+for (const d of hosts) {
+  try {
+    document.cookie = 'sso=' + sso + '; path=/; domain=' + d + '; Secure; SameSite=None';
+    document.cookie = 'sso-rw=' + sso + '; path=/; domain=' + d + '; Secure; SameSite=None';
+  } catch (e) {}
+}
+""",
                 sso_cookie,
             )
         except Exception:
             pass
+        return ok_n
+
+    def _page_diag(page) -> str:
+        """authorize 卡住时打一截页面特征，便于判断 login/CF/consent。"""
+        try:
+            d = page.run_js(
+                r"""
+const body = ((document.body && (document.body.innerText || document.body.textContent)) || '')
+  .replace(/\s+/g, ' ').trim().slice(0, 180);
+const title = (document.title || '').slice(0, 60);
+const hasAllow = !!Array.from(document.querySelectorAll('button,[role="button"],input[type="submit"]'))
+  .find(b => /允许|allow|authorize|approve|同意|批准/i.test(
+    (b.innerText || b.textContent || b.value || '').trim()
+  ));
+const hasSignIn = /sign\s*in|log\s*in|登录|create account|sign\s*up|注册/i.test(body + ' ' + title);
+const hasConsent = /consent|授权|请求访问|wants to access|requesting access/i.test(body + ' ' + title);
+const hasCf = /just a moment|checking your browser|cf-browser|turnstile|verify you are human/i.test(body);
+const cookie = (document.cookie || '');
+const hasSso = /(?:^|;\s*)sso=/.test(cookie);
+return {
+  title, hasAllow, hasSignIn, hasConsent, hasCf, hasSso,
+  body: body.slice(0, 120),
+  href: (location.href || '').slice(0, 120)
+};
+"""
+            )
+            if isinstance(d, dict):
+                return (
+                    f"title={d.get('title')!r} allow={d.get('hasAllow')} "
+                    f"signIn={d.get('hasSignIn')} consent={d.get('hasConsent')} "
+                    f"cf={d.get('hasCf')} ssoDoc={d.get('hasSso')} "
+                    f"body={(d.get('body') or '')[:80]!r}"
+                )
+            return str(d)[:160]
+        except Exception as e:
+            return f"diag-err:{e}"
+
+    def _warm_and_bind_sso(page) -> bool:
+        """先落 accounts 域 → 注入 → 刷新确认未掉到 sign-in。"""
+        try:
+            page.get("https://accounts.x.ai/")
+            time.sleep(0.6)
+        except Exception as e:
+            log(f"  ⚠ browser consent warm accounts: {e}")
+        n1 = _inject_sso(page, reason="accounts")
+        try:
+            page.get("https://accounts.x.ai/")
+            time.sleep(0.5)
+        except Exception:
+            pass
+        n2 = _inject_sso(page, reason="accounts-reload")
+        try:
+            page.get("https://auth.x.ai/")
+            time.sleep(0.5)
+        except Exception as e:
+            log(f"  ⚠ browser consent warm auth: {e}")
+        n3 = _inject_sso(page, reason="auth")
+        try:
+            page.get("https://auth.x.ai/")
+            time.sleep(0.4)
+        except Exception:
+            pass
+        _inject_sso(page, reason="auth-reload")
+        log(f"  🔑 browser consent SSO inject counts≈{n1}/{n2}/{n3}")
+        # 粗探：accounts 是否仍跳 sign-in
+        try:
+            page.get("https://accounts.x.ai/")
+            time.sleep(0.7)
+            u = (page.url or "").lower()
+            if "sign-in" in u or "sign-up" in u or "login" in u:
+                log(f"  ⚠ browser consent SSO probe still auth wall url={u[:120]}")
+                _inject_sso(page, reason="probe-retry")
+                try:
+                    page.get("https://accounts.x.ai/")
+                    time.sleep(0.6)
+                except Exception:
+                    pass
+                u2 = (page.url or "").lower()
+                if "sign-in" in u2 or "sign-up" in u2:
+                    log(f"  ⚠ browser consent SSO still invalid after re-inject url={u2[:120]}")
+                    return False
+            else:
+                log(f"  🔑 browser consent SSO probe ok url={(page.url or '')[:100]}")
+                return True
+        except Exception as e:
+            log(f"  ⚠ browser consent SSO probe: {e}")
+        return True  # 探测失败不硬阻断，仍尝试 authorize
+
+    def _open_authorize(page) -> None:
+        _inject_sso(page, reason="pre-authorize")
+        page.get(auth_url)
+        time.sleep(1.4)
+        _inject_sso(page, reason="post-authorize")
 
     def _extract_code_from_url(url: str) -> str:
         if not url or "code=" not in url:
@@ -701,6 +846,47 @@ def sso_to_token_via_browser_consent(
         m = re.search(r"[?&#]code=([^&]+)", url)
         return urllib.parse.unquote(m.group(1)) if m else ""
 
+    def _click_allow(page) -> str:
+        """只点 Allow/允许；绝不点 Continue/Next/登录。"""
+        try:
+            return str(
+                page.run_js(
+                    r"""
+function isVisible(n) {
+  if (!n) return false;
+  const s = window.getComputedStyle(n);
+  if (s.display === 'none' || s.visibility === 'hidden' || Number(s.opacity) === 0) return false;
+  const r = n.getBoundingClientRect();
+  return r.width > 0 && r.height > 0;
+}
+const deny = /continue|next|sign\s*in|log\s*in|cancel|deny|拒绝|取消|继续|下一步|登录|create\s*account|sign\s*up/i;
+const ok = /^(允许|allow|authorize|approve|同意|批准|grant)$|允许|allow access|authorize app|approve access|同意授权/i;
+const nodes = Array.from(document.querySelectorAll(
+  'button, [role="button"], input[type="submit"], a[role="button"], a.button'
+)).filter(isVisible);
+// 优先精确文案
+let t = nodes.find(b => {
+  const text = (b.innerText || b.textContent || b.value || '').replace(/\s+/g, ' ').trim();
+  if (!text || deny.test(text)) return false;
+  return /^(Allow|允许|Authorize|Approve|同意|批准)$/i.test(text);
+});
+if (!t) {
+  t = nodes.find(b => {
+    const text = (b.innerText || b.textContent || b.value || '').replace(/\s+/g, ' ').trim();
+    if (!text || deny.test(text)) return false;
+    return ok.test(text);
+  });
+}
+if (!t) return '';
+t.click();
+return (t.innerText || t.value || 'Allow').trim().slice(0, 32);
+"""
+                )
+                or ""
+            )
+        except Exception:
+            return ""
+
     try:
         browser = Chromium(co)
         # 新开 tab：即使误附着已有实例，也不用 latest（可能是注册页）
@@ -710,6 +896,11 @@ def sso_to_token_via_browser_consent(
             page = browser.latest_tab
         try:
             page.set.timeouts(base=min(25.0, hard_timeout / 2.0))
+        except Exception:
+            pass
+        # 启用 Network 域，便于 setCookie
+        try:
+            page.run_cdp("Network.enable")
         except Exception:
             pass
         # 隔离自检：tab 过多说明可能附着到注册 Chromium
@@ -723,28 +914,18 @@ def sso_to_token_via_browser_consent(
         except Exception:
             pass
 
-        # Warm accounts + inject SSO, then auth host for cookie scope
-        for warm in (
-            "https://accounts.x.ai/",
-            "https://auth.x.ai/",
-        ):
-            try:
-                page.get(warm)
-                time.sleep(0.4)
-                _inject_sso(page)
-            except Exception as e:
-                log(f"  ⚠ browser consent warm {warm}: {e}")
+        _warm_and_bind_sso(page)
 
         log("  🔑 browser consent: open authorize…")
-        _inject_sso(page)
-        page.get(auth_url)
-        time.sleep(1.2)
-        _inject_sso(page)
+        _open_authorize(page)
 
         code = None
         deadline = time.time() + hard_timeout
         last_url_log = 0.0
-        reauth_once = False
+        reauth_count = 0
+        max_reauth = 2
+        stuck_authorize_since: float | None = None
+        last_diag_log = 0.0
         while time.time() < deadline:
             # 1) local callback server
             if captured.get("code"):
@@ -757,25 +938,32 @@ def sso_to_token_via_browser_consent(
             except Exception:
                 url = ""
             now = time.time()
+            ul = (url or "").lower()
+
             if now - last_url_log >= 8.0:
                 last_url_log = now
                 log(f"  🔑 browser consent poll url={(url or '')[:140]}")
 
-            if "auth-error" in url or "sign-in" in url or "sign-up" in url:
-                if not reauth_once:
-                    reauth_once = True
-                    log("  ⚠ browser consent session lost → re-inject SSO + re-open authorize")
+            # 登录墙 / 错误页：重绑 SSO 再开 authorize
+            if any(x in ul for x in ("auth-error", "sign-in", "sign-up", "/login")):
+                if reauth_count < max_reauth:
+                    reauth_count += 1
+                    log(
+                        f"  ⚠ browser consent session lost → re-bind SSO "
+                        f"+ re-open authorize ({reauth_count}/{max_reauth})"
+                    )
                     try:
-                        page.get("https://accounts.x.ai/")
-                        time.sleep(0.5)
-                        _inject_sso(page)
-                        page.get(auth_url)
-                        time.sleep(1.0)
-                        _inject_sso(page)
+                        _warm_and_bind_sso(page)
+                        _open_authorize(page)
+                        stuck_authorize_since = None
                     except Exception as e:
                         log(f"  ⚠ re-auth: {e}")
                     continue
                 log(f"  ❌ browser consent auth-error/sign-in: {url[:160]}")
+                try:
+                    log(f"  ❌ browser consent final diag: {_page_diag(page)}")
+                except Exception:
+                    pass
                 return None
 
             # 2) page URL (callback or fragment)
@@ -788,7 +976,7 @@ def sso_to_token_via_browser_consent(
             try:
                 href = page.run_js(
                     "return (location.href || '') + '|' + "
-                    "((document.querySelector('a[href*=code]') || {}).href || '');"
+                    "((document.querySelector('a[href*=\"code=\"]') || {}).href || '');"
                 )
                 c3 = _extract_code_from_url(str(href or ""))
                 if c3:
@@ -798,51 +986,46 @@ def sso_to_token_via_browser_consent(
             except Exception:
                 pass
 
-            # stuck on authorize without consent UI → soft reload once with cookies
-            if (
-                "/oauth2/authorize" in url
-                and "consent" not in url
-                and not reauth_once
-                and (time.time() + hard_timeout - deadline) > 8.0
-            ):
-                # elapsed > 8s roughly: deadline is start+hard, so now > start+8
-                pass
-            if "/oauth2/authorize" in (url or "") and "consent" not in (url or ""):
-                # periodic re-inject cookies while stuck on authorize
-                if int(now) % 10 == 0:
-                    _inject_sso(page)
+            on_authorize = "/oauth2/authorize" in ul and "consent" not in ul
+            on_consent = "consent" in ul or "/oauth2/consent" in ul
 
-            try:
-                clicked = page.run_js(
-                    r"""
-function isVisible(n) {
-  if (!n) return false;
-  const s = window.getComputedStyle(n);
-  if (s.display === 'none' || s.visibility === 'hidden') return false;
-  const r = n.getBoundingClientRect();
-  return r.width > 0 && r.height > 0;
-}
-const deny = /continue|next|sign\s*in|log\s*in|继续|下一步|登录/i;
-const ok = /允许|allow|authorize|approve|同意|批准|grant/i;
-const btns = Array.from(document.querySelectorAll(
-  'button, [role="button"], input[type="submit"], a[role="button"]'
-)).filter(isVisible);
-const t = btns.find(b => {
-  const text = (b.innerText || b.textContent || b.value || '').trim();
-  if (!text || deny.test(text)) return false;
-  return ok.test(text);
-});
-if (t) { t.click(); return (t.innerText || t.value || '').trim().slice(0, 32); }
-return '';
-"""
-                )
+            if on_authorize:
+                if stuck_authorize_since is None:
+                    stuck_authorize_since = now
+                stuck_for = now - stuck_authorize_since
+                # 周期诊断
+                if now - last_diag_log >= 12.0:
+                    last_diag_log = now
+                    log(f"  🔑 browser consent stuck authorize {stuck_for:.0f}s · {_page_diag(page)}")
+                # 卡 authorize 超过 ~8s：重注 cookie + 硬跳 authorize（最多 max_reauth）
+                if stuck_for >= 8.0 and reauth_count < max_reauth:
+                    reauth_count += 1
+                    log(
+                        f"  ⚠ browser consent authorize stall → re-bind + reload "
+                        f"({reauth_count}/{max_reauth})"
+                    )
+                    try:
+                        _warm_and_bind_sso(page)
+                        _open_authorize(page)
+                        stuck_authorize_since = time.time()
+                    except Exception as e:
+                        log(f"  ⚠ authorize reload: {e}")
+                    continue
+                # 轻量：隔几秒再注一次 cookie（不导航）
+                if int(now) % 6 == 0:
+                    _inject_sso(page, reason="authorize-hold")
+            else:
+                stuck_authorize_since = None
+
+            # consent / 任意页：尝试点 Allow（禁止 Continue）
+            if on_consent or on_authorize or "accounts.x.ai" in ul or "auth.x.ai" in ul:
+                clicked = _click_allow(page)
                 if clicked:
                     log(f"  🔑 browser consent click={clicked}")
                     time.sleep(1.0)
                     continue
-            except Exception:
-                pass
-            time.sleep(0.5)
+
+            time.sleep(0.45)
 
         if not code and captured.get("code"):
             code = captured["code"]
@@ -854,6 +1037,10 @@ return '';
             except Exception:
                 u = ""
             log(f"  ❌ browser consent: no authorization code url={(u or '')[:160]}")
+            try:
+                log(f"  ❌ browser consent final diag: {_page_diag(page)}")
+            except Exception:
+                pass
             return None
 
         proxies = {"http": proxy, "https": proxy} if proxy else None
