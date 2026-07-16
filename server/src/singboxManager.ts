@@ -525,15 +525,44 @@ export function listSingBoxNodeSummaries(text: string): SingBoxNodeSummary[] {
   }));
 }
 
-function pickNode(nodes: ParsedNode[], selected: string): ParsedNode | null {
-  if (!nodes.length) return null;
-  if (selected) {
-    const hit = nodes.find((n) => n.tag === selected || n.name === selected);
-    if (hit) return hit;
-  }
-  return nodes[0];
+/** 固定本地端口（不对用户开放） */
+export const SING_BOX_FIXED_PORT = 2080;
+/** 设置项：随机节点（注册启动/降级轮换时抽取） */
+export const SING_BOX_SELECTED_RANDOM = '__random__';
+
+/** 本进程内已降级/跳过的 tag（注册失败轮换用；进程重启清空） */
+const demotedTags = new Set<string>();
+
+function isRandomSelected(selected: string): boolean {
+  const s = String(selected || '').trim();
+  return !s || s === SING_BOX_SELECTED_RANDOM;
 }
 
+function pickNode(
+  nodes: ParsedNode[],
+  selected: string,
+  opts?: { forceRandom?: boolean; excludeTags?: Set<string> }
+): ParsedNode | null {
+  if (!nodes.length) return null;
+  const exclude = opts?.excludeTags;
+  const pool = exclude?.size
+    ? nodes.filter((n) => !exclude.has(n.tag))
+    : nodes;
+  const use = pool.length ? pool : nodes;
+
+  if (opts?.forceRandom || isRandomSelected(selected)) {
+    return use[Math.floor(Math.random() * use.length)] || null;
+  }
+  const hit = use.find((n) => n.tag === selected || n.name === selected);
+  if (hit) return hit;
+  const any = nodes.find((n) => n.tag === selected || n.name === selected);
+  return any || use[0] || null;
+}
+
+/**
+ * sing-box 1.13+：inbound 不再支持 sniff / sniff_override_destination 等遗留字段。
+ * @see https://sing-box.sagernet.org/migration/#migrate-legacy-inbound-fields-to-rule-actions
+ */
 function buildSingBoxConfig(port: number, node: ParsedNode): Record<string, unknown> {
   return {
     log: { level: 'info', timestamp: true },
@@ -542,9 +571,7 @@ function buildSingBoxConfig(port: number, node: ParsedNode): Record<string, unkn
         type: 'mixed',
         tag: 'mixed-in',
         listen: '127.0.0.1',
-        listen_port: port,
-        sniff: true,
-        sniff_override_destination: true
+        listen_port: port
       }
     ],
     outbounds: [
@@ -557,6 +584,10 @@ function buildSingBoxConfig(port: number, node: ParsedNode): Record<string, unkn
       final: node.tag
     }
   };
+}
+
+function fixedListenPort(_settings?: AppSettings): number {
+  return SING_BOX_FIXED_PORT;
 }
 
 function closeLog() {
@@ -589,17 +620,15 @@ function killChild(): void {
 }
 
 export function getSingBoxStatus(settings?: AppSettings): SingBoxStatus {
-  const port = (() => {
-    const n = Number(settings?.singBoxPort);
-    return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : 2080;
-  })();
+  const port = fixedListenPort(settings);
   const binary = resolveSingBoxBinary();
   const running = !!(child && child.pid && !child.killed);
   const nodes = settings ? parseSingBoxNodes(settings.singBoxNodes || '') : [];
-  const selected =
-    (settings && pickNode(nodes, settings.singBoxSelected || '')?.tag) || lastSelected;
-  const selectedName =
-    (settings && pickNode(nodes, settings.singBoxSelected || '')?.name) || lastSelectedName;
+  const pref = settings?.singBoxSelected || '';
+  // 状态展示：随机模式显示偏好；运行中显示实际节点
+  const activeTag = lastSelected || '';
+  const activeName = lastSelectedName || '';
+  const prefNode = nodes.length ? pickNode(nodes, pref) : null;
   return {
     running,
     pid: running && child?.pid ? child.pid : null,
@@ -607,8 +636,14 @@ export function getSingBoxStatus(settings?: AppSettings): SingBoxStatus {
     localUrl: buildSingBoxLocalProxyUrl({ singBoxPort: port }),
     binary: binary || lastBinary,
     binaryExists: !!binary && existsSync(binary),
-    selected: selected || '',
-    selectedName: selectedName || '',
+    selected: isRandomSelected(pref)
+      ? SING_BOX_SELECTED_RANDOM
+      : prefNode?.tag || pref || activeTag || '',
+    selectedName: isRandomSelected(pref)
+      ? running && activeName
+        ? `随机 · 当前 ${activeName}`
+        : '随机节点'
+      : prefNode?.name || activeName || '',
     nodeCount: settings ? nodes.length : lastNodeCount,
     lastError,
     startedAt: running ? startedAt : null,
@@ -663,22 +698,51 @@ export function readSingBoxLog(_settings?: AppSettings, tail = 200): SingBoxLogR
   }
 }
 
+export type SyncSingBoxOptions = {
+  /** 注册启动：随机模式下重新抽节点；固定模式保持 selected */
+  forRegister?: boolean;
+  /** 强制换节点（降级）：跳过当前 tag，从剩余中抽 */
+  rotate?: boolean;
+  /** 降级原因（写入日志） */
+  reason?: string;
+};
+
 /**
  * 按 settings 启停 sing-box。
  * - singBoxEnabled=false → 停止
  * - true → 配置变更或未运行则重启
+ * - forRegister：随机节点时每轮重抽
+ * - rotate：注册失败降级，换下一节点
  */
-export async function syncSingBoxFromSettings(settings: AppSettings): Promise<SingBoxStatus> {
+export async function syncSingBoxFromSettings(
+  settings: AppSettings,
+  opts: SyncSingBoxOptions = {}
+): Promise<SingBoxStatus> {
   if (!settings.singBoxEnabled) {
+    demotedTags.clear();
     return stopSingBox();
   }
 
-  const port = Number(settings.singBoxPort);
-  const listenPort =
-    Number.isInteger(port) && port >= 1 && port <= 65535 ? port : 2080;
+  const listenPort = fixedListenPort(settings);
   const nodes = parseSingBoxNodes(settings.singBoxNodes || '');
   lastNodeCount = nodes.length;
-  const node = pickNode(nodes, settings.singBoxSelected || '');
+  const pref = settings.singBoxSelected || '';
+
+  if (opts.rotate && lastSelected) {
+    demotedTags.add(lastSelected);
+  }
+
+  // 全部降级过则清空再轮
+  if (opts.rotate && demotedTags.size >= nodes.length && nodes.length > 0) {
+    demotedTags.clear();
+    if (lastSelected) demotedTags.add(lastSelected);
+  }
+
+  const registerRepick = !!opts.forRegister && isRandomSelected(pref);
+  const node = pickNode(nodes, pref, {
+    forceRandom: registerRepick,
+    excludeTags: opts.rotate ? demotedTags : undefined
+  });
   if (!node) {
     lastError = '没有可解析的节点（支持 ss/vmess/vless/trojan/hysteria2/tuic 分享链接）';
     await stopSingBox();
@@ -716,7 +780,13 @@ export async function syncSingBoxFromSettings(settings: AppSettings): Promise<Si
     outbound: node.outbound
   });
   const running = !!(child && child.pid && !child.killed);
-  if (running && lastConfigKey === configKey && lastBinary === binary) {
+  // 降级轮换强制重启；注册仅在随机重抽时若节点未变可跳过
+  if (
+    running &&
+    lastConfigKey === configKey &&
+    lastBinary === binary &&
+    !opts.rotate
+  ) {
     return getSingBoxStatus(settings);
   }
 
@@ -739,6 +809,12 @@ export async function syncSingBoxFromSettings(settings: AppSettings): Promise<Si
   }
   try {
     logStream = createWriteStream(lastLogPath, { flags: 'a' });
+    if (opts.rotate || opts.forRegister) {
+      const note = opts.rotate
+        ? `[rotate] ${opts.reason || 'node degrade'} → ${node.name} (${node.tag})\n`
+        : `[register] pick ${node.name} (${node.tag})\n`;
+      logStream.write(note);
+    }
   } catch (e) {
     lastError = `无法写日志: ${String(e)}`;
     logStream = null;
@@ -793,4 +869,21 @@ export async function syncSingBoxFromSettings(settings: AppSettings): Promise<Si
   }
 
   return getSingBoxStatus(settings);
+}
+
+/**
+ * 注册失败：标记当前节点并切换到其他节点后重启 sing-box（本地 127.0.0.1 端口不变）。
+ */
+export async function rotateSingBoxNode(
+  settings: AppSettings,
+  reason = '注册失败'
+): Promise<SingBoxStatus & { rotated: boolean; from?: string; to?: string }> {
+  if (!settings.singBoxEnabled) {
+    return { ...getSingBoxStatus(settings), rotated: false };
+  }
+  const from = lastSelected || '';
+  const st = await syncSingBoxFromSettings(settings, { rotate: true, reason });
+  const to = lastSelected || '';
+  const rotated = !!to && to !== from;
+  return { ...st, rotated, from, to };
 }

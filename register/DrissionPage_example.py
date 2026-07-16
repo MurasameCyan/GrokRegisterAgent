@@ -1156,7 +1156,21 @@ def open_signup_page(*, find_tries: int | None = None):
         if not cur:
             return False
         try:
-            from pools import demote_proxy_to_pending, next_proxy, should_skip_proxy_demote
+            from pools import (
+                demote_proxy_to_pending,
+                is_singbox_proxy_mode,
+                next_proxy,
+                should_skip_proxy_demote,
+            )
+
+            # sing-box：Node 换出站节点，本地 127.0.0.1:2080 不变，须重启浏览器
+            if is_singbox_proxy_mode():
+                demote_proxy_to_pending(cur, reason=reason[:160])
+                try:
+                    restart_browser()
+                except Exception as re:
+                    print(f"[Warn] restart_browser 失败: {re}", flush=True)
+                return True
 
             # CF 独立 / 本机环回：固定单节点，禁止当池剔除，仅重启浏览器重试
             if should_skip_proxy_demote(cur):

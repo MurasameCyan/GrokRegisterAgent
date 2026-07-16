@@ -94,6 +94,55 @@ def is_cf_proxy_mode() -> bool:
     return s in ("1", "true", "yes", "on", "enabled")
 
 
+
+def is_singbox_proxy_mode() -> bool:
+    """config.singbox_enabled：sing-box 本地 mixed（127.0.0.1:2080），节点由 Node 管理。"""
+    conf = _read_config_dict()
+    raw = conf.get("singbox_enabled")
+    if isinstance(raw, bool):
+        return raw
+    s = str(raw or "").strip().lower()
+    return s in ("1", "true", "yes", "on", "enabled")
+
+
+def rotate_singbox_node(reason: str = "注册失败") -> bool:
+    """通知 Node 切换 sing-box 出站节点（端口不变，浏览器需 restart 才能用新链路）。"""
+    url = f"{_gra_api_base()}/api/singbox/rotate"
+    body = json.dumps(
+        {"reason": str(reason or "注册失败")[:160]},
+        ensure_ascii=False,
+    )
+    try:
+        import urllib.request
+
+        req = urllib.request.Request(
+            url,
+            data=body.encode("utf-8"),
+            headers=_gra_internal_headers(),
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            raw = resp.read().decode("utf-8", "replace")
+        try:
+            data = json.loads(raw) if raw else {}
+        except Exception:
+            data = {}
+        rotated = bool(data.get("rotated"))
+        msg = data.get("message") or raw[:120]
+        to_name = data.get("to") or data.get("selectedName") or ""
+        if rotated or data.get("running"):
+            print(
+                f"[*] sing-box 节点已切换: {msg}"
+                + (f" · {to_name}" if to_name else ""),
+                flush=True,
+            )
+            return True
+        print(f"[Warn] sing-box 节点切换未生效: {msg}", flush=True)
+        return False
+    except Exception as e:
+        print(f"[Warn] sing-box 节点切换回调失败（{url}）: {e}", flush=True)
+        return False
+
 def is_local_loopback_proxy(proxy: str) -> bool:
     """是否本机环回代理（CF cfwp / 本地转发）。不可当池节点剔除。"""
     p = str(proxy or "").strip()
@@ -112,7 +161,12 @@ def is_local_loopback_proxy(proxy: str) -> bool:
 
 
 def should_skip_proxy_demote(proxy: str) -> bool:
-    """CF 独立代理 / 本机环回：禁止 demote 与本轮池剔除。"""
+    """CF 独立代理 / 本机环回：禁止 demote 与本轮池剔除。
+
+    sing-box 模式：不在此跳过——应走 rotate_singbox_node（见 demote_proxy_to_pending）。
+    """
+    if is_singbox_proxy_mode():
+        return False
     if is_cf_proxy_mode():
         return True
     return is_local_loopback_proxy(proxy)
@@ -203,6 +257,8 @@ def demote_proxy_to_pending(proxy: str, reason: str = "注册失败") -> bool:
     p = str(proxy or "").strip()
     if not p:
         return False
+    if is_singbox_proxy_mode():
+        return rotate_singbox_node(str(reason or "注册失败"))
     if should_skip_proxy_demote(p):
         print(
             f"[*] CF/本机代理不降级、不剔除: {p[:72]}… · {str(reason or '')[:100]}",

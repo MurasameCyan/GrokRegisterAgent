@@ -491,12 +491,20 @@ export interface RendererApi {
   getSingBoxStatus(): Promise<SingBoxStatus>;
   /** 节点摘要列表 + 当前选中 */
   getSingBoxNodes(): Promise<{ nodes: SingBoxNodeSummary[]; selected: string }>;
+  /** 解析节点文本（draft 预览，不写盘） */
+  parseSingBoxNodes(
+    nodes: string
+  ): Promise<{ nodes: SingBoxNodeSummary[]; parseable: number }>;
   /** 按已保存配置启动/重载 sing-box */
   startSingBox(): Promise<SingBoxStatus & { ok?: boolean; error?: string }>;
   /** 停止 sing-box 进程 */
   stopSingBox(): Promise<SingBoxStatus & { ok?: boolean }>;
   /** 按 settings 同步启停 */
   syncSingBox(): Promise<SingBoxStatus & { ok?: boolean }>;
+  /** 降级轮换节点 */
+  rotateSingBox(
+    reason?: string
+  ): Promise<SingBoxStatus & { ok?: boolean; rotated?: boolean; message?: string }>;
   /** 读取 sing-box 最近日志 */
   getSingBoxLog(tail?: number): Promise<SingBoxLogResult>;
 

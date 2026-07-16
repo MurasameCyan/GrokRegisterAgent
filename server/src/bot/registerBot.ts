@@ -286,11 +286,16 @@ export class RegisterBot extends EventEmitter {
     const settings = await loadSettings();
     // sing-box / CF 独立代理：开注册前确保本地代理进程已按配置运行
     if (settings.singBoxEnabled) {
-      const st = await syncSingBoxFromSettings(settings);
+      const st = await syncSingBoxFromSettings(settings, { forRegister: true });
       if (!st.running && process.platform !== 'win32') {
         throw new Error(
           st.lastError ||
             'sing-box 未运行：请检查节点链接与 register/bin/sing-box 二进制后保存设置再试'
+        );
+      }
+      if (st.selectedName || st.selected) {
+        console.log(
+          `[registerBot] sing-box node: ${st.selectedName || st.selected} port=${st.port}`
         );
       }
       if (process.platform === 'win32' && st.lastError) {

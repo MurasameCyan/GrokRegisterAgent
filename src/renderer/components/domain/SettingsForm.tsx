@@ -100,13 +100,11 @@ function normalizeSettingsDraft(raw: AppSettings | null | undefined): AppSetting
     cfProxyLocalScheme: r.cfProxyLocalScheme === 'http' ? 'http' : 'socks5',
     singBoxEnabled: !!r.singBoxEnabled,
     singBoxNodes: String(r.singBoxNodes ?? DEFAULT_SETTINGS.singBoxNodes),
-    singBoxSelected: String(r.singBoxSelected ?? DEFAULT_SETTINGS.singBoxSelected),
-    singBoxPort: (() => {
-      const n = Number(r.singBoxPort);
-      return Number.isInteger(n) && n >= 1 && n <= 65535
-        ? n
-        : DEFAULT_SETTINGS.singBoxPort;
-    })()
+    singBoxSelected: String(
+      r.singBoxSelected || DEFAULT_SETTINGS.singBoxSelected || '__random__'
+    ),
+    // 固定端口，UI 不可改
+    singBoxPort: 2080
   };
 }
 
@@ -367,12 +365,15 @@ export function SettingsForm() {
   const [cfLog, setCfLog] = useState<CfProxyLogResult | null>(null);
   const [cfLogLoading, setCfLogLoading] = useState(false);
   const [cfLogCleared, setCfLogCleared] = useState(false);
-  /** sing-box 运行状态 / 日志 */
+  /** sing-box 运行状态 / 日志 / 解析节点 */
   const [sbStatus, setSbStatus] = useState<SingBoxStatus | null>(null);
   const [sbBusy, setSbBusy] = useState(false);
   const [sbLog, setSbLog] = useState<SingBoxLogResult | null>(null);
   const [sbLogLoading, setSbLogLoading] = useState(false);
   const [sbLogCleared, setSbLogCleared] = useState(false);
+  const [sbParsedNodes, setSbParsedNodes] = useState<
+    { tag: string; name: string; type: string; server: string; port: number }[]
+  >([]);
 
   useEffect(() => {
     if (data && !draft) {
@@ -494,6 +495,31 @@ export function SettingsForm() {
     return () => window.clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft?.singBoxEnabled]);
+
+  /** draft 节点列表变化时解析 → 下拉选项 */
+  useEffect(() => {
+    if (!draft?.singBoxEnabled) {
+      setSbParsedNodes([]);
+      return;
+    }
+    const text = draft.singBoxNodes || '';
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          if (typeof window.api?.parseSingBoxNodes !== 'function') return;
+          const r = await window.api.parseSingBoxNodes(text);
+          if (!cancelled) setSbParsedNodes(r.nodes || []);
+        } catch {
+          if (!cancelled) setSbParsedNodes([]);
+        }
+      })();
+    }, 280);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [draft?.singBoxEnabled, draft?.singBoxNodes]);
 
   const errors = useMemo(() => {
     if (!draft) return {} as Record<string, string>;
@@ -1611,43 +1637,9 @@ export function SettingsForm() {
                 </div>
               </div>
 
-              <div className="grid gap-3 sm:grid-cols-2">
-                <Field
-                  label="本地端口"
-                  hint="默认 2080 → mixed HTTP/SOCKS"
-                  error={errors.singBoxPort}
-                >
-                  <Input
-                    type="number"
-                    min={1}
-                    max={65535}
-                    value={draft.singBoxPort ?? 2080}
-                    onChange={(e) =>
-                      update(
-                        'singBoxPort',
-                        Math.max(1, Math.min(65535, Number(e.target.value) || 2080))
-                      )
-                    }
-                    invalid={!!errors.singBoxPort}
-                  />
-                </Field>
-                <Field
-                  label="选用节点"
-                  hint="空=列表第一项；填解析后的 tag 或名称"
-                >
-                  <Input
-                    value={draft.singBoxSelected || ''}
-                    onChange={(e) => update('singBoxSelected', e.target.value)}
-                    placeholder={sbStatus?.selectedName || '默认第一项'}
-                    spellCheck={false}
-                    className="font-mono text-[13px]"
-                  />
-                </Field>
-              </div>
-
               <Field
                 label="节点列表"
-                hint="每行一个分享链接，行尾可 #备注"
+                hint="每行一个分享链接；解析成功后可选下拉。注册随机 / 失败自动换节点"
                 error={errors.singBoxNodes}
               >
                 <textarea
@@ -1659,11 +1651,42 @@ export function SettingsForm() {
                 />
               </Field>
 
+              <Field
+                label="选用节点"
+                hint={
+                  sbParsedNodes.length
+                    ? `已解析 ${sbParsedNodes.length} 个 · 随机=每轮注册重抽，失败降级轮换`
+                    : '粘贴节点后自动解析'
+                }
+              >
+                <select
+                  className="h-10 w-full rounded-lg border border-border/60 bg-background px-3 text-[13px] outline-none focus:border-primary/50"
+                  value={
+                    draft.singBoxSelected === '' || !draft.singBoxSelected
+                      ? '__random__'
+                      : draft.singBoxSelected
+                  }
+                  onChange={(e) => update('singBoxSelected', e.target.value)}
+                >
+                  <option value="__random__">随机节点（推荐 · 注册轮换/降级）</option>
+                  {sbParsedNodes.map((n) => (
+                    <option key={n.tag} value={n.tag}>
+                      {n.name}
+                      {n.type ? ` · ${n.type}` : ''}
+                      {n.server ? ` · ${n.server}:${n.port}` : ''}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+
               <div className="rounded-lg border border-border/50 bg-card/60 px-3 py-2 text-[12px]">
-                <div className="font-medium">将使用本地代理</div>
+                <div className="font-medium">本地代理（固定端口）</div>
                 <code className="mt-0.5 block break-all font-mono text-[11px] text-muted-foreground">
                   {buildSingBoxLocalProxyUrl(draft)}
                 </code>
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  监听 127.0.0.1:2080 · mixed HTTP/SOCKS · 不可改端口
+                </p>
                 {(sbStatus?.selectedName || sbStatus?.selected) && (
                   <p className="mt-1 text-[11px] text-muted-foreground">
                     当前节点：{sbStatus.selectedName || sbStatus.selected}
@@ -1677,8 +1700,8 @@ export function SettingsForm() {
                 )}
                 {sbStatus && !sbStatus.binaryExists && (
                   <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-300">
-                    未找到 Linux sing-box 二进制（register/bin/sing-box/linux-amd64|arm64）。请在
-                    Docker 镜像中构建。
+                    未找到 Linux sing-box 二进制。请使用 GHCR 镜像（Actions
+                    构建时下载），Windows 本机无法直接启动。
                   </p>
                 )}
               </div>

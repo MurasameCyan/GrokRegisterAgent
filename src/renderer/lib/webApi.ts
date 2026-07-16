@@ -274,9 +274,13 @@ const webApi: RendererApi = {
 
   getSingBoxStatus: () => http('GET', '/api/singbox/status'),
   getSingBoxNodes: () => http('GET', '/api/singbox/nodes'),
+  parseSingBoxNodes: (nodes: string) =>
+    http('POST', '/api/singbox/parse', { nodes }),
   startSingBox: () => http('POST', '/api/singbox/start'),
   stopSingBox: () => http('POST', '/api/singbox/stop'),
   syncSingBox: () => http('POST', '/api/singbox/sync'),
+  rotateSingBox: (reason?: string) =>
+    http('POST', '/api/singbox/rotate', { reason: reason || 'manual' }),
   getSingBoxLog: (tail = 200) =>
     http('GET', `/api/singbox/log?tail=${encodeURIComponent(String(tail))}`),
 

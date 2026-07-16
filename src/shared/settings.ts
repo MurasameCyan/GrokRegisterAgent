@@ -129,9 +129,13 @@ export interface AppSettings {
    * 行尾可 #备注。
    */
   singBoxNodes: string;
-  /** 当前选用节点 tag（解析后的稳定 id）；空=第一项 */
+  /**
+   * 选用节点：解析后的 tag；`__random__` 或空 = 随机（注册启动重抽 / 失败降级轮换）。
+   */
   singBoxSelected: string;
-  /** 本地 mixed 监听端口（默认 2080） */
+  /**
+   * 本地 mixed 监听端口（固定 2080，UI 不开放修改；保留字段兼容旧配置）。
+   */
   singBoxPort: number;
   /**
    * 代理池批量测活并发数（1..20，默认 8）。
@@ -331,7 +335,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   cfProxyLocalScheme: 'socks5',
   singBoxEnabled: false,
   singBoxNodes: '',
-  singBoxSelected: '',
+  singBoxSelected: '__random__',
   singBoxPort: 2080,
   proxyProbeConcurrency: 8,
   proxyAutoSaveOnRemoveFailed: false,
@@ -1237,10 +1241,7 @@ export function validateSettings(s: AppSettings): Record<string, string> {
       if (nodes.length === 0) {
         errors.singBoxNodes = '已开启 sing-box，请粘贴至少一个节点分享链接';
       }
-      const port = Number(s.singBoxPort);
-      if (!Number.isInteger(port) || port < 1 || port > 65535) {
-        errors.singBoxPort = '本地端口须在 1～65535';
-      }
+      // 端口固定 2080，不再校验用户输入
     } else if (s.cfProxyEnabled) {
       if (!String(s.cfProxyDomain || '').trim()) {
         errors.cfProxyDomain =
@@ -1287,11 +1288,10 @@ export function buildCfLocalProxyUrl(s: Pick<AppSettings, 'cfProxyPort' | 'cfPro
  * sing-box 本地 mixed 代理 URL（HTTP，mixed 同时提供 SOCKS）。
  */
 export function buildSingBoxLocalProxyUrl(
-  s: Pick<AppSettings, 'singBoxPort'>
+  _s?: Pick<AppSettings, 'singBoxPort'>
 ): string {
-  const port = Number(s.singBoxPort);
-  const p = Number.isInteger(port) && port >= 1 && port <= 65535 ? port : 2080;
-  return `http://127.0.0.1:${p}`;
+  // 固定端口，忽略历史 singBoxPort 配置
+  return 'http://127.0.0.1:2080';
 }
 
 /**

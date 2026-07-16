@@ -163,7 +163,8 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
     !sbOn && (settings as { cfProxyEnabled?: boolean }).cfProxyEnabled === true;
   const sbLocalUrl = sbOn
     ? buildSingBoxLocalProxyUrl({
-        singBoxPort: Number((settings as { singBoxPort?: number }).singBoxPort) || 2080
+        // 固定 2080，不对用户开放改端口
+        singBoxPort: 2080
       })
     : '';
   const cfLocalUrl = cfOn
@@ -239,9 +240,13 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
     delete config.cf_proxy_local_scheme;
   }
   if (sbOn) {
-    config.singbox_port = Number((settings as { singBoxPort?: number }).singBoxPort) || 2080;
+    config.singbox_port = 2080;
+    config.singbox_selected = String(
+      (settings as { singBoxSelected?: string }).singBoxSelected || '__random__'
+    );
   } else {
     delete config.singbox_port;
+    delete config.singbox_selected;
   }
 
   if (sbOn) {

@@ -37,7 +37,9 @@ import {
 import {
   getSingBoxStatus,
   listSingBoxNodeSummaries,
+  parseSingBoxNodes,
   readSingBoxLog,
+  rotateSingBoxNode,
   stopSingBox,
   syncSingBoxFromSettings
 } from './singboxManager.js';
@@ -133,8 +135,11 @@ function isInternalProxyCallbackPath(req: Request): boolean {
     p === '/proxy/demote' ||
     p === '/api/proxy/register-success' ||
     p === '/api/proxy/demote' ||
+    p === '/api/singbox/rotate' ||
+    p === '/singbox/rotate' ||
     p.endsWith('/proxy/register-success') ||
-    p.endsWith('/proxy/demote')
+    p.endsWith('/proxy/demote') ||
+    p.endsWith('/singbox/rotate')
   );
 }
 const STATIC_ROOT = resolve(
@@ -281,6 +286,13 @@ app.get('/api/singbox/nodes', async (_req, res) => {
   res.json({ nodes, selected: s.singBoxSelected || '' });
 });
 
+/** 解析任意节点文本（设置页 draft 预览，不写盘） */
+app.post('/api/singbox/parse', async (req, res) => {
+  const text = String((req.body as { nodes?: string })?.nodes ?? '');
+  const nodes = listSingBoxNodeSummaries(text);
+  res.json({ nodes, parseable: parseSingBoxNodes(text).length });
+});
+
 /** 按当前配置启动/重载 sing-box */
 app.post('/api/singbox/start', async (_req, res) => {
   const s = await loadSettings();
@@ -306,6 +318,30 @@ app.post('/api/singbox/sync', async (_req, res) => {
   const s = await loadSettings();
   const status = await syncSingBoxFromSettings(s);
   res.json({ ok: true, ...status });
+});
+
+/**
+ * 注册失败降级：切换到其他节点并重启 sing-box（内部密钥 / 已登录）。
+ * Python pools.demote 在 singbox 模式下调用。
+ */
+app.post('/api/singbox/rotate', async (req, res) => {
+  const s = await loadSettings();
+  if (!s.singBoxEnabled) {
+    res.status(400).json({ ok: false, error: '未开启 sing-box', rotated: false });
+    return;
+  }
+  const reason = String((req.body as { reason?: string })?.reason || '注册失败').slice(
+    0,
+    160
+  );
+  const status = await rotateSingBoxNode(s, reason);
+  res.json({
+    ok: !status.lastError || status.running,
+    message: status.rotated
+      ? `已切换节点 ${status.from || '?'} → ${status.to || '?'}`
+      : status.lastError || '无其他可用节点或已用当前节点',
+    ...status
+  });
 });
 
 /** 读取 sing-box 最近日志（只读） */

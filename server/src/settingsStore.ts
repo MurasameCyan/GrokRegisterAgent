@@ -217,15 +217,15 @@ function merge(partial: unknown): AppSettings {
       typeof (p as AppSettings).singBoxNodes === 'string'
         ? (p as AppSettings).singBoxNodes
         : DEFAULT_SETTINGS.singBoxNodes,
-    singBoxSelected:
-      typeof (p as AppSettings).singBoxSelected === 'string'
-        ? (p as AppSettings).singBoxSelected
-        : DEFAULT_SETTINGS.singBoxSelected,
-    singBoxPort: (() => {
-      const n = Number((p as AppSettings).singBoxPort);
-      if (Number.isInteger(n) && n >= 1 && n <= 65535) return n;
-      return DEFAULT_SETTINGS.singBoxPort;
+    singBoxSelected: (() => {
+      const v =
+        typeof (p as AppSettings).singBoxSelected === 'string'
+          ? String((p as AppSettings).singBoxSelected).trim()
+          : '';
+      return v || DEFAULT_SETTINGS.singBoxSelected || '__random__';
     })(),
+    // 固定 2080，忽略历史自定义端口
+    singBoxPort: 2080,
     proxyProbeConcurrency: (() => {
       const n = Number((p as AppSettings).proxyProbeConcurrency);
       if (Number.isInteger(n) && n >= 1 && n <= 20) return n;
