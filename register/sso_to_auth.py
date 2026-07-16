@@ -450,14 +450,17 @@ def sso_to_token_via_browser_consent(
     proxy: str = "",
     log=print,
     headless: bool = True,
-    timeout: float = 45.0,
+    timeout: float = 55.0,
 ) -> dict | None:
-    """Open authorize with SSO and click Allow/允许 only (never Continue/Next).
+    """Browser PKCE: SSO → authorize → Allow → code on local callback.
 
-    Hard timeout + watchdog: page.get / missing buttons must not starve mint-queue
-    (workers often = 1).
+    Fixes field failures where page stuck on auth.x.ai/oauth2/authorize:
+    - set sso on .x.ai / accounts.x.ai / auth.x.ai
+    - local HTTP listener on redirect_uri port to catch ?code=
+    - never click Continue/Next; only Allow/允许
     """
     import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
 
     sso_cookie = str(sso_cookie or "").strip()
     if not sso_cookie:
@@ -484,14 +487,88 @@ def sso_to_token_via_browser_consent(
         }
     )
     auth_url = f"{OIDC_ISSUER}/oauth2/authorize?{authorize_params}"
-    hard_timeout = max(25.0, min(float(timeout or 45.0), 90.0))
+    hard_timeout = max(30.0, min(float(timeout or 55.0), 90.0))
+
+    # Parse redirect host/port for local code catcher
+    try:
+        ru = urllib.parse.urlparse(REDIRECT_URI)
+        cb_host = ru.hostname or "127.0.0.1"
+        cb_port = int(ru.port or 56121)
+        cb_path = ru.path or "/callback"
+    except Exception:
+        cb_host, cb_port, cb_path = "127.0.0.1", 56121, "/callback"
+
+    captured: dict[str, str] = {}
+    httpd_holder: dict[str, Any] = {"srv": None}
+
+    class _Handler(BaseHTTPRequestHandler):
+        def log_message(self, fmt, *args):  # noqa: A003
+            return
+
+        def do_GET(self):  # noqa: N802
+            try:
+                parsed = urllib.parse.urlparse(self.path)
+                q = urllib.parse.parse_qs(parsed.query or "")
+                code = (q.get("code") or [""])[0]
+                if code:
+                    captured["code"] = code
+                    captured["state"] = (q.get("state") or [""])[0]
+                body = b"<html><body>OK close</body></html>"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except Exception:
+                try:
+                    self.send_response(500)
+                    self.end_headers()
+                except Exception:
+                    pass
+
+    def _start_cb_server() -> bool:
+        try:
+            # reuseaddr for rapid remints
+            HTTPServer.allow_reuse_address = True
+            srv = HTTPServer((cb_host, cb_port), _Handler)
+            httpd_holder["srv"] = srv
+            th = threading.Thread(target=srv.serve_forever, name="pkce-cb", daemon=True)
+            th.start()
+            log(f"  🔑 browser consent callback listen {cb_host}:{cb_port}{cb_path}")
+            return True
+        except OSError as e:
+            log(f"  ⚠ browser consent callback port busy ({cb_port}): {e}")
+            return False
+        except Exception as e:
+            log(f"  ⚠ browser consent callback start: {e}")
+            return False
+
+    def _stop_cb_server() -> None:
+        srv = httpd_holder.get("srv")
+        if srv is not None:
+            try:
+                srv.shutdown()
+            except Exception:
+                pass
+            try:
+                srv.server_close()
+            except Exception:
+                pass
+            httpd_holder["srv"] = None
 
     co = ChromiumOptions()
     try:
         co.headless(bool(headless))
     except Exception:
         pass
-    for arg in ("--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--lang=en-US"):
+    for arg in (
+        "--no-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--lang=en-US",
+        # allow redirect to local callback without mixed-content blocks
+        "--disable-web-security",
+    ):
         try:
             co.set_argument(arg)
         except Exception:
@@ -499,6 +576,7 @@ def sso_to_token_via_browser_consent(
     proxy_s = str(proxy or "").strip()
     if proxy_s:
         try:
+            # do NOT proxy loopback callback
             co.set_proxy(proxy_s)
         except Exception as e:
             log(f"  ⚠ browser consent set_proxy: {e}")
@@ -507,7 +585,7 @@ def sso_to_token_via_browser_consent(
     done = {"v": False}
 
     def _watchdog() -> None:
-        time.sleep(hard_timeout + 8.0)
+        time.sleep(hard_timeout + 10.0)
         if done["v"]:
             return
         log(f"  ⚠ browser consent watchdog quit after {hard_timeout:.0f}s")
@@ -517,57 +595,87 @@ def sso_to_token_via_browser_consent(
                 b.quit()
             except Exception:
                 pass
+        _stop_cb_server()
 
     threading.Thread(target=_watchdog, name="browser-consent-wd", daemon=True).start()
+    _start_cb_server()
+
+    def _inject_sso(page) -> None:
+        cookies = []
+        for domain in (".x.ai", "accounts.x.ai", "auth.x.ai", ".auth.x.ai"):
+            for name in ("sso", "sso-rw"):
+                cookies.append(
+                    {
+                        "name": name,
+                        "value": sso_cookie,
+                        "domain": domain,
+                        "path": "/",
+                    }
+                )
+        try:
+            page.set.cookies(cookies)
+        except Exception as e:
+            log(f"  ⚠ set sso cookies: {e}")
+        try:
+            page.run_js(
+                "const sso=arguments[0];"
+                "document.cookie='sso='+sso+'; path=/; domain=.x.ai';"
+                "document.cookie='sso-rw='+sso+'; path=/; domain=.x.ai';",
+                sso_cookie,
+            )
+        except Exception:
+            pass
+
+    def _extract_code_from_url(url: str) -> str:
+        if not url or "code=" not in url:
+            return ""
+        try:
+            q = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+            codes = q.get("code") or []
+            if codes:
+                return str(codes[0])
+        except Exception:
+            pass
+        m = re.search(r"[?&#]code=([^&]+)", url)
+        return urllib.parse.unquote(m.group(1)) if m else ""
 
     try:
         browser = Chromium(co)
         page = browser.latest_tab
         try:
-            page.set.timeouts(base=min(20.0, hard_timeout / 2.0))
+            page.set.timeouts(base=min(25.0, hard_timeout / 2.0))
         except Exception:
             pass
-        page.get("https://accounts.x.ai/")
-        time.sleep(0.5)
-        try:
-            page.set.cookies(
-                [
-                    {"name": "sso", "value": sso_cookie, "domain": ".x.ai", "path": "/"},
-                    {"name": "sso-rw", "value": sso_cookie, "domain": ".x.ai", "path": "/"},
-                    {
-                        "name": "sso",
-                        "value": sso_cookie,
-                        "domain": "accounts.x.ai",
-                        "path": "/",
-                    },
-                    {
-                        "name": "sso-rw",
-                        "value": sso_cookie,
-                        "domain": "accounts.x.ai",
-                        "path": "/",
-                    },
-                ]
-            )
-        except Exception as e:
-            log(f"  ⚠ set sso cookies: {e}")
+
+        # Warm accounts + inject SSO, then auth host for cookie scope
+        for warm in (
+            "https://accounts.x.ai/",
+            "https://auth.x.ai/",
+        ):
             try:
-                page.run_js(
-                    "const sso=arguments[0];"
-                    "document.cookie='sso='+sso+'; domain=.x.ai; path=/';"
-                    "document.cookie='sso-rw='+sso+'; domain=.x.ai; path=/';",
-                    sso_cookie,
-                )
-            except Exception:
-                pass
+                page.get(warm)
+                time.sleep(0.4)
+                _inject_sso(page)
+            except Exception as e:
+                log(f"  ⚠ browser consent warm {warm}: {e}")
 
         log("  🔑 browser consent: open authorize…")
+        _inject_sso(page)
         page.get(auth_url)
-        time.sleep(1.0)
+        time.sleep(1.2)
+        _inject_sso(page)
 
         code = None
         deadline = time.time() + hard_timeout
         last_url_log = 0.0
+        reauth_once = False
         while time.time() < deadline:
+            # 1) local callback server
+            if captured.get("code"):
+                code = captured["code"]
+                log("  🔑 browser consent: got code from local callback")
+                break
+
             try:
                 url = page.url or ""
             except Exception:
@@ -575,33 +683,59 @@ def sso_to_token_via_browser_consent(
             now = time.time()
             if now - last_url_log >= 8.0:
                 last_url_log = now
-                log(f"  🔑 browser consent poll url={(url or '')[:120]}")
-            if "auth-error" in url:
-                log(f"  ❌ browser consent auth-error: {url[:160]}")
+                log(f"  🔑 browser consent poll url={(url or '')[:140]}")
+
+            if "auth-error" in url or "sign-in" in url or "sign-up" in url:
+                if not reauth_once:
+                    reauth_once = True
+                    log("  ⚠ browser consent session lost → re-inject SSO + re-open authorize")
+                    try:
+                        page.get("https://accounts.x.ai/")
+                        time.sleep(0.5)
+                        _inject_sso(page)
+                        page.get(auth_url)
+                        time.sleep(1.0)
+                        _inject_sso(page)
+                    except Exception as e:
+                        log(f"  ⚠ re-auth: {e}")
+                    continue
+                log(f"  ❌ browser consent auth-error/sign-in: {url[:160]}")
                 return None
-            if "code=" in url:
-                try:
-                    q = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
-                    codes = q.get("code") or []
-                    if codes:
-                        code = codes[0]
-                        log("  🔑 browser consent: got code from redirect")
-                        break
-                except Exception:
-                    pass
+
+            # 2) page URL (callback or fragment)
+            c2 = _extract_code_from_url(url)
+            if c2:
+                code = c2
+                log("  🔑 browser consent: got code from page url")
+                break
+
             try:
                 href = page.run_js(
                     "return (location.href || '') + '|' + "
                     "((document.querySelector('a[href*=code]') || {}).href || '');"
                 )
-                if href and "code=" in str(href):
-                    m = re.search(r"[?&#]code=([^&]+)", str(href))
-                    if m:
-                        code = urllib.parse.unquote(m.group(1))
-                        log("  🔑 browser consent: got code from href")
-                        break
+                c3 = _extract_code_from_url(str(href or ""))
+                if c3:
+                    code = c3
+                    log("  🔑 browser consent: got code from href")
+                    break
             except Exception:
                 pass
+
+            # stuck on authorize without consent UI → soft reload once with cookies
+            if (
+                "/oauth2/authorize" in url
+                and "consent" not in url
+                and not reauth_once
+                and (time.time() + hard_timeout - deadline) > 8.0
+            ):
+                # elapsed > 8s roughly: deadline is start+hard, so now > start+8
+                pass
+            if "/oauth2/authorize" in (url or "") and "consent" not in (url or ""):
+                # periodic re-inject cookies while stuck on authorize
+                if int(now) % 10 == 0:
+                    _inject_sso(page)
+
             try:
                 clicked = page.run_js(
                     r"""
@@ -614,7 +748,9 @@ function isVisible(n) {
 }
 const deny = /continue|next|sign\s*in|log\s*in|继续|下一步|登录/i;
 const ok = /允许|allow|authorize|approve|同意|批准|grant/i;
-const btns = Array.from(document.querySelectorAll('button, [role="button"], input[type="submit"]')).filter(isVisible);
+const btns = Array.from(document.querySelectorAll(
+  'button, [role="button"], input[type="submit"], a[role="button"]'
+)).filter(isVisible);
 const t = btns.find(b => {
   const text = (b.innerText || b.textContent || b.value || '').trim();
   if (!text || deny.test(text)) return false;
@@ -626,11 +762,15 @@ return '';
                 )
                 if clicked:
                     log(f"  🔑 browser consent click={clicked}")
-                    time.sleep(1.2)
+                    time.sleep(1.0)
                     continue
             except Exception:
                 pass
-            time.sleep(0.6)
+            time.sleep(0.5)
+
+        if not code and captured.get("code"):
+            code = captured["code"]
+            log("  🔑 browser consent: got code from local callback (late)")
 
         if not code:
             try:
@@ -662,7 +802,7 @@ return '';
                     "Accept": "application/json",
                 },
                 impersonate="chrome",
-                timeout=20,
+                timeout=25,
             )
         except Exception as e:
             log(f"  ❌ browser consent token exchange: {e}")
@@ -684,11 +824,13 @@ return '';
         return None
     finally:
         done["v"] = True
+        _stop_cb_server()
         if browser is not None:
             try:
                 browser.quit()
             except Exception:
                 pass
+
 
 
 def sso_to_token(sso_cookie: str, proxy: str = "", log=print) -> dict | None:

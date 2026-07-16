@@ -109,13 +109,13 @@ def _via_pkce_token(
     try:
         from sso_to_auth import sso_to_token_via_browser_consent
 
-        log("[auth] PKCE path → browser consent fallback (timeout=45s)…")
+        log("[auth] PKCE path → browser consent fallback (timeout=55s, local callback)…")
         tokens = sso_to_token_via_browser_consent(
             sso,
             proxy=proxy or "",
             log=log,
             headless=True,
-            timeout=45.0,
+            timeout=55.0,
         )
         if tokens and tokens.get("access_token"):
             return tokens
@@ -584,12 +584,13 @@ def sso_to_cpa_auth(
             f"（同时产出 pkce+device 两份 auth，分别测活；两通道互不影响）"
         )
         channels_out: list[dict[str, Any]] = []
-        for ch in ("pkce", "device"):
+        # device first (fast Auth B), then pure PKCE/browser (Auth A) so both can land
+        for ch in ("device", "pkce"):
             tok: dict[str, Any] | None = None
             mint_err = ""
-            # pkce slot: pure PKCE (+ browser Allow), never device-fallback (would mislabel Auth B)
-            # device slot: retry TLS flakiness (curl 35 OPENSSL)
-            attempts = 2 if ch == "pkce" else 3
+            # pkce: pure protocol + browser callback (never device-fallback into *-pkce)
+            # device: retry TLS flakiness
+            attempts = 3 if ch == "device" else 2
             for ai in range(attempts):
                 try:
                     if ch == "pkce":
