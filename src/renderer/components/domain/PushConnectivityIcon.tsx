@@ -90,10 +90,10 @@ export function PushConnectivityIcon({ draft }: { draft: AppSettings }) {
         if (id !== seq.current) return;
         if (t === 'cpa') {
           const r = await window.api.testCpaRemote({ url: cpaUrl, key: cpaKey });
-          if (r?.ok) parts.push(`CPA ✓${r.latencyMs != null || r.ms != null ? '' : ''}`);
+          if (r?.ok) parts.push('CPA OK');
           else {
             allOk = false;
-            parts.push(`CPA ✗ ${r?.message || 'fail'}`);
+            parts.push('CPA FAIL ' + (r?.message || 'fail'));
           }
         } else {
           const r = await window.api.testGrok2apiRemote({
@@ -101,10 +101,10 @@ export function PushConnectivityIcon({ draft }: { draft: AppSettings }) {
             username: g2User,
             password: g2Pass
           });
-          if (r?.ok) parts.push('g2 ✓');
+          if (r?.ok) parts.push('g2 OK');
           else {
             allOk = false;
-            parts.push(`g2 ✗ ${r?.message || 'fail'}`);
+            parts.push('g2 FAIL ' + (r?.message || 'fail'));
           }
         }
       }
