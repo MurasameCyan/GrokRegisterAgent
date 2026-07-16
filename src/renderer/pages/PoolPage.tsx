@@ -900,7 +900,7 @@ export function PoolPage() {
           {/* 筛选：三组并排（宽屏）/ 换行（窄屏），减少纵向占位 */}
           <div className="flex flex-col gap-1.5 lg:flex-row lg:flex-wrap lg:items-center lg:gap-x-3 lg:gap-y-1.5">
             <div className="flex min-w-0 flex-wrap items-center gap-1">
-              <span className="mr-0.5 w-8 shrink-0 text-[10px] text-muted-foreground">SSO</span>
+              <span className="mr-0.5 w-8 shrink-0 text-[10px] font-semibold tracking-wide text-primary">SSO</span>
               {(
                 [
                   { id: 'all' as const, label: '全部', count: accounts.length },
@@ -932,7 +932,7 @@ export function PoolPage() {
               ))}
             </div>
             <div className="flex min-w-0 flex-wrap items-center gap-1">
-              <span className="mr-0.5 w-8 shrink-0 text-[10px] text-muted-foreground">Auth</span>
+              <span className="mr-0.5 w-8 shrink-0 text-[10px] font-semibold tracking-wide text-primary">Auth</span>
               {(
                 [
                   { id: 'all' as const, label: '全部', count: accounts.length },
@@ -964,7 +964,7 @@ export function PoolPage() {
               ))}
             </div>
             <div className="flex min-w-0 flex-wrap items-center gap-1">
-              <span className="mr-0.5 w-8 shrink-0 text-[10px] text-muted-foreground">验活</span>
+              <span className="mr-0.5 w-8 shrink-0 text-[10px] font-semibold tracking-wide text-primary">验活</span>
               {(
                 [
                   { id: 'all' as const, label: '全部', count: accounts.length },
@@ -998,7 +998,7 @@ export function PoolPage() {
           {/* 操作：一行优先折行，标签仅宽屏显示 */}
           <div className="flex flex-col gap-1.5">
             <div className="flex flex-wrap items-center gap-1.5">
-              <span className="mr-0.5 hidden text-[10px] text-muted-foreground xl:inline">选择</span>
+              <span className="mr-0.5 hidden text-[10px] font-semibold tracking-wide text-primary xl:inline">选择</span>
               <Button
                 variant="secondary"
                 size="sm"
@@ -1024,7 +1024,7 @@ export function PoolPage() {
                 {pageAllSelected ? '取消本页' : '本页'}
               </Button>
               <span className="mx-0.5 hidden h-4 w-px bg-border sm:inline-block" aria-hidden />
-              <span className="mr-0.5 hidden text-[10px] text-muted-foreground sm:inline">业务</span>
+              <span className="mr-0.5 hidden text-[10px] font-semibold tracking-wide text-primary sm:inline">业务</span>
               <Button
                 size="sm"
                 onClick={() => void verifyBatch()}
@@ -1083,7 +1083,7 @@ export function PoolPage() {
               </Button>
             </div>
             <div className="flex flex-wrap items-center gap-1.5">
-              <span className="mr-0.5 hidden text-[10px] text-muted-foreground xl:inline">
+              <span className="mr-0.5 hidden text-[10px] font-semibold tracking-wide text-primary xl:inline">
                 导入导出
               </span>
               <Button
