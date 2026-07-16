@@ -15,6 +15,7 @@ import {
 import { CardHeaderIcon } from '@renderer/components/domain/CardHeaderIcon';
 import { MailConnectivityIcon } from '@renderer/components/domain/MailConnectivityIcon';
 import { PushConnectivityIcon } from '@renderer/components/domain/PushConnectivityIcon';
+import { ProxyModeIcon } from '@renderer/components/domain/ProxyModeIcon';
 import { Card, CardBody, CardHeader } from '@renderer/components/ui/Card';
 import { Button } from '@renderer/components/ui/Button';
 import { Input } from '@renderer/components/ui/Input';
@@ -610,6 +611,13 @@ export function SettingsForm() {
         <CardHeader
           title="代理设置"
           description={draft.singBoxEnabled ? 'Sing-Box' : '直连'}
+          right={
+            <ProxyModeIcon
+              singBoxEnabled={!!draft.singBoxEnabled}
+              status={sbStatus}
+              onRefresh={refreshSbStatus}
+            />
+          }
         />
         <CardBody className="grid gap-4 lg:grid-cols-2">
           {/* 单行：Sing-Box | 直连 */}
