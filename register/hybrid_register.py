@@ -174,18 +174,19 @@ def hybrid_register(
             # UI 提交邮箱以触发原生 CreateEmail + 捕获 castle
             castle = browser.harvest_castle_via_email_submit(email, timeout=45)
             browser_cookies = browser.export_cookies()
-            if not castle or len(castle) < 1000 or not str(castle).startswith("IBYIll"):
-                # 宽松：允许非 IBYIll 前缀但足够长的 token
-                if not castle or len(str(castle)) < 800:
-                    log(
-                        f"[hybrid] bad castle len={len(castle or '')} "
-                        f"head={(castle or '')[:24]}"
-                    )
-                    return {
-                        "ok": False,
-                        "error": f"castle 无效 len={len(castle or '')}",
-                        "mode": "hybrid",
-                    }
+            # Strict: x.ai native tokens are IBYIll|… and typically ~14KB; short/CDN junk never works.
+            clen = len(str(castle or ""))
+            if not castle or clen < 1000 or not str(castle).startswith("IBYIll"):
+                log(
+                    f"[hybrid] bad castle len={clen} "
+                    f"head={(castle or '')[:24]!r} "
+                    f"(require IBYIll + len>=1000)"
+                )
+                return {
+                    "ok": False,
+                    "error": f"castle 无效 len={clen}",
+                    "mode": "hybrid",
+                }
 
             ua = browser.browser_user_agent() or ""
             sess = ProtocolSession(
@@ -288,15 +289,20 @@ def hybrid_register(
             )
             if not action:
                 client.next_action = ""
-                action = client.discover_next_action(timeout=60)
+                try:
+                    action = client.discover_next_action(timeout=60) or ""
+                    if action:
+                        log(f"[hybrid] next-action discovered={action[:20]}...")
+                except Exception as de:
+                    log(f"[hybrid] next-action discover fail: {de}")
+                    action = ""
             known = "7f50061dd2f5b389a530e4a048d5fdf0c48d1d9259"
             if not action:
+                # Last resort hardcode (may be stale); prefer discover/capture above.
                 action = known
-                log(f"[hybrid] next-action fallback={action[:16]}...")
-            elif action != known:
                 log(
-                    f"[hybrid] next-action discovered={action[:20]}... "
-                    f"known={known[:16]}..."
+                    f"[hybrid] next-action fallback hardcode={action[:16]}... "
+                    f"(capture_out empty / discover failed)"
                 )
             else:
                 log(f"[hybrid] next-action={action[:20]}...")
@@ -515,7 +521,9 @@ def run_hybrid_registration(
     log = log or (lambda m: print(m, flush=True))
     r = hybrid_register(proxy=_load_proxy(), log=log)
     if not r.get("ok"):
-        log(f"[hybrid] ✘ {r.get('error')}")
+        err = r.get("error") or "unknown"
+        log(f"[hybrid] ✘ {err}")
+        # keep structured error for Plan C outer logger
         return r
 
     email = r.get("email") or ""

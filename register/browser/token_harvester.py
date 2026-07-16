@@ -381,6 +381,10 @@ true;
         return ""
 
     def create_email_sent_via_browser(self) -> bool:
+        """Strict: only skip protocol CreateEmail when browser request truly succeeded.
+
+        Do NOT treat "captured castle" alone as success — that caused false skip → no mail code.
+        """
         from grok_register_ttk import _get_page
 
         page = _get_page()
@@ -396,16 +400,21 @@ return {
 """
             )
             if isinstance(data, dict):
-                if data.get("ok") or int(data.get("status") or 0) in (200, 0) and data.get("seen"):
-                    # status 0 + seen: some enginges don't expose status; castle captured is enough
-                    if data.get("ok") or int(data.get("status") or 0) == 200:
-                        return True
-                    if data.get("seen") and int(data.get("castle") or 0) > 1000:
-                        return True
-        except Exception:
-            pass
-        # if we captured a long native castle after UI submit, CreateEmail almost certainly fired
-        return bool(self.read_captured_castle())
+                ok = bool(data.get("ok"))
+                status = int(data.get("status") or 0)
+                seen = bool(data.get("seen"))
+                # Explicit success only
+                if ok and (status == 0 or (200 <= status < 300)):
+                    return True
+                if seen and status == 200:
+                    return True
+                self._lg(
+                    f"[*] CreateEmail browser status: ok={ok} status={status} "
+                    f"seen={seen} castle_len={data.get('castle')}"
+                )
+        except Exception as e:
+            self._lg(f"[*] CreateEmail browser status probe fail: {e}")
+        return False
 
     def browser_user_agent(self) -> str:
         from grok_register_ttk import _get_page
@@ -656,10 +665,12 @@ return {
         except Exception as e:
             self._lg(f"[!] native castle timeout ({e})")
 
-        # Injected CDN SDK almost never yields valid IBYIll (~14KB) tokens used by x.ai.
-        # Keep as last-ditch only; log clearly.
-        self._lg("[!] native castle timeout; try injected SDK (usually invalid for x.ai)")
-        return self.get_castle_token_injected(timeout=12)
+        # CDN SDK mint is almost always invalid for x.ai (short / non-IBYIll).
+        # Do not return injected tokens — hybrid must fail-fast and retry native path next round.
+        self._lg(
+            "[!] native castle timeout; skip CDN inject (invalid for x.ai) → empty castle"
+        )
+        return ""
 
     def get_castle_token_injected(self, timeout: int = 45) -> str:
         """Legacy CDN inject path (often short / wrong format)."""

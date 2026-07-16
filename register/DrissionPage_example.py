@@ -4784,8 +4784,11 @@ def main():
                         result = hy
                         used_plan = "c"
                     else:
-                        msg = "hybrid 未返回 sso"
-                        err_parts.append(f"C:{msg}")
+                        detail = ""
+                        if isinstance(hy, dict):
+                            detail = str(hy.get("error") or "").strip()
+                        msg = detail if detail else "hybrid 未返回 sso"
+                        err_parts.append(f"C:{msg[:80]}")
                         print(f"[plan-c] ✘ {msg}")
                 except KeyboardInterrupt:
                     print("")
