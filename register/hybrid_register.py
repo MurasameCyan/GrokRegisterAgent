@@ -578,6 +578,9 @@ def run_hybrid_registration(
         with open(out, "a", encoding="utf-8") as f:
             f.write(f"{email}|{password}|{sso}\n")
         log(f"[hybrid] 已写入 {out}")
+        # 与 Plan A 对齐，便于 Node 侧抓 email 并触发号池/自动验活
+        if email:
+            log(f"[*] 本轮注册完成，邮箱: {email}")
     except Exception as we:
         log(f"[hybrid] 写文件失败: {we}")
 

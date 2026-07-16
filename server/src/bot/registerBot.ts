@@ -646,12 +646,19 @@ export class RegisterBot extends EventEmitter {
     }
 
     const emailMatch =
-      msg.match(/已填写邮箱并点击注册:\s*(\S+)/) || msg.match(/本轮注册完成，邮箱:\s*(\S+)/);
+      msg.match(/已填写邮箱并点击注册:\s*(\S+)/) ||
+      msg.match(/本轮注册完成，邮箱:\s*(\S+)/) ||
+      // Plan C hybrid
+      msg.match(/\[hybrid\]\s*email=(\S+)/i) ||
+      msg.match(/\[hybrid\]\s*✔\s*OK\s+email=(\S+)/i);
     if (emailMatch) {
-      job.pendingAccount.email = emailMatch[1];
+      job.pendingAccount.email = emailMatch[1].replace(/[,;].*$/, '').trim();
     }
 
-    const passwordMatch = msg.match(/已填写注册资料并点击完成注册:\s*\S+\s+\S+\s*\/\s*(.+)$/);
+    const passwordMatch =
+      msg.match(/已填写注册资料并点击完成注册:\s*\S+\s+\S+\s*\/\s*(.+)$/) ||
+      // hybrid 若打印 password= 则捕获（可选）
+      msg.match(/\[hybrid\][^\n]*password=(\S+)/i);
     if (passwordMatch) {
       job.pendingAccount.password = passwordMatch[1].trim();
     }
@@ -710,7 +717,6 @@ export class RegisterBot extends EventEmitter {
     const runId = job.runId;
     const { email, password } = job.pendingAccount;
     job.pendingAccount = {};
-    if (!email && !password) return;
 
     let sso = '';
     let fileEmail = '';
@@ -725,15 +731,27 @@ export class RegisterBot extends EventEmitter {
         if (lines.length > 0) {
           const last = lines[lines.length - 1];
           if (last.includes(' | ')) {
+            // Plan A: email | password | sso
             const parts = last.split(' | ').map((p) => p.trim());
             fileEmail = parts[0] || '';
             filePassword = parts[1] || '';
             sso = parts.slice(2).join(' | ').replace(/^sso=/i, '');
           } else if (last.includes('----')) {
+            // legacy: email----password----sso
             const parts = last.split('----');
             fileEmail = (parts[0] || '').trim();
             filePassword = (parts[1] || '').trim();
             sso = parts.slice(2).join('----').trim().replace(/^sso=/i, '');
+          } else if (last.includes('|')) {
+            // Plan C hybrid: email|password|sso（无空格）
+            const parts = last.split('|').map((p) => p.trim());
+            if (parts.length >= 3) {
+              fileEmail = parts[0] || '';
+              filePassword = parts[1] || '';
+              sso = parts.slice(2).join('|').replace(/^sso=/i, '');
+            } else {
+              sso = last.replace(/^sso=/i, '');
+            }
           } else {
             sso = last.replace(/^sso=/i, '');
           }
@@ -743,12 +761,22 @@ export class RegisterBot extends EventEmitter {
       /* ignore */
     }
 
+    const finalEmail = (email || fileEmail || '').trim();
+    const finalPassword = (password || filePassword || '').trim();
+    const finalSso = (sso || '').trim();
+    // 原先要求 email||password：Plan C 只有 [hybrid] email= 未匹配时直接 return → 无号池/无验活
+    if (!finalEmail && !finalPassword && !finalSso) return;
+    if (!finalSso) {
+      this.log(runId, `[sso-check] 跳过入池：成功行无 sso（email=${finalEmail || '-'}）`);
+      return;
+    }
+
     const record: AccountRecord = {
       id: randomUUID(),
       runId,
-      email: email || fileEmail || '',
-      password: password || filePassword || '',
-      sso,
+      email: finalEmail,
+      password: finalPassword,
+      sso: finalSso,
       createdAt: new Date().toISOString()
     };
 
