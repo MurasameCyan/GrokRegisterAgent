@@ -10,11 +10,11 @@ import {
   Loader2,
   RefreshCw,
   Save,
-  Send,
   Terminal
 } from 'lucide-react';
 import { CardHeaderIcon } from '@renderer/components/domain/CardHeaderIcon';
 import { MailConnectivityIcon } from '@renderer/components/domain/MailConnectivityIcon';
+import { PushConnectivityIcon } from '@renderer/components/domain/PushConnectivityIcon';
 import { Card, CardBody, CardHeader } from '@renderer/components/ui/Card';
 import { Button } from '@renderer/components/ui/Button';
 import { Input } from '@renderer/components/ui/Input';
@@ -1241,7 +1241,7 @@ export function SettingsForm() {
             else if (allowAuthG2) bits.push('Auth→g2 允许');
             return bits.length ? bits.join(' · ') : '未开启推送';
           })()}
-          right={<CardHeaderIcon icon={Send} title="推送设置" />}
+          right={<PushConnectivityIcon draft={draft} />}
         />
         <CardBody className="space-y-4">
           {(() => {
