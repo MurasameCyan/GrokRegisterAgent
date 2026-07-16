@@ -120,9 +120,21 @@ def _via_pkce_token(
         log("[auth] PKCE path → browser consent fallback (timeout=55s, headed/Xvfb)…")
         with _BROWSER_CONSENT_LOCK:
             # Linux 容器：必须有头（复用注册机 Xvfb）。Chrome headless 会被 auth.x.ai CF 硬拦。
+            px = str(proxy or "").strip()
+            if not px:
+                try:
+                    from auth_export_queue import resolve_mint_proxy
+
+                    px = resolve_mint_proxy("")
+                except Exception:
+                    px = ""
+            if px:
+                log(f"[auth] browser consent proxy={px[:64]}")
+            else:
+                log("[auth] ⚠ browser consent proxy empty (proxy_mode may be none)")
             tokens = sso_to_token_via_browser_consent(
                 sso,
-                proxy=proxy or "",
+                proxy=px,
                 log=log,
                 headless=False,
                 timeout=55.0,

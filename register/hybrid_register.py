@@ -100,14 +100,25 @@ def _get_mail_code(mail_token: str, email: str, log: LogFn) -> str:
 def _load_proxy() -> str:
     try:
         conf = json.loads((ROOT / "config.json").read_text(encoding="utf-8"))
-        return str(
+        p = str(
             conf.get("proxy")
             or conf.get("browser_proxy")
             or conf.get("resolved_proxy")
             or ""
         ).strip()
+        if p:
+            return p
+        sb = conf.get("singbox_enabled")
+        if sb is True or str(sb).strip().lower() in ("1", "true", "yes", "on"):
+            port = conf.get("singbox_mixed_port") or conf.get("singBoxMixedPort") or 2080
+            try:
+                port = int(port)
+            except Exception:
+                port = 2080
+            return f"http://127.0.0.1:{port}"
     except Exception:
-        return ""
+        pass
+    return ""
 
 
 def hybrid_register(

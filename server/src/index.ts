@@ -890,44 +890,10 @@ app.post('/api/test/proxy', async (req, res) => {
 });
 
 /**
- * 注册成功：可用池对应代理成功计数 +1（行尾 #成功N，前端绿色显示）。
- * body: { proxies: string[] | string, delta?: number }
+ * 已废弃：无代理池后不再写成功计数。保留路由避免旧客户端 404。
  */
-app.post('/api/proxy/register-success', async (req: Request, res: Response) => {
-  try {
-    const settings = await loadSettings();
-    const raw = req.body?.proxies ?? req.body?.proxy ?? [];
-    const list: string[] = Array.isArray(raw)
-      ? raw.map((x: unknown) => String(x || '').trim()).filter(Boolean)
-      : String(raw || '')
-          .split(/[\n,]/)
-          .map((s) => s.trim())
-          .filter(Boolean);
-    if (list.length === 0) {
-      res.status(400).json({ ok: false, bumped: 0, message: 'proxies 为空' });
-      return;
-    }
-    const delta = Math.max(1, Math.min(100, Number(req.body?.delta) || 1));
-    const { text, bumped } = bumpProxyRegisterSuccessInPoolText(
-      settings.proxyPoolAlive || '',
-      list,
-      delta
-    );
-    if (bumped > 0) {
-      await saveSettings({ ...settings, proxyPoolAlive: text });
-    }
-    res.json({
-      ok: true,
-      bumped,
-      message:
-        bumped > 0
-          ? `可用池成功计数 +${delta}（命中 ${bumped} 条）`
-          : '未匹配到可用池中的代理（可能已不在可用池）'
-    });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    res.status(500).json({ ok: false, bumped: 0, message });
-  }
+app.post('/api/proxy/register-success', async (_req: Request, res: Response) => {
+  res.json({ ok: true, bumped: 0, message: 'disabled (no proxy pool)' });
 });
 
 /**

@@ -271,19 +271,23 @@ class BrowserTokenSession:
             raw = bytes(blob)
             # gRPC-web frame may be: 1 byte flags + 4 byte len + protobuf (email + castle)
             # Castle string is almost always plain ASCII inside protobuf.
-            try:
-                m = re.search(rb"IBYIll\|[A-Za-z0-9+/=|_\-]{800,}", raw)
-                if m:
-                    return m.group(0).decode("ascii", errors="ignore")
-            except Exception:
-                pass
-            try:
-                # looser: any IBYIll run ≥200
-                m = re.search(rb"IBYIll\|[A-Za-z0-9+/=|_\-]{200,}", raw)
-                if m:
-                    return m.group(0).decode("ascii", errors="ignore")
-            except Exception:
-                pass
+            # Also try skipping 5-byte gRPC-web header then search remainder.
+            candidates = [raw]
+            if len(raw) > 5:
+                candidates.append(raw[5:])
+            for chunk in candidates:
+                try:
+                    m = re.search(rb"IBYIll\|[A-Za-z0-9+/=|_\-]{800,}", chunk)
+                    if m:
+                        return m.group(0).decode("ascii", errors="ignore")
+                except Exception:
+                    pass
+                try:
+                    m = re.search(rb"IBYIll\|[A-Za-z0-9+/=|_\-]{200,}", chunk)
+                    if m:
+                        return m.group(0).decode("ascii", errors="ignore")
+                except Exception:
+                    pass
             try:
                 s = raw.decode("utf-8", errors="ignore")
             except Exception:
@@ -389,7 +393,63 @@ class BrowserTokenSession:
                                 post = req.postData()
                             except Exception:
                                 pass
+                    # postData 过短时用 Network.getRequestPostData 补全（gRPC 常被截断）
+                    if post is not None:
+                        try:
+                            plen0 = (
+                                len(post)
+                                if isinstance(post, (bytes, bytearray))
+                                else len(str(post))
+                            )
+                        except Exception:
+                            plen0 = 0
+                    else:
+                        plen0 = 0
+                    if plen0 < 200:
+                        rid = None
+                        for attr in ("requestId", "request_id", "id"):
+                            try:
+                                rid = getattr(req, attr, None) if req is not None else None
+                                if rid:
+                                    break
+                            except Exception:
+                                pass
+                        if not rid:
+                            try:
+                                rid = getattr(pkt, "requestId", None) or getattr(
+                                    pkt, "request_id", None
+                                )
+                            except Exception:
+                                rid = None
+                        if rid:
+                            try:
+                                extra = page.run_cdp(
+                                    "Network.getRequestPostData", requestId=str(rid)
+                                )
+                                if isinstance(extra, dict):
+                                    pd = extra.get("postData") or extra.get("body")
+                                    if pd:
+                                        post = pd
+                            except Exception:
+                                pass
+                    # 响应体也可能带回 castle 相关（少见，兜底）
                     c = self._extract_castle_from_blob(post)
+                    if len(c) <= len(best):
+                        try:
+                            resp = getattr(pkt, "response", None)
+                            rbody = None
+                            if resp is not None:
+                                for attr in ("body", "raw_body", "postData", "data"):
+                                    v = getattr(resp, attr, None)
+                                    if v:
+                                        rbody = v
+                                        break
+                            if rbody:
+                                c2 = self._extract_castle_from_blob(rbody)
+                                if len(c2) > len(c):
+                                    c = c2
+                        except Exception:
+                            pass
                     if len(c) > len(best):
                         best = c
                     url = str(getattr(pkt, "url", "") or "")
@@ -402,10 +462,14 @@ class BrowserTokenSession:
                                 plen = len(str(post))
                         except Exception:
                             plen = 0
-                        if plen and plen < 200:
+                        if plen and plen < 200 and len(best) < 200:
                             self._lg(
-                                f"[!] CDP CreateEmail postData too short len={plen} "
-                                f"(likely missing castle field)"
+                                f"[!] CDP CreateEmail postData still short len={plen} "
+                                f"(castle missing in wire body)"
+                            )
+                        elif len(best) >= 200:
+                            self._lg(
+                                f"[*] CDP CreateEmail castle recovered len={len(best)}"
                             )
                         try:
                             page.run_js(

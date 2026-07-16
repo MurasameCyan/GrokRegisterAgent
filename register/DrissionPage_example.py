@@ -2703,22 +2703,33 @@ def getTurnstileToken(timeout=50):
         if state.get("failure"):
             print("[Warn] 自动等待阶段检测到 Turnstile failure 反馈页。")
             break
-        # 折叠超过 ~12s 且有宿主尺寸：中途 soft reset 一次，给 widget 重渲染机会
+        # 折叠态：更早 mid soft reset（~5s），允许最多 2 次 mid，给 widget 重渲染
         elapsed = time.time() - auto_start
         if (
-            not mid_reset_done
-            and elapsed >= 8
+            elapsed >= 5
             and state.get("collapsedOnly")
             and state.get("hostSized")
             and not state.get("failure")
-            and reset_count < 2
+            and reset_count < 3
+            and (not mid_reset_done or elapsed >= 14)
         ):
             print("[*] 自动等待中控件仍 1x1，执行 mid soft reset…")
             _soft_reset_turnstile()
             mid_reset_done = True
             reset_count += 1
-            time.sleep(1.2 + secrets.randbelow(8) / 10.0)
+            time.sleep(1.6 + secrets.randbelow(12) / 10.0)
             _scroll_turnstile_into_view()
+            # mid 后短等看是否自动出 token / 展开
+            peek_end = time.time() + min(4.0, auto_wait_until - time.time())
+            while time.time() < peek_end:
+                tok = _read_turnstile_token()
+                if tok:
+                    print("[*] mid soft reset 后 Turnstile 已自动通过。")
+                    return tok
+                st2 = _turnstile_widget_state()
+                if st2.get("challenge") or st2.get("sized"):
+                    break
+                time.sleep(0.35)
             continue
         # 已有可点尺寸的 challenge：提前结束自动等待，进入点击
         if state.get("challenge") or state.get("sized"):
@@ -2802,8 +2813,8 @@ def getTurnstileToken(timeout=50):
         last_diag = f"click#{click_attempts} via={how} detail={detail} ok={clicked}"
         print(f"[*] Turnstile 点击尝试 #{click_attempts}: {detail}")
 
-        # 点击后等待：折叠态稍长，给 token 生成时间
-        wait_slice = min(10.0 if state.get("collapsedOnly") else 5.0, max(2.5, deadline - time.time()))
+        # 点击后等待：折叠态更长，给 token 生成时间（1x1 host 点中后常 3–12s 才出）
+        wait_slice = min(14.0 if state.get("collapsedOnly") else 5.5, max(2.5, deadline - time.time()))
         wait_end = time.time() + wait_slice
         while time.time() < wait_end:
             token = _read_turnstile_token()
@@ -4979,13 +4990,6 @@ def main():
                 )
                 # 邮箱已在「注册成功 | email=…」行输出，此处不再重复
                 print(f"✔ 第 {current_round} 轮成功（{tag}）")
-                try:
-                    from pools import bump_proxy_register_success
-
-                    if _browser_proxy:
-                        bump_proxy_register_success(_browser_proxy, delta=1)
-                except Exception as be:
-                    print(f"[Warn] 代理成功计数回调异常: {be}")
                 # P2/3：成功后 GC；每 N 成功强制下轮重启浏览器
                 try:
                     from runtime_gc import on_register_success

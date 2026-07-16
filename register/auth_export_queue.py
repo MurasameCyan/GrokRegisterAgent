@@ -743,7 +743,7 @@ def _process_job(job: dict[str, Any]) -> None:
     delay = int(job.get("delay_sec") or 0)
     email = str(job.get("email") or "")
     sso = str(job.get("sso") or "")
-    proxy = str(job.get("proxy") or "")
+    proxy = resolve_mint_proxy(str(job.get("proxy") or ""))
     password = str(job.get("password") or "")
     mint_mode = str(job.get("mint_mode") or load_mint_mode())
     ua = str(job.get("user_agent") or "")
@@ -955,6 +955,59 @@ def ensure_worker() -> None:
         )
 
 
+def resolve_mint_proxy(explicit: str = "") -> str:
+    """Mint / browser-consent 用代理：显式 > config > sing-box 本地口。
+
+    禁止空 proxy 导致 browser consent proxy_mode=none（auth.x.ai 易 CF 硬拦）。
+    """
+    p = str(explicit or "").strip()
+    if p:
+        return p
+    conf: dict = {}
+    try:
+        conf = _load_conf() if callable(globals().get("_load_conf")) else {}
+    except Exception:
+        conf = {}
+    if not conf:
+        try:
+            import json as _j
+            from pathlib import Path as _P
+
+            cp = _P(__file__).resolve().parent / "config.json"
+            if cp.is_file():
+                conf = _j.loads(cp.read_text(encoding="utf-8")) or {}
+        except Exception:
+            conf = {}
+    for k in (
+        "proxy",
+        "browser_proxy",
+        "resolved_proxy",
+        "http_proxy",
+        "HTTPS_PROXY",
+        "HTTP_PROXY",
+    ):
+        v = str(conf.get(k) or "").strip()
+        if v:
+            return v
+    # sing-box 本地 mixed（与注册机一致）
+    sb = conf.get("singbox_enabled")
+    if sb is True or str(sb).strip().lower() in ("1", "true", "yes", "on"):
+        port = conf.get("singbox_mixed_port") or conf.get("singBoxMixedPort") or 2080
+        try:
+            port = int(port)
+        except Exception:
+            port = 2080
+        return f"http://127.0.0.1:{port}"
+    # env fallback
+    import os as _os
+
+    for ek in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy"):
+        v = str(_os.environ.get(ek) or "").strip()
+        if v:
+            return v
+    return ""
+
+
 def enqueue_sso_to_auth(
     *,
     sso: str,
@@ -1007,7 +1060,7 @@ def enqueue_sso_to_auth(
         "sso": sso,
         "email": (email or "").strip(),
         "password": (password or "").strip(),
-        "proxy": (proxy or "").strip(),
+        "proxy": resolve_mint_proxy(proxy),
         "mint_mode": mode,
         "user_agent": (user_agent or "").strip(),
         "cloudflare_cookies": (cloudflare_cookies or "").strip(),
