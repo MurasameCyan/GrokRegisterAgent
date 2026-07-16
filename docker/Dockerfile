@@ -55,19 +55,36 @@ RUN apt-get update \
 
 # 内置 Python 注册机及其依赖(DrissionPage / curl_cffi / requests)
 # /app/register = 运行目录；/opt/register-seed = 启动时恢复用种子（防空挂载覆盖）
-# 含 CF/sing-box 独立代理 Linux 客户端：register/bin/cfwp|sing-box/linux-amd64|linux-arm64（无 Windows）
+# CF：仓库内 register/bin/cfwp/linux-*；sing-box：构建时按 TARGETARCH 从 GitHub 下载（不入库）
+ARG SING_BOX_VERSION=1.13.14
+ARG TARGETARCH
 COPY register /app/register
 COPY register /opt/register-seed
-# pip 依赖 + rsync（entrypoint 热同步宿主 register 用）
-# cfwp 可执行权限
+# pip 依赖 + rsync/curl（entrypoint 热同步；构建期拉 sing-box）
+# cfwp 可执行权限 + 下载当前架构的 sing-box
 RUN python -m pip install --upgrade pip \
  && python -m pip install -r /app/register/requirements.txt \
  && apt-get update \
- && apt-get install -y --no-install-recommends rsync \
+ && apt-get install -y --no-install-recommends rsync curl ca-certificates \
  && chmod +x /app/register/bin/cfwp/linux-amd64 /app/register/bin/cfwp/linux-arm64 2>/dev/null || true \
- && chmod +x /app/register/bin/sing-box/linux-amd64 /app/register/bin/sing-box/linux-arm64 2>/dev/null || true \
  && chmod +x /opt/register-seed/bin/cfwp/linux-amd64 /opt/register-seed/bin/cfwp/linux-arm64 2>/dev/null || true \
- && chmod +x /opt/register-seed/bin/sing-box/linux-amd64 /opt/register-seed/bin/sing-box/linux-arm64 2>/dev/null || true \
+ && set -eux \
+ && case "${TARGETARCH}" in \
+      amd64) sb_arch=amd64 ;; \
+      arm64) sb_arch=arm64 ;; \
+      *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+ && sb_ver="${SING_BOX_VERSION}" \
+ && sb_url="https://github.com/SagerNet/sing-box/releases/download/v${sb_ver}/sing-box-${sb_ver}-linux-${sb_arch}.tar.gz" \
+ && tmp="$(mktemp -d)" \
+ && curl -fsSL "${sb_url}" -o "${tmp}/sing-box.tgz" \
+ && tar -xzf "${tmp}/sing-box.tgz" -C "${tmp}" \
+ && bin="$(find "${tmp}" -type f -name sing-box | head -n1)" \
+ && test -n "${bin}" \
+ && mkdir -p /app/register/bin/sing-box /opt/register-seed/bin/sing-box \
+ && install -m 755 "${bin}" "/app/register/bin/sing-box/linux-${sb_arch}" \
+ && install -m 755 "${bin}" "/opt/register-seed/bin/sing-box/linux-${sb_arch}" \
+ && rm -rf "${tmp}" \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node

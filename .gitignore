@@ -16,6 +16,11 @@ register/sso/
 register/__pycache__/
 register/**/*.pyc
 
+# sing-box 二进制：镜像构建时下载，勿提交（体积大，见 docker/Dockerfile）
+register/bin/sing-box/linux-amd64
+register/bin/sing-box/linux-arm64
+register/bin/sing-box/linux-arm
+
 # 环境变量
 .env
 docker/.env

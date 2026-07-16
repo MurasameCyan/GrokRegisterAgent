@@ -33,6 +33,7 @@ sync_register_from() {
   echo "[entrypoint] syncing register from ${label} -> ${dst}"
 
   # 优先 rsync；无 rsync 时用 tar 管道（排除运行时目录）
+  # sing-box 二进制由镜像构建下载、不入库；同步时保留目标侧已有文件
   if command -v rsync >/dev/null 2>&1; then
     rsync -a --delete \
       --exclude 'logs/' \
@@ -41,8 +42,20 @@ sync_register_from() {
       --exclude '__pycache__/' \
       --exclude '*.pyc' \
       --exclude '.pytest_cache/' \
+      --exclude 'bin/sing-box/linux-amd64' \
+      --exclude 'bin/sing-box/linux-arm64' \
+      --exclude 'bin/sing-box/linux-arm' \
       "${src}/" "${dst}/"
   else
+    # 清空前暂存镜像内 sing-box，避免宿主无该文件时被抹掉
+    local sb_tmp
+    sb_tmp="$(mktemp -d)"
+    for f in linux-amd64 linux-arm64 linux-arm; do
+      if [[ -f "${dst}/bin/sing-box/${f}" ]]; then
+        mkdir -p "${sb_tmp}/bin/sing-box"
+        cp -a "${dst}/bin/sing-box/${f}" "${sb_tmp}/bin/sing-box/${f}" || true
+      fi
+    done
     # 清空目标中除 logs/sso/config.json 外的旧脚本，再拷入新文件
     find "$dst" -mindepth 1 -maxdepth 1 \
       ! -name 'logs' ! -name 'sso' ! -name 'config.json' \
@@ -55,6 +68,15 @@ sync_register_from() {
       --exclude='__pycache__' \
       --exclude='*.pyc' \
       -cf - . | tar -C "$dst" -xf -
+    if [[ -d "${sb_tmp}/bin/sing-box" ]]; then
+      mkdir -p "${dst}/bin/sing-box"
+      for f in linux-amd64 linux-arm64 linux-arm; do
+        if [[ -f "${sb_tmp}/bin/sing-box/${f}" && ! -f "${dst}/bin/sing-box/${f}" ]]; then
+          cp -a "${sb_tmp}/bin/sing-box/${f}" "${dst}/bin/sing-box/${f}" || true
+        fi
+      done
+    fi
+    rm -rf "${sb_tmp}"
   fi
 
   mkdir -p "${dst}/logs" "${dst}/sso"
