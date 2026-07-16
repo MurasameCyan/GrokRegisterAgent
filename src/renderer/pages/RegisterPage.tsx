@@ -284,12 +284,15 @@ function RuntimeSettingsInline() {
     }
   };
 
-  const pillBase =
-    'inline-flex h-7 min-w-[2rem] items-center justify-center rounded-md border px-2 text-[12px] font-semibold tracking-tight transition-colors disabled:opacity-50';
-  const pillOn =
-    'border-primary/30 bg-primary text-primary-foreground shadow-sm hover:bg-primary/90';
-  const pillOff =
-    'border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground';
+  // iOS 分段控件风格：略大、圆角胶囊、与日志面板/chip 一致
+  const segTrack =
+    'inline-flex w-full max-w-[220px] items-center gap-1 rounded-[12px] border border-border/70 bg-muted/70 p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]';
+  const segBtn =
+    'inline-flex h-9 min-w-0 flex-1 items-center justify-center rounded-[10px] px-2.5 text-[13px] font-semibold tracking-[-0.02em] transition-all duration-150 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/35';
+  const segOn =
+    'bg-primary text-primary-foreground shadow-[0_1px_2px_rgba(0,0,0,0.12)] hover:bg-primary/92';
+  const segOff =
+    'bg-transparent text-muted-foreground hover:bg-card/70 hover:text-foreground';
 
   return (
     <div className="space-y-3 rounded-xl border border-border bg-card/80 p-3.5 shadow-[var(--ios-shadow)]">
@@ -340,9 +343,12 @@ function RuntimeSettingsInline() {
           </div>
         </div>
         <div className="rounded-xl border border-border/60 bg-muted/50 p-3">
-          <div className="field-label mb-1.5">注册方案</div>
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <div className="field-label mb-0">注册方案</div>
+            <span className="text-[10px] font-medium text-muted-foreground">可多选</span>
+          </div>
           <div
-            className="flex flex-wrap items-center gap-1.5"
+            className={segTrack}
             role="group"
             aria-label="注册方案 A B C 可多选"
             title="A/B/C 可同时开启（与配置页同步）"
@@ -360,20 +366,23 @@ function RuntimeSettingsInline() {
                 aria-pressed={item.on}
                 title={`${item.label} · ${item.tip}${item.on ? '（开）' : '（关）'}`}
                 onClick={() => togglePlan(item.k)}
-                className={cn(pillBase, item.on ? pillOn : pillOff)}
+                className={cn(segBtn, item.on ? segOn : segOff)}
               >
                 {item.label}
               </button>
             ))}
           </div>
-          <p className="mt-1.5 text-[10px] leading-snug text-muted-foreground">
-            可共存 · 至少开一个
+          <p className="mt-2 text-[10px] leading-snug text-muted-foreground">
+            A 浏览器 · B 拟人 · C Hybrid · 至少开一个
           </p>
         </div>
         <div className="rounded-xl border border-border/60 bg-muted/50 p-3">
-          <div className="field-label mb-1.5">Mint 模式</div>
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <div className="field-label mb-0">Mint 模式</div>
+            <span className="text-[10px] font-medium text-muted-foreground">三选一</span>
+          </div>
           <div
-            className="flex flex-wrap items-center gap-1.5"
+            className={segTrack}
             role="radiogroup"
             aria-label="Mint 模式 A B C 选一"
             title="SSO→Auth 通道三选一（与配置页同步）"
@@ -394,15 +403,15 @@ function RuntimeSettingsInline() {
                   aria-checked={on}
                   title={`${item.label} · ${item.tip}`}
                   onClick={() => setMintMode(item.mode)}
-                  className={cn(pillBase, on ? pillOn : pillOff)}
+                  className={cn(segBtn, on ? segOn : segOff)}
                 >
                   {item.label}
                 </button>
               );
             })}
           </div>
-          <p className="mt-1.5 text-[10px] leading-snug text-muted-foreground">
-            三选一 · A PKCE · B Device · C Double
+          <p className="mt-2 text-[10px] leading-snug text-muted-foreground">
+            A PKCE · B Device · C Double
           </p>
         </div>
       </div>
