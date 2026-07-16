@@ -592,10 +592,43 @@ def sso_to_token_via_browser_consent(
     consent_profile = tempfile.mkdtemp(prefix="gra-pkce-consent-")
     consent_port = _pick_free_local_port()
     co = ChromiumOptions()
+    # 与注册机一致：Linux 无 GUI 也必须有头（Xvfb）。headless 在 auth.x.ai 会被 CF 硬拦
+    # （日志：Attention Required! | Cloudflare / been blocked）。
+    import platform as _plat
+    _is_linux = _plat.system() == "Linux"
+    use_headless = bool(headless) and not _is_linux
+    if _is_linux and headless:
+        log("  🔑 browser consent force headed on Linux (avoid CF hard-block on headless)")
+        # 轻量确保 DISPLAY：优先复用环境已有 Xvfb，不 import 注册机主模块（副作用大）
+        try:
+            disp = (os.environ.get("DISPLAY") or "").strip()
+            if not disp:
+                # 常见 docker entrypoint :99
+                for cand in (":99", ":0", ":1"):
+                    sock = f"/tmp/.X11-unix/X{cand.lstrip(':').split('.')[0]}"
+                    if os.path.exists(sock):
+                        os.environ["DISPLAY"] = cand
+                        disp = cand
+                        break
+            if not disp:
+                try:
+                    from pyvirtualdisplay import Display  # type: ignore
+
+                    _vd = Display(visible=0, size=(1280, 900), color_depth=24)
+                    _vd.start()
+                    disp = os.environ.get("DISPLAY") or ""
+                    log(f"  🔑 browser consent started Xvfb DISPLAY={disp!r}")
+                except Exception as e:
+                    log(f"  ⚠ browser consent no DISPLAY / Xvfb: {e}")
+            else:
+                log(f"  🔑 browser consent reuse DISPLAY={disp!r}")
+        except Exception as e:
+            log(f"  ⚠ browser consent ensure DISPLAY: {e}")
     try:
-        co.headless(bool(headless))
+        co.headless(bool(use_headless))
     except Exception:
         pass
+    log(f"  🔑 browser consent chrome headless={use_headless} DISPLAY={os.environ.get('DISPLAY', '')!r}")
     # 显式独占端口；绝不 auto_port（可能选中注册机已占用口并附着）
     if consent_port > 0:
         try:
@@ -618,17 +651,38 @@ def sso_to_token_via_browser_consent(
     for arg in (
         "--no-sandbox",
         "--disable-dev-shm-usage",
-        "--disable-gpu",
-        "--lang=en-US",
+        "--lang=en-US,en",
+        "--accept-lang=en-US,en",
         # allow redirect to local callback without mixed-content blocks
         "--disable-web-security",
         "--no-first-run",
         "--no-default-browser-check",
         "--disable-features=Translate,MediaRouter",
         "--disable-blink-features=AutomationControlled",
+        "--window-size=1280,900",
+        "--window-position=0,0",
     ):
         try:
             co.set_argument(arg)
+        except Exception:
+            pass
+    # Linux 有头：对齐注册机 WebGL/GPU 软渲染，避免 headless 指纹
+    if _is_linux and not use_headless:
+        for arg in (
+            "--disable-gpu-compositing",
+            "--use-gl=angle",
+            "--use-angle=swiftshader-webgl",
+            "--enable-webgl",
+            "--ignore-gpu-blocklist",
+            "--mute-audio",
+        ):
+            try:
+                co.set_argument(arg)
+            except Exception:
+                pass
+    elif use_headless:
+        try:
+            co.set_argument("--disable-gpu")
         except Exception:
             pass
     if consent_port > 0:
