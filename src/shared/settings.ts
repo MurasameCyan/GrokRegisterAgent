@@ -256,6 +256,11 @@ export interface AppSettings {
    */
   ssoCheckUseProxy: boolean;
   /**
+   * 注册成功写入号池后自动验活 SSO（写 ssoCheck 存活/失效）。
+   * 默认 true；关闭则仍须在 SSO 页手动验活。
+   */
+  autoSsoCheckOnRegister: boolean;
+  /**
    * Auth 转换（mint）/ 重签 / CPA 测活是否走 HTTP 代理。
    * 需同时 proxyEnabled=true 且配置了 proxy 才实际走代理。
    */
@@ -373,6 +378,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   skipBotFlag1OnMint: true,
   /** 号池验活默认走代理（若总开关与 proxy 已配） */
   ssoCheckUseProxy: true,
+  /** 注册成功后自动号池 SSO 验活 */
+  autoSsoCheckOnRegister: true,
   /** Auth mint/重签/测活默认走代理 */
   cpaAuthUseProxy: true,
   proxyFetchUrl: 'https://hide.mn/en/proxy-list/',

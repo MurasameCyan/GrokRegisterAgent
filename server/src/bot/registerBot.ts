@@ -2,7 +2,7 @@ import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
 import { spawn, execFile, ChildProcess } from 'child_process';
 import { loadSettings } from '../settingsStore.js';
-import { appendAccount } from '../accountStore.js';
+import { appendAccount, applyAccountSsoChecks } from '../accountStore.js';
 import type { AccountRecord, LogLevel, RunEvent, RunPhase, RunStatus } from '@shared/runEvents';
 import { EMPTY_STATUS } from '@shared/runEvents';
 import type { AppSettings } from '@shared/settings';
@@ -10,6 +10,8 @@ import fs from 'fs';
 import path from 'path';
 import { resolveRegisterRuntime, writeConfigForPython } from './registerRuntime.js';
 import { syncSingBoxFromSettings } from '../singboxManager.js';
+import { checkSso } from '../ssoCheck.js';
+import { resolveHttpProxy } from '../resolveHttpProxy.js';
 
 interface StartOptions {
   runCountOverride?: number;
@@ -751,9 +753,78 @@ export class RegisterBot extends EventEmitter {
     };
 
     this.push({ type: 'account', runId, record });
-    void appendAccount(record).catch((e) => {
+    void this.persistAccountAndMaybeSsoCheck(runId, record);
+  }
+
+  /** 写号池后可选自动 SSO 验活（不阻塞注册主流程） */
+  private async persistAccountAndMaybeSsoCheck(runId: string, record: AccountRecord) {
+    try {
+      await appendAccount(record);
+    } catch (e) {
       this.error(runId, `账号记录写入失败: ${e instanceof Error ? e.message : String(e)}`);
-    });
+      return;
+    }
+    try {
+      const settings = await loadSettings();
+      if (settings.autoSsoCheckOnRegister === false) return;
+      const sso = String(record.sso || '').trim();
+      if (!sso) return;
+      const proxy = resolveHttpProxy(settings, 'ssoCheck');
+      this.log(runId, `[sso-check] 自动验活… email=${record.email || '-'}`);
+      const outcome = await checkSso(sso, proxy);
+      const checkedAt = new Date().toISOString();
+      await applyAccountSsoChecks([
+        {
+          id: record.id,
+          alive: outcome.alive,
+          status: outcome.status,
+          checkedAt,
+          email: outcome.email,
+          givenName: outcome.givenName,
+          familyName: outcome.familyName,
+          emailConfirmed: outcome.emailConfirmed,
+          sessionTierId: outcome.sessionTierId,
+          createTime: outcome.createTime,
+          error: outcome.error,
+          botFlagSource: outcome.botFlagSource,
+          isBotFlag1: outcome.isBotFlag1
+        }
+      ]);
+      const emailOut = outcome.email || record.email || '';
+      this.push({
+        type: 'account',
+        runId,
+        record: {
+          ...record,
+          email: emailOut || record.email,
+          ssoCheck: {
+            alive: outcome.alive,
+            status: outcome.status,
+            checkedAt,
+            email: outcome.email,
+            givenName: outcome.givenName,
+            familyName: outcome.familyName,
+            emailConfirmed: outcome.emailConfirmed,
+            sessionTierId: outcome.sessionTierId,
+            createTime: outcome.createTime,
+            error: outcome.error,
+            botFlagSource: outcome.botFlagSource,
+            isBotFlag1: outcome.isBotFlag1
+          }
+        }
+      });
+      this.log(
+        runId,
+        outcome.alive
+          ? `[sso-check] ✔ 存活 status=${outcome.status} email=${outcome.email || record.email || '-'}`
+          : `[sso-check] ✘ 失效 status=${outcome.status} ${outcome.error || ''}`
+      );
+    } catch (e) {
+      this.log(
+        runId,
+        `[sso-check] 自动验活异常: ${e instanceof Error ? e.message : String(e)}`
+      );
+    }
   }
 
   private extractSsoFromFile(runId: string, ssoFile: string) {

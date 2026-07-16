@@ -1155,6 +1155,12 @@ export function SettingsForm() {
             </div>
             <div className="grid gap-3 sm:grid-cols-2">
               <ToggleRow
+                label="注册后自动验活 SSO"
+                hint="号池写入后请求 grok get-user，写存活/失效；默认开"
+                checked={draft.autoSsoCheckOnRegister !== false}
+                onChange={(v) => update('autoSsoCheckOnRegister', v)}
+              />
+              <ToggleRow
                 label="自动转换 sub2api"
                 hint="mint 成功后写 data/sub2api/；默认关"
                 checked={!!draft.sub2apiExportEnabled}

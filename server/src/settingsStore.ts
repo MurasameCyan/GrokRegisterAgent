@@ -344,6 +344,10 @@ function merge(partial: unknown): AppSettings {
       (p as AppSettings).ssoCheckUseProxy,
       DEFAULT_SETTINGS.ssoCheckUseProxy
     ),
+    autoSsoCheckOnRegister: asBool(
+      (p as AppSettings).autoSsoCheckOnRegister,
+      DEFAULT_SETTINGS.autoSsoCheckOnRegister
+    ),
     cpaAuthUseProxy: asBool(
       (p as AppSettings).cpaAuthUseProxy,
       DEFAULT_SETTINGS.cpaAuthUseProxy
