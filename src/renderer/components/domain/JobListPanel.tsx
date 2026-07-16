@@ -1,6 +1,7 @@
 import { useCallback, useEffect } from 'react';
 import { Eraser, Layers, StopCircle } from 'lucide-react';
 import { Button } from '@renderer/components/ui/Button';
+import { LiveProgressBar, liveProgressPercent } from '@renderer/components/ui/LiveProgressBar';
 import { useRunStore } from '@renderer/store/runStore';
 import { useToastStore } from '@renderer/store/toastStore';
 import { cn } from '@renderer/lib/cn';
@@ -225,8 +226,12 @@ export function JobListPanel({
           {jobs.map((job) => {
             const focused = job.runId === focusRunId || job.focused;
             const active = job.phase === 'running' || job.phase === 'starting';
-            const pct =
-              job.total > 0 ? Math.min(100, Math.round((job.success / job.total) * 100)) : 0;
+            const pct = liveProgressPercent({
+              success: job.success,
+              failed: job.failed,
+              current: job.current,
+              total: job.total
+            });
             return (
               <button
                 key={job.runId}
@@ -265,10 +270,11 @@ export function JobListPanel({
                       {` · ${fmtTime(job.startedAt)}`}
                       {job.pid ? ` · pid ${job.pid}` : ''}
                     </p>
-                    <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-muted">
-                      <div
-                        className="h-full rounded-full bg-primary transition-[width]"
-                        style={{ width: `${pct}%` }}
+                    <div className="mt-1.5">
+                      <LiveProgressBar
+                        value={pct}
+                        active={active}
+                        height="sm"
                       />
                     </div>
                   </div>

@@ -7,6 +7,7 @@ import {
   TriangleAlert
 } from 'lucide-react';
 import { Button } from '@renderer/components/ui/Button';
+import { LiveProgressBar, liveProgressPercent } from '@renderer/components/ui/LiveProgressBar';
 import { Slider } from '@renderer/components/ui/Slider';
 import { StatusCard } from '@renderer/components/domain/StatusCard';
 import { LogPanel } from '@renderer/components/domain/LogPanel';
@@ -24,8 +25,12 @@ export function RegisterPage({ onOpenSettings }: { onOpenSettings(): void }) {
   const running = status.phase === 'starting' || status.phase === 'running';
   const maxParallel = settings?.maxParallelWorkers ?? 3;
   const canStartMore = jobsActive < maxParallel;
-  const progress =
-    status.total > 0 ? Math.min(100, Math.round((status.success / status.total) * 100)) : 0;
+  const progress = liveProgressPercent({
+    success: status.success,
+    failed: status.failed,
+    current: status.current,
+    total: status.total || settings?.runCount || 0
+  });
 
   const ready = useMemo(
     () =>
@@ -137,10 +142,11 @@ export function RegisterPage({ onOpenSettings }: { onOpenSettings(): void }) {
                 </div>
                 <div className="text-[22px] font-bold tabular-nums tracking-tight">{progress}%</div>
               </div>
-              <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-border">
-                <div
-                  className="h-full rounded-full bg-primary transition-[width] duration-300"
-                  style={{ width: `${progress}%` }}
+              <div className="mt-3">
+                <LiveProgressBar
+                  value={progress}
+                  active={running}
+                  height="md"
                 />
               </div>
             </div>

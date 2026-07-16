@@ -103,6 +103,78 @@
   }
 }
 
+/* 实时进度条：流光 + 呼吸 + 轨道微光 */
+@keyframes gra-progress-sheen {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(120%);
+  }
+}
+
+@keyframes gra-progress-breathe {
+  0%,
+  100% {
+    filter: brightness(1);
+    opacity: 1;
+  }
+  50% {
+    filter: brightness(1.12);
+    opacity: 0.92;
+  }
+}
+
+@keyframes gra-progress-pulse-track {
+  0% {
+    background-position: 0% 50%;
+  }
+  100% {
+    background-position: 200% 50%;
+  }
+}
+
+.live-progress-sheen {
+  background: linear-gradient(
+    105deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.08) 35%,
+    rgba(255, 255, 255, 0.55) 50%,
+    rgba(255, 255, 255, 0.08) 65%,
+    transparent 100%
+  );
+  animation: gra-progress-sheen 1.35s ease-in-out infinite;
+}
+
+.live-progress-breathe {
+  animation: gra-progress-breathe 2.2s ease-in-out infinite;
+}
+
+.live-progress-pulse {
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    hsl(var(--primary) / 0.12) 40%,
+    hsl(var(--primary) / 0.22) 50%,
+    hsl(var(--primary) / 0.12) 60%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: gra-progress-pulse-track 2s linear infinite;
+  opacity: 0.85;
+}
+
+.dark .live-progress-sheen {
+  background: linear-gradient(
+    105deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.04) 35%,
+    rgba(255, 255, 255, 0.35) 50%,
+    rgba(255, 255, 255, 0.04) 65%,
+    transparent 100%
+  );
+}
+
 @layer components {
   /* 布局：桌面侧栏 + 主内容；移动端顶栏粘性 */
   .app-shell {
