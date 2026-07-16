@@ -132,7 +132,7 @@ export function RegisterPage({ onOpenSettings }: { onOpenSettings(): void }) {
           <div className="flex flex-1 flex-col space-y-4 p-4">
             <StatusCard status={status} />
 
-            <div className="rounded-xl bg-muted/70 p-4">
+            <div className="rounded-xl border border-border/60 bg-card/70 p-4">
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <div className="field-label">进度（聚焦任务）</div>
@@ -232,7 +232,7 @@ function RuntimeSettingsInline() {
 
   if (!draft) {
     return (
-      <div className="rounded-xl border border-border/60 bg-muted/40 p-3 text-[13px] text-muted-foreground">
+      <div className="rounded-xl border border-border bg-card/80 p-3 text-[13px] text-muted-foreground shadow-[var(--ios-shadow)]">
         正在加载运行参数…
       </div>
     );
@@ -264,7 +264,7 @@ function RuntimeSettingsInline() {
   };
 
   return (
-    <div className="space-y-3 rounded-xl border border-border/60 bg-muted/40 p-3.5">
+    <div className="space-y-3 rounded-xl border border-border bg-card/80 p-3.5 shadow-[var(--ios-shadow)]">
       <div className="flex items-center justify-between gap-2">
         <div>
           <div className="text-[13px] font-semibold tracking-[-0.02em]">运行设置</div>
@@ -283,7 +283,7 @@ function RuntimeSettingsInline() {
         </Button>
       </div>
       <div className="grid gap-3 sm:grid-cols-2">
-        <div className="rounded-xl bg-background/60 p-3">
+        <div className="rounded-xl border border-border/60 bg-muted/50 p-3">
           <div className="flex items-center justify-between gap-2">
             <div className="field-label">轮数（每路）</div>
             <span className="chip tabular-nums">{draft.runCount}</span>
@@ -297,7 +297,7 @@ function RuntimeSettingsInline() {
             />
           </div>
         </div>
-        <div className="rounded-xl bg-background/60 p-3">
+        <div className="rounded-xl border border-border/60 bg-muted/50 p-3">
           <div className="flex items-center justify-between gap-2">
             <div className="field-label">并行上限</div>
             <span className="chip tabular-nums">{draft.maxParallelWorkers ?? 3}</span>
@@ -318,7 +318,7 @@ function RuntimeSettingsInline() {
 
 function InfoBox({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-xl bg-muted/70 p-3.5">
+    <div className="rounded-xl border border-border/60 bg-card/70 p-3.5">
       <div className="field-label">{label}</div>
       <div className="mt-1.5 break-all text-[13px] font-medium">{value}</div>
     </div>
@@ -367,7 +367,7 @@ function AuthQueueMetricsCard() {
   const qmax = m?.queue_max ?? 0;
 
   return (
-    <div className="rounded-xl border border-border/60 bg-muted/40 p-3.5">
+    <div className="rounded-xl border border-border bg-card/80 p-3.5 shadow-[var(--ios-shadow)]">
       <div className="flex items-center justify-between gap-2">
         <div className="text-[13px] font-semibold tracking-[-0.02em]">
           授权队列
@@ -381,11 +381,11 @@ function AuthQueueMetricsCard() {
         </span>
       </div>
       <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
-        <div className="rounded-lg bg-background/70 px-2.5 py-2">
+        <div className="rounded-lg border border-border/50 bg-muted/50 px-2.5 py-2">
           <div className="text-[10px] text-muted-foreground">排队</div>
           <div className="text-[15px] font-semibold tabular-nums">{pending}</div>
         </div>
-        <div className="rounded-lg bg-background/70 px-2.5 py-2">
+        <div className="rounded-lg border border-border/50 bg-muted/50 px-2.5 py-2">
           <div className="text-[10px] text-muted-foreground">Workers</div>
           <div className="text-[15px] font-semibold tabular-nums">
             {workers}
@@ -397,13 +397,13 @@ function AuthQueueMetricsCard() {
             ) : null}
           </div>
         </div>
-        <div className="rounded-lg bg-background/70 px-2.5 py-2">
+        <div className="rounded-lg border border-border/50 bg-muted/50 px-2.5 py-2">
           <div className="text-[10px] text-muted-foreground">成功</div>
           <div className="text-[15px] font-semibold tabular-nums text-emerald-600">
             {ok}
           </div>
         </div>
-        <div className="rounded-lg bg-background/70 px-2.5 py-2">
+        <div className="rounded-lg border border-border/50 bg-muted/50 px-2.5 py-2">
           <div className="text-[10px] text-muted-foreground">失败</div>
           <div className="text-[15px] font-semibold tabular-nums text-amber-600">
             {fail}
