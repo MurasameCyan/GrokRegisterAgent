@@ -259,6 +259,83 @@ def _match_next_action_in_text(text: str, *, strict: bool = False) -> str:
     return ""
 
 
+
+def _collect_next_action_candidates(
+    html: str,
+    *,
+    session: Any = None,
+    max_chunks: int = 40,
+) -> list[str]:
+    """收集 consent Server Action 候选 id（去重、跳过黑名单），供 POST 逐个试。"""
+    out: list[str] = []
+    seen: set[str] = set()
+
+    def _add(aid: str) -> None:
+        aid = (aid or "").strip()
+        if not aid or len(aid) < 32:
+            return
+        if aid in _BAD_NEXT_ACTION_IDS or aid in seen:
+            return
+        seen.add(aid)
+        out.append(aid)
+
+    html = html or ""
+    for rx in (
+        _NEXT_ACTION_RE,
+        _NEXT_ACTION_RE4,
+        _NEXT_ACTION_RE5,
+        _NEXT_ACTION_RE6,
+    ):
+        for m in rx.finditer(html):
+            _add(m.group(1))
+    for m in re.finditer(r"submitOAuth2Consent|OAuth2Consent", html, re.I):
+        i = m.start()
+        window = html[max(0, i - 400) : i + 400]
+        for hm in re.finditer(r"['\"]([a-f0-9]{40,44})['\"]", window, re.I):
+            _add(hm.group(1))
+        for hm in re.finditer(r"\$ACTION_ID_([a-f0-9]{40,44})", window, re.I):
+            _add(hm.group(1))
+
+    if session is not None:
+        try:
+            srcs = _iter_script_srcs(html)
+            for src in srcs[: max(1, int(max_chunks))]:
+                try:
+                    jr = session.get(src, impersonate="chrome", timeout=12)
+                    body = str(jr.text or "")
+                except Exception:
+                    continue
+                low = body.lower()
+                if (
+                    "submitoauth2consent" not in low
+                    and "oauth2consent" not in low
+                    and "oauth2/consent" not in low
+                ):
+                    continue
+                for rx in (
+                    _NEXT_ACTION_RE,
+                    _NEXT_ACTION_RE4,
+                    _NEXT_ACTION_RE5,
+                    _NEXT_ACTION_RE6,
+                    _NEXT_ACTION_RE2,
+                    _NEXT_ACTION_RE7,
+                ):
+                    for m in rx.finditer(body):
+                        _add(m.group(1))
+                for m in re.finditer(r"submitOAuth2Consent|OAuth2Consent", body, re.I):
+                    i = m.start()
+                    window = body[max(0, i - 500) : i + 500]
+                    for hm in re.finditer(r"['\"]([a-f0-9]{40,44})['\"]", window, re.I):
+                        _add(hm.group(1))
+        except Exception:
+            pass
+
+    if _CACHED_NEXT_ACTION_ID and _CACHED_NEXT_ACTION_ID not in _BAD_NEXT_ACTION_IDS:
+        if _CACHED_NEXT_ACTION_ID not in seen:
+            out.insert(0, _CACHED_NEXT_ACTION_ID)
+    return out
+
+
 def _iter_script_srcs(html: str) -> list[str]:
     """从 consent HTML 提取 JS chunk URL（含 _next/static 与 build-manifest）。"""
     html = html or ""
@@ -450,13 +527,23 @@ def sso_to_token(sso_cookie: str, proxy: str = "", log=print) -> dict | None:
         except Exception:
             pass
 
-    action_id = _discover_next_action(page_html, NEXT_ACTION_ID, session=s)
-    if action_id and action_id != NEXT_ACTION_ID:
-        log(f"  🔑 consent next-action discovered={action_id[:16]}…")
-    elif _CACHED_NEXT_ACTION_ID and action_id == _CACHED_NEXT_ACTION_ID:
-        log(f"  🔑 consent next-action cached={action_id[:16]}…")
+    candidates = _collect_next_action_candidates(page_html, session=s, max_chunks=40)
+    action_id = candidates[0] if candidates else _discover_next_action(
+        page_html, "", session=s, use_cache=True, max_chunks=40
+    )
+    if action_id and action_id not in (candidates or []):
+        candidates = [action_id] + [c for c in candidates if c != action_id]
+    if not candidates and action_id:
+        candidates = [action_id]
+    if candidates:
+        log(
+            f"  🔑 consent next-action candidates={len(candidates)} "
+            f"first={candidates[0][:16]}…"
+        )
     else:
-        log(f"  🔑 consent next-action fallback={action_id[:16]}…（可能 404，将重试发现）")
+        log("  🔑 consent next-action candidates=0（将强制扫 chunk）")
+    action_id = candidates[0] if candidates else ""
+    cand_i = 0
 
     router_tree = (
         '["",{"children":["(app)",{"children":["(auth)",{"children":["oauth2",'
@@ -525,17 +612,19 @@ def sso_to_token(sso_cookie: str, proxy: str = "", log=print) -> dict | None:
         last_err_body = ""
         for attempt in range(3):
             if not action_id or action_id in _BAD_NEXT_ACTION_IDS:
-                # 强制再发现一次再 POST
-                action_id = _discover_next_action(
-                    page_html,
-                    "",
-                    session=s,
-                    use_cache=False,
-                    max_chunks=40,
+                candidates = _collect_next_action_candidates(
+                    page_html, session=s, max_chunks=48
                 )
+                candidates = [c for c in candidates if c not in _BAD_NEXT_ACTION_IDS]
+                cand_i = 0
+                action_id = candidates[0] if candidates else ""
                 if not action_id:
                     log("  ❌ consent next-action 未发现（避免用已知 404 id）")
                     return None
+                log(
+                    f"  🔑 refresh candidates={len(candidates)} "
+                    f"first={action_id[:16]}…"
+                )
             for purl in post_urls:
                 try:
                     r = _post_consent(purl, action_id)
@@ -546,6 +635,27 @@ def sso_to_token(sso_cookie: str, proxy: str = "", log=print) -> dict | None:
                     final_url = purl
                     break
                 last_err_body = str(r.text or "")[:200]
+                # 当前 action 404 → 换下一个候选再 POST（不必立刻整页重抓）
+                if action_id:
+                    _BAD_NEXT_ACTION_IDS.add(str(action_id))
+                    if _CACHED_NEXT_ACTION_ID == action_id:
+                        _CACHED_NEXT_ACTION_ID = ""
+                cand_i += 1
+                if cand_i < len(candidates):
+                    action_id = candidates[cand_i]
+                    log(
+                        f"  🔑 try next candidate [{cand_i+1}/{len(candidates)}] "
+                        f"{action_id[:16]}…"
+                    )
+                    try:
+                        r = _post_consent(purl, action_id)
+                        if not _is_action_not_found(r):
+                            final_url = purl
+                            break
+                        last_err_body = str(r.text or "")[:200]
+                        _BAD_NEXT_ACTION_IDS.add(str(action_id))
+                    except Exception as pe2:
+                        log(f"  ⚠ candidate POST 异常: {pe2}")
             else:
                 # 所有 post_urls 都 404 → 重新抓 HTML + 扫 chunk
                 if attempt < 2:
@@ -583,13 +693,11 @@ def sso_to_token(sso_cookie: str, proxy: str = "", log=print) -> dict | None:
                             post_urls = [final_url]
                             if consent_path != final_url:
                                 post_urls.append(consent_path)
-                        action_id = _discover_next_action(
-                            new_html,
-                            NEXT_ACTION_ID,
-                            session=s,
-                            use_cache=False,
-                            max_chunks=40,
+                        candidates = _collect_next_action_candidates(
+                            new_html, session=s, max_chunks=48
                         )
+                        action_id = candidates[0] if candidates else ""
+                        cand_i = 0
                         if (not action_id) or action_id in _BAD_NEXT_ACTION_IDS or action_id == old_id:
                             # 仍相同/空：再试 accounts 根 + 扩大 chunk
                             try:

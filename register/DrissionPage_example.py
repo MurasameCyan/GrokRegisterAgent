@@ -3349,7 +3349,34 @@ return /checking your browser|just a moment|cf-browser-verification|turnstile|ve
                 if tok:
                     _inject_turnstile_token(tok)
                     print(f"[*] 最终页 Turnstile 二次复用完成 len={len(tok)}")
-                time.sleep(1.2)
+                    # 注入后必须再点「完成注册」，否则会一直停在 sign-up
+                    try:
+                        clicked = page.run_js(
+                            r"""
+function isVisible(node) {
+  if (!node) return false;
+  const s = window.getComputedStyle(node);
+  if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
+  const r = node.getBoundingClientRect();
+  return r.width > 0 && r.height > 0;
+}
+const buttons = Array.from(document.querySelectorAll('button[type="submit"], button'))
+  .filter((n) => isVisible(n) && !n.disabled && n.getAttribute('aria-disabled') !== 'true');
+const btn = buttons.find((n) => {
+  const text = (n.innerText || n.textContent || '').replace(/\s+/g, '');
+  const t = text.toLowerCase();
+  return text.includes('完成注册') || t.includes('create account') || t.includes('sign up')
+    || t.includes('complete') || text === '注册';
+}) || buttons.find((n) => n.type === 'submit') || null;
+if (!btn) return 'no-btn';
+btn.click();
+return 'clicked';
+"""
+                        )
+                        print(f"[*] 最终页注入后重点完成注册: {clicked}")
+                    except Exception as ce:
+                        print(f"[Debug] 重点完成注册: {ce}")
+                time.sleep(1.5)
                 continue
 
             if "grok.com" in current_url:
