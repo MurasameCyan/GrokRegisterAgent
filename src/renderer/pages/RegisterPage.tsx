@@ -15,6 +15,7 @@ import { JobListPanel } from '@renderer/components/domain/JobListPanel';
 import { useRunStore } from '@renderer/store/runStore';
 import { useSettingsStore } from '@renderer/store/settingsStore';
 import { useToastStore } from '@renderer/store/toastStore';
+import { cn } from '@renderer/lib/cn';
 import type { AppSettings, CpaMintMode } from '@shared/settings';
 
 export function RegisterPage({ onOpenSettings }: { onOpenSettings(): void }) {
@@ -209,20 +210,10 @@ function RuntimeSettingsInline() {
     );
   }
 
-  const planKey = (() => {
-    const a = draft.registerPlanAEnabled !== false;
-    const b = draft.registerPlanBEnabled !== false;
-    const c =
-      draft.registerPlanCEnabled === true || draft.registerMode === 'hybrid';
-    if (a && !b && !c) return 'A';
-    if (!a && b && !c) return 'B';
-    if (!a && !b && c) return 'C';
-    if (a && b && !c) return 'AB';
-    if (a && b && c) return 'ABC';
-    if (a && !b && c) return 'AC';
-    if (!a && b && c) return 'BC';
-    return 'custom';
-  })();
+  const planA = draft.registerPlanAEnabled !== false;
+  const planB = draft.registerPlanBEnabled !== false;
+  const planC =
+    draft.registerPlanCEnabled === true || draft.registerMode === 'hybrid';
 
   const mintMode: CpaMintMode =
     draft.cpaMintMode === 'device' || draft.cpaMintMode === 'double'
@@ -233,66 +224,39 @@ function RuntimeSettingsInline() {
     !!data &&
     (data.runCount !== draft.runCount ||
       data.maxParallelWorkers !== draft.maxParallelWorkers ||
-      (data.registerPlanAEnabled !== false) !== (draft.registerPlanAEnabled !== false) ||
-      (data.registerPlanBEnabled !== false) !== (draft.registerPlanBEnabled !== false) ||
-      (data.registerPlanCEnabled === true || data.registerMode === 'hybrid') !==
-        (draft.registerPlanCEnabled === true || draft.registerMode === 'hybrid') ||
+      (data.registerPlanAEnabled !== false) !== planA ||
+      (data.registerPlanBEnabled !== false) !== planB ||
+      (data.registerPlanCEnabled === true || data.registerMode === 'hybrid') !== planC ||
       (data.cpaMintMode || 'pkce') !== (draft.cpaMintMode || 'pkce'));
 
   const update = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) =>
     setDraft({ ...draft, [key]: value });
 
-  const applyPlanPreset = (key: string) => {
-    const on = (v: boolean) => v;
-    if (key === 'A') {
-      setDraft({
-        ...draft,
-        registerPlanAEnabled: on(true),
-        registerPlanBEnabled: on(false),
-        registerPlanCEnabled: on(false),
-        registerMode: 'browser'
-      });
-      return;
+  /** 注册方案 A/B/C 可多选共存；至少保留一个开启 */
+  const togglePlan = (which: 'A' | 'B' | 'C') => {
+    let nextA = planA;
+    let nextB = planB;
+    let nextC = planC;
+    if (which === 'A') nextA = !planA;
+    if (which === 'B') nextB = !planB;
+    if (which === 'C') nextC = !planC;
+    if (!nextA && !nextB && !nextC) {
+      // 不允许全关：点关最后一个时保持该方案
+      if (which === 'A') nextA = true;
+      if (which === 'B') nextB = true;
+      if (which === 'C') nextC = true;
     }
-    if (key === 'B') {
-      setDraft({
-        ...draft,
-        registerPlanAEnabled: on(false),
-        registerPlanBEnabled: on(true),
-        registerPlanCEnabled: on(false),
-        registerMode: 'browser'
-      });
-      return;
-    }
-    if (key === 'C') {
-      setDraft({
-        ...draft,
-        registerPlanAEnabled: on(false),
-        registerPlanBEnabled: on(false),
-        registerPlanCEnabled: on(true),
-        registerMode: 'hybrid'
-      });
-      return;
-    }
-    if (key === 'AB') {
-      setDraft({
-        ...draft,
-        registerPlanAEnabled: on(true),
-        registerPlanBEnabled: on(true),
-        registerPlanCEnabled: on(false),
-        registerMode: 'browser'
-      });
-      return;
-    }
-    if (key === 'ABC') {
-      setDraft({
-        ...draft,
-        registerPlanAEnabled: on(true),
-        registerPlanBEnabled: on(true),
-        registerPlanCEnabled: on(true),
-        registerMode: 'hybrid'
-      });
-    }
+    setDraft({
+      ...draft,
+      registerPlanAEnabled: nextA,
+      registerPlanBEnabled: nextB,
+      registerPlanCEnabled: nextC,
+      registerMode: nextC ? 'hybrid' : 'browser'
+    });
+  };
+
+  const setMintMode = (mode: CpaMintMode) => {
+    setDraft({ ...draft, cpaMintMode: mode });
   };
 
   const save = async () => {
@@ -320,8 +284,12 @@ function RuntimeSettingsInline() {
     }
   };
 
-  const selectClass =
-    'flex h-9 w-full rounded-lg border border-input bg-card px-2.5 text-[13px] font-medium tracking-tight focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30';
+  const pillBase =
+    'inline-flex h-7 min-w-[2rem] items-center justify-center rounded-md border px-2 text-[12px] font-semibold tracking-tight transition-colors disabled:opacity-50';
+  const pillOn =
+    'border-primary/30 bg-primary text-primary-foreground shadow-sm hover:bg-primary/90';
+  const pillOff =
+    'border-border bg-card text-muted-foreground hover:bg-accent hover:text-foreground';
 
   return (
     <div className="space-y-3 rounded-xl border border-border bg-card/80 p-3.5 shadow-[var(--ios-shadow)]">
@@ -329,7 +297,7 @@ function RuntimeSettingsInline() {
         <div>
           <div className="text-[13px] font-semibold tracking-[-0.02em]">运行设置</div>
           <p className="mt-0.5 text-[11px] text-muted-foreground">
-            保存后下次启动生效 · 可快速切 Plan / Mint
+            保存后下次启动生效 · Plan 可多选 · Mint 三选一
           </p>
         </div>
         <Button
@@ -373,36 +341,69 @@ function RuntimeSettingsInline() {
         </div>
         <div className="rounded-xl border border-border/60 bg-muted/50 p-3">
           <div className="field-label mb-1.5">注册方案</div>
-          <select
-            className={selectClass}
-            value={planKey === 'custom' ? 'AB' : planKey}
-            onChange={(e) => applyPlanPreset(e.target.value)}
-            title="快速设定 Plan A/B/C 开关（与配置页同步）"
+          <div
+            className="flex flex-wrap items-center gap-1.5"
+            role="group"
+            aria-label="注册方案 A B C 可多选"
+            title="A/B/C 可同时开启（与配置页同步）"
           >
-            <option value="A">A · 浏览器主流程</option>
-            <option value="B">B · 拟人兜底</option>
-            <option value="C">C · Hybrid 协议</option>
-            <option value="AB">A + B</option>
-            <option value="ABC">A + B + C</option>
-          </select>
-          {planKey === 'custom' ? (
-            <p className="mt-1 text-[10px] text-muted-foreground">
-              当前为自定义组合，保存前请重选预设
-            </p>
-          ) : null}
+            {(
+              [
+                { k: 'A' as const, on: planA, label: 'A', tip: '浏览器主流程' },
+                { k: 'B' as const, on: planB, label: 'B', tip: '拟人兜底' },
+                { k: 'C' as const, on: planC, label: 'C', tip: 'Hybrid 协议' }
+              ] as const
+            ).map((item) => (
+              <button
+                key={item.k}
+                type="button"
+                aria-pressed={item.on}
+                title={`${item.label} · ${item.tip}${item.on ? '（开）' : '（关）'}`}
+                onClick={() => togglePlan(item.k)}
+                className={cn(pillBase, item.on ? pillOn : pillOff)}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+          <p className="mt-1.5 text-[10px] leading-snug text-muted-foreground">
+            可共存 · 至少开一个
+          </p>
         </div>
         <div className="rounded-xl border border-border/60 bg-muted/50 p-3">
           <div className="field-label mb-1.5">Mint 模式</div>
-          <select
-            className={selectClass}
-            value={mintMode}
-            onChange={(e) => update('cpaMintMode', e.target.value as CpaMintMode)}
-            title="SSO→Auth 通道（与配置页同步）"
+          <div
+            className="flex flex-wrap items-center gap-1.5"
+            role="radiogroup"
+            aria-label="Mint 模式 A B C 选一"
+            title="SSO→Auth 通道三选一（与配置页同步）"
           >
-            <option value="pkce">A · PKCE（推荐）</option>
-            <option value="device">B · Device</option>
-            <option value="double">C · Double（PKCE+Device）</option>
-          </select>
+            {(
+              [
+                { mode: 'pkce' as const, label: 'A', tip: 'PKCE' },
+                { mode: 'device' as const, label: 'B', tip: 'Device' },
+                { mode: 'double' as const, label: 'C', tip: 'Double PKCE+Device' }
+              ] as const
+            ).map((item) => {
+              const on = mintMode === item.mode;
+              return (
+                <button
+                  key={item.mode}
+                  type="button"
+                  role="radio"
+                  aria-checked={on}
+                  title={`${item.label} · ${item.tip}`}
+                  onClick={() => setMintMode(item.mode)}
+                  className={cn(pillBase, on ? pillOn : pillOff)}
+                >
+                  {item.label}
+                </button>
+              );
+            })}
+          </div>
+          <p className="mt-1.5 text-[10px] leading-snug text-muted-foreground">
+            三选一 · A PKCE · B Device · C Double
+          </p>
         </div>
       </div>
     </div>
