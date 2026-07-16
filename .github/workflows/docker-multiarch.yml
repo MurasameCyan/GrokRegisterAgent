@@ -1,5 +1,8 @@
 name: Docker multi-arch
 
+# Avoid docker/metadata-action (can fail with GitHub Unicorn HTML / API 5xx).
+# Tags are set explicitly; image name is fixed lowercase for GHCR.
+
 on:
   push:
     branches: [beta]
@@ -8,6 +11,8 @@ on:
 
 env:
   REGISTRY: ghcr.io
+  # must match root docker-compose.yml (all lowercase)
+  IMAGE: ghcr.io/murasamecyan/grokregisteragent
   # 与 scripts/fetch-sing-box.sh 默认一致；升级时改此处即可
   SING_BOX_VERSION: "1.13.14"
 
@@ -21,12 +26,27 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # GHCR 要求镜像名小写（repo 若含大写会导致 metadata-action Unicorn HTML）
-      - name: Image name (lowercase)
-        id: image
+      - name: Docker tags
+        id: tags
         run: |
-          repo="$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
-          echo "full=${{ env.REGISTRY }}/${repo}" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          SHA_SHORT="$(echo '${{ github.sha }}' | cut -c1-7)"
+          TAGS="${{ env.IMAGE }}:sha-${SHA_SHORT}"
+          if [ "${{ github.ref }}" = "refs/heads/beta" ]; then
+            TAGS="${TAGS},${{ env.IMAGE }}:beta,${{ env.IMAGE }}:latest"
+          elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            VER="${{ github.ref_name }}"
+            TAGS="${TAGS},${{ env.IMAGE }}:${VER}"
+            MINOR="$(echo "$VER" | sed -E 's/^v([0-9]+\.[0-9]+).*/\1/')"
+            if [ -n "$MINOR" ] && [ "$MINOR" != "$VER" ]; then
+              TAGS="${TAGS},${{ env.IMAGE }}:${MINOR}"
+            fi
+          else
+            BRANCH="$(echo '${{ github.ref_name }}' | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9._-' '-')"
+            TAGS="${TAGS},${{ env.IMAGE }}:${BRANCH}"
+          fi
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+          echo "tags=${TAGS}"
 
       - name: Download sing-box (linux-amd64 + linux-arm64)
         run: |
@@ -49,20 +69,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ steps.image.outputs.full }}
-          # 开发主线在 beta：推送 beta 时打 beta + latest
-          tags: |
-            type=raw,value=beta,enable=${{ github.ref == 'refs/heads/beta' }}
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/beta' }}
-            type=ref,event=branch
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha,format=short
-
       - name: Build and push (linux/amd64 + linux/arm64)
         uses: docker/build-push-action@v6
         with:
@@ -70,8 +76,7 @@ jobs:
           file: ./docker/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.tags.outputs.tags }}
           build-args: |
             REGISTER_BUILD=${{ github.sha }}
           cache-from: type=gha

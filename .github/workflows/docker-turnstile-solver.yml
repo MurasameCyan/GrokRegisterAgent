@@ -1,5 +1,8 @@
 name: Docker Turnstile Solver multi-arch
 
+# Avoid docker/metadata-action (can fail with GitHub Unicorn HTML / API 5xx).
+# Tags are set explicitly; image name is fixed lowercase for GHCR.
+
 on:
   push:
     branches: [beta]
@@ -11,6 +14,8 @@ on:
 
 env:
   REGISTRY: ghcr.io
+  # must match root docker-compose.yml (all lowercase)
+  IMAGE: ghcr.io/murasamecyan/grok-turnstile-solver
 
 jobs:
   build-push:
@@ -22,13 +27,28 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # GHCR 镜像名必须全小写；owner 若含大写会触发 metadata-action Unicorn HTML 错误
-      - name: Image name (lowercase)
-        id: image
+      - name: Docker tags
+        id: tags
         run: |
-          owner="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
-          echo "name=${owner}/grok-turnstile-solver" >> "$GITHUB_OUTPUT"
-          echo "full=${{ env.REGISTRY }}/${owner}/grok-turnstile-solver" >> "$GITHUB_OUTPUT"
+          set -euo pipefail
+          SHA_SHORT="$(echo '${{ github.sha }}' | cut -c1-7)"
+          TAGS="${{ env.IMAGE }}:sha-${SHA_SHORT}"
+          if [ "${{ github.ref }}" = "refs/heads/beta" ]; then
+            TAGS="${TAGS},${{ env.IMAGE }}:beta,${{ env.IMAGE }}:latest"
+          elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            VER="${{ github.ref_name }}"
+            TAGS="${TAGS},${{ env.IMAGE }}:${VER}"
+            # v1.2.3 -> also 1.2
+            MINOR="$(echo "$VER" | sed -E 's/^v([0-9]+\.[0-9]+).*/\1/')"
+            if [ -n "$MINOR" ] && [ "$MINOR" != "$VER" ]; then
+              TAGS="${TAGS},${{ env.IMAGE }}:${MINOR}"
+            fi
+          else
+            BRANCH="$(echo '${{ github.ref_name }}' | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9._-' '-')"
+            TAGS="${TAGS},${{ env.IMAGE }}:${BRANCH}"
+          fi
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+          echo "tags=${TAGS}"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -43,19 +63,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ steps.image.outputs.full }}
-          tags: |
-            type=raw,value=beta,enable=${{ github.ref == 'refs/heads/beta' }}
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/beta' }}
-            type=ref,event=branch
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=sha,format=short
-
       - name: Build and push (linux/amd64 + linux/arm64)
         uses: docker/build-push-action@v6
         with:
@@ -63,7 +70,6 @@ jobs:
           file: ./docker/turnstile-solver/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.tags.outputs.tags }}
           cache-from: type=gha,scope=turnstile-solver
           cache-to: type=gha,mode=max,scope=turnstile-solver
