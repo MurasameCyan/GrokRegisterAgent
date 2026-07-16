@@ -1,4 +1,4 @@
 # sing-box Linux 客户端不入库。
-# Docker 构建时由 docker/Dockerfile 按 TARGETARCH 从 SagerNet/sing-box Release 下载：
-#   register/bin/sing-box/linux-amd64 | linux-arm64
-# 本地调试可用官方 release 解压后放到同名路径。
+# 官方镜像由 GitHub Actions 构建：工作流调用 scripts/fetch-sing-box.sh
+# 下载到本目录 linux-amd64 / linux-arm64 后再 docker build 打进镜像。
+# 用户请拉取 ghcr.io 镜像，无需本地下载或自行构建。

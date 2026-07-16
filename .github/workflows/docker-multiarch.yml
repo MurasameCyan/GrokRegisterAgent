@@ -9,6 +9,8 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  # 与 scripts/fetch-sing-box.sh 默认一致；升级时改此处即可
+  SING_BOX_VERSION: "1.13.14"
 
 jobs:
   build-push:
@@ -19,6 +21,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Download sing-box (linux-amd64 + linux-arm64)
+        run: |
+          chmod +x scripts/fetch-sing-box.sh
+          ./scripts/fetch-sing-box.sh
+          test -x register/bin/sing-box/linux-amd64
+          test -x register/bin/sing-box/linux-arm64
+          ls -lh register/bin/sing-box/
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
