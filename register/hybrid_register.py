@@ -184,19 +184,35 @@ def hybrid_register(
 
             # UI 提交邮箱：优先让浏览器原生发出 CreateEmail（日志常见 body~33B 且 200）。
             # 站点当前 CreateEmail 可不带 castle；勿在此处因抓不到 IBYIll 整轮失败。
-            castle = browser.harvest_castle_via_email_submit(email, timeout=45)
+            castle = browser.harvest_castle_via_email_submit(email, timeout=50)
             browser_cookies = browser.export_cookies()
             browser_sent = browser.create_email_sent_via_browser()
             clen = len(str(castle or ""))
             if castle and clen >= 1000 and str(castle).startswith("IBYIll"):
                 log(f"[hybrid] native castle ok len={clen}")
             else:
-                log(
-                    f"[hybrid] no usable castle yet len={clen} "
-                    f"browser_create_email={browser_sent} "
-                    f"(defer castle to Server Action)"
-                )
-                castle = str(castle or "")
+                # second chance: page-side mint + re-read capture (no CDN inject)
+                try:
+                    harv = getattr(browser, "_harvester", None) or browser
+                    if hasattr(browser, "read_captured_castle"):
+                        c2 = browser.read_captured_castle()
+                        if c2 and len(c2) > clen:
+                            castle, clen = c2, len(c2)
+                    # TokenHarvester methods via session wrapper
+                    if hasattr(browser, "get_castle_token"):
+                        # only accept long IBYIll — short CDN tokens are useless for x.ai
+                        pass
+                except Exception as e:
+                    log(f"[hybrid] castle second-chance skip: {e}")
+                if castle and clen >= 1000 and str(castle).startswith("IBYIll"):
+                    log(f"[hybrid] native castle ok (2nd) len={clen}")
+                else:
+                    log(
+                        f"[hybrid] no usable castle yet len={clen} "
+                        f"browser_create_email={browser_sent} "
+                        f"(defer castle to Server Action)"
+                    )
+                    castle = str(castle or "")
 
             ua = browser.browser_user_agent() or ""
             sess = ProtocolSession(

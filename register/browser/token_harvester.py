@@ -592,12 +592,121 @@ return {
         return ""
 
 
-    def _wait_castle_ready_before_submit(self, page, max_wait: float = 6.0) -> None:
-        """Poll DOM / page globals for a long castle token before clicking 注册."""
-        deadline = time.time() + max(1.0, float(max_wait or 6))
+    def _kick_page_castle_mint(self, page) -> None:
+        """Try native/page Castle APIs before clicking 注册.
+
+        Logs show CreateEmail body ~33B (email only) when React submits before
+        useCastle() finishes. Kick mint early so IBYIll may land in hooks/DOM.
+        """
+        if page is None:
+            return
+        pk = ""
+        try:
+            pk = self._extract_castle_pk() or ""
+        except Exception:
+            pk = ""
+        try:
+            page.run_js(
+                r"""
+const pk = String(arguments[0] || '');
+window.__hybrid_castle = window.__hybrid_castle || '';
+window.__hybrid_castles = window.__hybrid_castles || [];
+window.__hybrid_castle_status = window.__hybrid_castle_status || '';
+function pushTok(t) {
+  const s = String(t || '');
+  if (s.length < 40) return;
+  window.__hybrid_castle = s;
+  window.__hybrid_castles.push(s);
+  window.__hybrid_castle_status = s.indexOf('IBYIll|') === 0 ? 'native-ish' : 'minted';
+}
+function tryMint(api, label) {
+  try {
+    let a = api;
+    if (a && a.default) a = a.default;
+    if (a && typeof a.configure === 'function' && pk) {
+      try { a.configure({ pk: pk }); } catch (e0) {}
+    }
+    let fn = null;
+    if (a && typeof a.createRequestToken === 'function') fn = a.createRequestToken.bind(a);
+    if (!fn && typeof api === 'function') {
+      try {
+        const inst = pk ? api({ pk: pk }) : api();
+        if (inst && typeof inst.createRequestToken === 'function')
+          fn = inst.createRequestToken.bind(inst);
+      } catch (e1) {}
+    }
+    if (!fn) return false;
+    window.__hybrid_castle_status = 'minting:' + label;
+    Promise.resolve(fn()).then(function (t) { pushTok(t); }).catch(function (e) {
+      window.__hybrid_castle_err = String(e);
+      window.__hybrid_castle_status = 'error:' + label;
+    });
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+// 1) globals
+let hit = false;
+const g = [window.Castle, window.castle, window['@castleio/castle-js']];
+for (let i = 0; i < g.length; i++) {
+  if (g[i] && tryMint(g[i], 'global' + i)) hit = true;
+}
+// 2) webpack module cache scan (best-effort; no CDN inject)
+try {
+  const keys = Object.keys(window).filter(function (k) {
+    return /^webpackChunk|^__NEXT_DATA__|^__webpack/.test(k);
+  });
+  // walk require.cache-like if present
+  if (typeof window.webpackChunk_N_E !== 'undefined') {
+    /* Next may not expose castle here */
+  }
+} catch (e) {}
+// 3) hidden inputs / data attributes already filled by React
+try {
+  for (const el of document.querySelectorAll('input,textarea,[data-castle]')) {
+    const v = String((el.value || el.getAttribute('data-castle') || el.textContent || ''));
+    if (v.indexOf('IBYIll|') === 0 && v.length > 200) pushTok(v);
+  }
+} catch (e) {}
+// 4) nudge React: focus email + input event (useCastle often ties to field activity)
+try {
+  const input = document.querySelector(
+    'input[data-testid="email"], input[name="email"], input[type="email"]'
+  );
+  if (input) {
+    input.focus();
+    input.dispatchEvent(new Event('focus', { bubbles: true }));
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('blur', { bubbles: true }));
+  }
+} catch (e) {}
+return {
+  hit: hit,
+  status: String(window.__hybrid_castle_status || ''),
+  len: String(window.__hybrid_castle || '').length
+};
+""",
+                pk,
+            )
+        except Exception as e:
+            self._lg(f"[Debug] kick castle mint: {e}")
+
+    def _wait_castle_ready_before_submit(self, page, max_wait: float = 10.0) -> None:
+        """Kick mint + poll for long IBYIll castle before clicking 注册."""
+        try:
+            self._kick_page_castle_mint(page)
+        except Exception:
+            pass
+        deadline = time.time() + max(2.0, float(max_wait or 10))
         last = ""
+        kicked = 1
         while time.time() < deadline:
             try:
+                # mid-wait re-kick once if still empty
+                if kicked < 2 and (deadline - time.time()) < (max_wait * 0.45):
+                    self._kick_page_castle_mint(page)
+                    kicked += 1
                 data = page.run_js(
                     r"""
 let best = '';
@@ -613,22 +722,31 @@ try {
     if (v.includes('IBYIll|') && v.length > best.length) best = v;
   }
 } catch (e) {}
-// Castle SDK may expose createRequestToken readiness without token yet
 let sdk = false;
 try {
   const C = window.Castle || window.castle || null;
   sdk = !!(C && (C.createRequestToken || (C.default && C.default.createRequestToken)));
 } catch (e) {}
-return { len: best.length, head: best.slice(0, 12), sdk: sdk };
+return {
+  len: best.length,
+  head: best.slice(0, 12),
+  sdk: sdk,
+  status: String(window.__hybrid_castle_status || '')
+};
 """
                 )
                 if isinstance(data, dict):
                     ln = int(data.get("len") or 0)
-                    s = f"len={ln} sdk={data.get('sdk')}"
+                    s = f"len={ln} sdk={data.get('sdk')} st={data.get('status')}"
                     if s != last:
                         self._lg(f"[*] pre-submit castle wait: {s}")
                         last = s
-                    if ln >= 1000:
+                    # prefer long native-looking token
+                    if ln >= 1000 and str(data.get("head") or "").startswith("IBYIll"):
+                        self._lg(f"[*] pre-submit castle ready len={ln}")
+                        return
+                    if ln >= 2000:
+                        self._lg(f"[*] pre-submit castle ready (long) len={ln}")
                         return
             except Exception:
                 pass
@@ -763,11 +881,10 @@ return 'filled';
                 self._lg(f"[*] UI email fallback submit: {filled2}")
                 submit_result = filled2
             else:
-                # Wait for React useCastle() / hidden fields before submit.
-                # Logs showed CreateEmail body ~33B (email only) when we click too early.
-                # 多数环境页面无 window.Castle；过长等待无收益（日志 pre-submit len=0 sdk=False）
-                self._wait_castle_ready_before_submit(page, max_wait=2.5)
-                time.sleep(0.35)
+                # Wait for React useCastle() / kick mint before submit.
+                # CreateEmail body ~33B means click was too early (no castle field).
+                self._wait_castle_ready_before_submit(page, max_wait=10.0)
+                time.sleep(0.45)
                 # Phase 2: click 注册 (Plan A) — avoid matching 继续 on other widgets
                 clicked = page.run_js(
                     r"""
@@ -845,10 +962,20 @@ return {
                         retried_submit = True
                         self._lg(
                             "[!] CreateEmail body too short (no castle); "
-                            "wait + re-click 注册 once"
+                            "kick mint + wait + re-click 注册 once"
                         )
-                        time.sleep(2.0)
-                        self._wait_castle_ready_before_submit(page, max_wait=4.0)
+                        try:
+                            self._kick_page_castle_mint(page)
+                        except Exception:
+                            pass
+                        time.sleep(1.2)
+                        self._wait_castle_ready_before_submit(page, max_wait=8.0)
+                        # only re-click if we got a long token OR still hope React will attach
+                        pre = self.read_captured_castle()
+                        if pre and len(pre) >= 800:
+                            self._lg(
+                                f"[*] re-submit with pre-mint castle len={len(pre)}"
+                            )
                         r2 = self._click_register_button(page)
                         self._lg(f"[*] UI email re-submit: {r2}")
                         submit_result = f"{submit_result}|retry:{r2}"
