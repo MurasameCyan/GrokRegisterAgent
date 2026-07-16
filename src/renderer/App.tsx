@@ -54,13 +54,18 @@ export default function App() {
   const setStatus = useRunStore((s) => s.setStatus);
   const applyAccount = useAccountsStore((s) => s.applyAccount);
   const reloadSettings = useSettingsStore((s) => s.reload);
+  /** 仅本地 BUILD_ID 展示；远程对比结果必须用户点击后才写入 */
+  const [localBuildId, setLocalBuildId] = useState<string | null>(null);
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
   const [updateLoading, setUpdateLoading] = useState(false);
 
   const loadUpdate = async () => {
     setUpdateLoading(true);
     try {
-      setUpdate(await window.api.checkUpdate());
+      const info = await window.api.checkUpdate();
+      setUpdate(info);
+      const bid = info?.buildId || info?.current;
+      if (bid) setLocalBuildId(bid);
     } finally {
       setUpdateLoading(false);
     }
@@ -93,24 +98,14 @@ export default function App() {
         description: err instanceof Error ? err.message : String(err)
       });
     });
-    // 仅拉本地 BUILD_ID 展示，不自动检查更新（需用户点击「检查更新」）
+    // 仅拉本地 BUILD_ID 展示，绝不调用 checkUpdate / 访问 GitHub（需用户点击「检查更新」）
     void (async () => {
       try {
         const r = await window.api.getSystemVersion();
         const buildId = r?.buildId || r?.current;
         if (!buildId) return;
-        setUpdate((prev) =>
-          prev
-            ? { ...prev, current: buildId, buildId }
-            : {
-                current: buildId,
-                latest: null,
-                hasUpdate: false,
-                htmlUrl: null,
-                publishedAt: null,
-                buildId
-              }
-        );
+        setLocalBuildId(buildId);
+        // 不写入 update：避免 Sidebar 把「仅有本地 id」误显示为「已最新」
       } catch {
         /* ignore */
       }
@@ -199,6 +194,7 @@ export default function App() {
           <div className="mt-auto hidden space-y-2 border-t border-border p-3 lg:block">
             {/* 版本 + 检查更新（窄侧栏：一行紧凑） */}
             <SidebarUpdateBar
+              localBuildId={localBuildId}
               update={update}
               loading={updateLoading}
               onCheck={() => void loadUpdate()}
@@ -287,29 +283,38 @@ export default function App() {
   );
 }
 
-/** 侧边栏底部：版本 + 检查更新（窄宽适配，错误文案统一成「检查更新」） */
+/**
+ * 侧边栏底部：本地 BUILD_ID + 「检查更新」。
+ * 规则：只有用户点击 onCheck 后才有远程对比结果；未检查时永远显示「检查更新」，
+ * 禁止把「仅本地 id」显示成「已最新」。
+ */
 function SidebarUpdateBar({
+  localBuildId,
   update,
   loading,
   onCheck
 }: {
+  localBuildId: string | null;
   update: UpdateInfo | null;
   loading: boolean;
   onCheck(): void;
 }) {
   // 显示 BUILD_ID（git short SHA），与注册机日志 Build: xxxxxxx 对照
-  const buildId = update?.buildId || update?.current;
+  const buildId = update?.buildId || update?.current || localBuildId;
   const hasUpdate = !!update?.hasUpdate;
+  // 仅当用户点过检查且接口成功返回（无 error）时才算「已检测」
+  const checkedOk = !!update && !update.error;
 
   let actionLabel = '检查更新';
   if (loading) actionLabel = '检查中…';
   else if (hasUpdate && update?.latest) actionLabel = `新 ${update.latest}`;
-  else if (update && !update.error && !hasUpdate) actionLabel = '已最新';
-  // error 仍显示「检查更新」，可点重试
+  else if (checkedOk && !hasUpdate) actionLabel = '已最新';
+  // 未点击 / error → 保持「检查更新」，可点（重试）
 
-  const chipTitle = hasUpdate
-    ? `本地 BUILD_ID=${buildId ?? '?'} · 远端 beta=${update?.latest ?? '?'}`
-    : `BUILD_ID ${buildId ?? '…'}（与注册机启动 Build 一致）`;
+  const chipTitle =
+    checkedOk && hasUpdate
+      ? `本地 BUILD_ID=${buildId ?? '?'} · 远端 beta=${update?.latest ?? '?'}`
+      : `BUILD_ID ${buildId ?? '…'}（与注册机启动 Build 一致；更新需手动点检查）`;
 
   return (
     <div className="flex min-w-0 items-center gap-1.5">
@@ -319,7 +324,7 @@ function SidebarUpdateBar({
       >
         {buildId ?? '…'}
       </span>
-      {hasUpdate ? (
+      {checkedOk && hasUpdate ? (
         <a
           href={update?.htmlUrl ?? '#'}
           target="_blank"
@@ -336,7 +341,7 @@ function SidebarUpdateBar({
           onClick={onCheck}
           disabled={loading}
           className="inline-flex min-w-0 flex-1 items-center justify-center gap-1 truncate rounded-full bg-ok/15 px-2 py-1 text-[11px] font-medium text-ok transition-colors hover:bg-ok/25 disabled:opacity-60"
-          title={update?.error || '对照 GitHub beta 最新 commit hash'}
+          title={update?.error || '点击后对照 GitHub beta 最新 commit hash（不会自动检测）'}
         >
           <RefreshCcw className={cn('h-3 w-3 shrink-0', loading && 'animate-spin')} />
           <span className="truncate">{actionLabel}</span>
