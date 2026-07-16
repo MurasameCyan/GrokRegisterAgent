@@ -18,7 +18,34 @@ const colorByLevel = {
 const SUMMARY_RE =
   /^(.*?)(成功\s*[:：]\s*\d+)(.*?)(失败\s*[:：]\s*\d+)(.*?)(共计\s*[:：]\s*\d+)(.*)$/u;
 
+/** [plan] 本轮启用Plan: A:on B:off C:on → 显示「本轮启用Plan: A B C」启绿禁红 */
+const PLAN_LINE_RE =
+  /^\[plan\]\s*本轮启用Plan:\s*A:(on|off)\s+B:(on|off)\s+C:(on|off)\s*$/u;
+
+function planLetterClass(state: string) {
+  return state === 'on'
+    ? 'text-emerald-600 dark:text-emerald-400 font-semibold'
+    : 'text-danger font-semibold';
+}
+
+function renderPlanLine(text: string, levelClass: string) {
+  const m = String(text || '').match(PLAN_LINE_RE);
+  if (!m) return null;
+  const [, aS, bS, cS] = m;
+  return (
+    <span className={cn('break-all text-[12px] font-medium', levelClass)}>
+      本轮启用Plan:{' '}
+      <span className={planLetterClass(aS)}>A</span>{' '}
+      <span className={planLetterClass(bS)}>B</span>{' '}
+      <span className={planLetterClass(cS)}>C</span>
+    </span>
+  );
+}
+
 function renderLogText(text: string, levelClass: string) {
+  const plan = renderPlanLine(text, levelClass);
+  if (plan) return plan;
+
   const m = String(text || '').match(SUMMARY_RE);
   if (!m) {
     return <span className={cn('break-all text-[12px]', levelClass)}>{text}</span>;

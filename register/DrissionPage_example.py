@@ -4568,6 +4568,29 @@ def main():
     except Exception as _pg_e:
         print(f"[Warn] 可用池检查跳过: {_pg_e}", flush=True)
 
+    # 注册方案：启动时读一次 config，全任务期间不变；日志只打一次
+    try:
+        from plan_b import (
+            load_plan_a_enabled_from_config,
+            load_plan_b_enabled_from_config,
+            load_plan_c_enabled_from_config,
+        )
+
+        plan_a_enabled = load_plan_a_enabled_from_config()
+        plan_b_enabled = load_plan_b_enabled_from_config()
+        plan_c_enabled = load_plan_c_enabled_from_config()
+    except Exception:
+        plan_a_enabled = True
+        plan_b_enabled = True
+        plan_c_enabled = False
+    # 机器可读 on/off，前端渲染为「本轮启用Plan: A B C」且启绿禁红
+    print(
+        f"[plan] 本轮启用Plan: A:{'on' if plan_a_enabled else 'off'} "
+        f"B:{'on' if plan_b_enabled else 'off'} "
+        f"C:{'on' if plan_c_enabled else 'off'}",
+        flush=True,
+    )
+
     force_browser_recycle = True  # 首轮必须新起浏览器
     try:
         while True:
@@ -4656,22 +4679,6 @@ def main():
                 f"（recycle_every={recycle_every} restart={do_full_restart}）"
             )
 
-            # 注册方案：Plan A/B/C 可单独开关；已开则按 A→B→C 顺序兜底
-            try:
-                from plan_b import (
-                    load_plan_a_enabled_from_config,
-                    load_plan_b_enabled_from_config,
-                    load_plan_c_enabled_from_config,
-                )
-
-                plan_a_enabled = load_plan_a_enabled_from_config()
-                plan_b_enabled = load_plan_b_enabled_from_config()
-                plan_c_enabled = load_plan_c_enabled_from_config()
-            except Exception:
-                plan_a_enabled = True
-                plan_b_enabled = True
-                plan_c_enabled = False
-
             used_plan = ""
             result = None
             last_err: Exception | None = None
@@ -4685,13 +4692,6 @@ def main():
                 if args.count == 0 or current_round < args.count:
                     time.sleep(0.5)
                 continue
-
-            print(
-                f"[plan] 本轮启用: "
-                f"A={'开' if plan_a_enabled else '关'} "
-                f"B={'开' if plan_b_enabled else '关'} "
-                f"C={'开' if plan_c_enabled else '关'}（顺序 A→B→C）"
-            )
 
             def _is_hard_proxy_fail(err: BaseException | str | None) -> bool:
                 """A 因代理/网络硬失败时，B 拟人兜底无意义（同一坏链路）。"""
