@@ -556,11 +556,28 @@ def sso_to_token_via_browser_consent(
                 pass
             httpd_holder["srv"] = None
 
+    # 必须与注册机主 Chromium 隔离：共用默认 profile/port 会抢页导致
+    # 「页面已被刷新 / 与页面的连接已断开」并把注册/ mint 一起撞死。
+    import tempfile
+    import shutil
+
+    consent_profile = tempfile.mkdtemp(prefix="gra-pkce-consent-")
     co = ChromiumOptions()
     try:
         co.headless(bool(headless))
     except Exception:
         pass
+    try:
+        co.auto_port()
+    except Exception:
+        try:
+            co.set_local_port(0)
+        except Exception:
+            pass
+    try:
+        co.set_user_data_path(consent_profile)
+    except Exception as e:
+        log(f"  ⚠ browser consent user_data: {e}")
     for arg in (
         "--no-sandbox",
         "--disable-dev-shm-usage",
@@ -568,6 +585,8 @@ def sso_to_token_via_browser_consent(
         "--lang=en-US",
         # allow redirect to local callback without mixed-content blocks
         "--disable-web-security",
+        "--no-first-run",
+        "--no-default-browser-check",
     ):
         try:
             co.set_argument(arg)
@@ -830,6 +849,10 @@ return '';
                 browser.quit()
             except Exception:
                 pass
+        try:
+            shutil.rmtree(consent_profile, ignore_errors=True)
+        except Exception:
+            pass
 
 
 
