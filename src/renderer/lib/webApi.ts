@@ -272,6 +272,14 @@ const webApi: RendererApi = {
   getCfProxyLog: (tail = 200) =>
     http('GET', `/api/cf-proxy/log?tail=${encodeURIComponent(String(tail))}`),
 
+  getSingBoxStatus: () => http('GET', '/api/singbox/status'),
+  getSingBoxNodes: () => http('GET', '/api/singbox/nodes'),
+  startSingBox: () => http('POST', '/api/singbox/start'),
+  stopSingBox: () => http('POST', '/api/singbox/stop'),
+  syncSingBox: () => http('POST', '/api/singbox/sync'),
+  getSingBoxLog: (tail = 200) =>
+    http('GET', `/api/singbox/log?tail=${encodeURIComponent(String(tail))}`),
+
   getSystemHealth: () => http('GET', '/api/system/health'),
   checkUpdate: () => http('GET', '/api/system/update-check')
 };

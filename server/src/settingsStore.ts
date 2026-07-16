@@ -209,6 +209,23 @@ function merge(partial: unknown): AppSettings {
         .toLowerCase();
       return v === 'http' ? 'http' : 'socks5';
     })(),
+    singBoxEnabled: asBool(
+      (p as AppSettings).singBoxEnabled,
+      DEFAULT_SETTINGS.singBoxEnabled
+    ),
+    singBoxNodes:
+      typeof (p as AppSettings).singBoxNodes === 'string'
+        ? (p as AppSettings).singBoxNodes
+        : DEFAULT_SETTINGS.singBoxNodes,
+    singBoxSelected:
+      typeof (p as AppSettings).singBoxSelected === 'string'
+        ? (p as AppSettings).singBoxSelected
+        : DEFAULT_SETTINGS.singBoxSelected,
+    singBoxPort: (() => {
+      const n = Number((p as AppSettings).singBoxPort);
+      if (Number.isInteger(n) && n >= 1 && n <= 65535) return n;
+      return DEFAULT_SETTINGS.singBoxPort;
+    })(),
     proxyProbeConcurrency: (() => {
       const n = Number((p as AppSettings).proxyProbeConcurrency);
       if (Number.isInteger(n) && n >= 1 && n <= 20) return n;

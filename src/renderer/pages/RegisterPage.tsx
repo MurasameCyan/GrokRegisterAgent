@@ -169,7 +169,11 @@ export function RegisterPage({ onOpenSettings }: { onOpenSettings(): void }) {
                 value={(() => {
                   const s = settings;
                   if (!s) return '直接连接';
-                  // CF 独立代理优先（与 registerRuntime 三模式互斥一致）
+                  // sing-box / CF 独立代理优先（与 registerRuntime 三模式互斥一致）
+                  if (s.singBoxEnabled === true) {
+                    const port = Number(s.singBoxPort) || 2080;
+                    return `sing-box · http://127.0.0.1:${port}`;
+                  }
                   if (s.cfProxyEnabled === true) {
                     const port = Number(s.cfProxyPort) || 30000;
                     const scheme = s.cfProxyLocalScheme === 'http' ? 'http' : 'socks5';

@@ -10,6 +10,7 @@ import fs from 'fs';
 import path from 'path';
 import { resolveRegisterRuntime, writeConfigForPython } from './registerRuntime.js';
 import { syncCfwpFromSettings } from '../cfwpManager.js';
+import { syncSingBoxFromSettings } from '../singboxManager.js';
 
 interface StartOptions {
   runCountOverride?: number;
@@ -283,8 +284,19 @@ export class RegisterBot extends EventEmitter {
 
   async start(opts: StartOptions = {}): Promise<{ runId: string }> {
     const settings = await loadSettings();
-    // CF 独立代理：开注册前确保 cfwp 已按配置运行
-    if (settings.cfProxyEnabled) {
+    // sing-box / CF 独立代理：开注册前确保本地代理进程已按配置运行
+    if (settings.singBoxEnabled) {
+      const st = await syncSingBoxFromSettings(settings);
+      if (!st.running && process.platform !== 'win32') {
+        throw new Error(
+          st.lastError ||
+            'sing-box 未运行：请检查节点链接与 register/bin/sing-box 二进制后保存设置再试'
+        );
+      }
+      if (process.platform === 'win32' && st.lastError) {
+        console.warn('[registerBot] sing-box on Windows:', st.lastError);
+      }
+    } else if (settings.cfProxyEnabled) {
       const st = await syncCfwpFromSettings(settings);
       if (!st.running && process.platform !== 'win32') {
         throw new Error(
@@ -509,7 +521,8 @@ export class RegisterBot extends EventEmitter {
     // 启动时在任务日志打一行代理摘要（与 Python [proxy] 双保险）
     try {
       const pe = settings.proxyEnabled === true;
-      const cf = (settings as { cfProxyEnabled?: boolean }).cfProxyEnabled === true;
+      const sb = (settings as { singBoxEnabled?: boolean }).singBoxEnabled === true;
+      const cf = !sb && (settings as { cfProxyEnabled?: boolean }).cfProxyEnabled === true;
       const poolOn = settings.proxyPoolEnabled === true;
       const aliveN = String(settings.proxyPoolAlive || '')
         .split(/\r?\n/)
@@ -521,8 +534,10 @@ export class RegisterBot extends EventEmitter {
         .filter((l) => l && !l.startsWith('#')).length;
       const poolN = aliveN > 0 ? aliveN : pendingN;
       const single = String(settings.proxy || settings.browserProxy || '').trim();
-      const mode = cf
-        ? 'cf'
+      const mode = sb
+        ? 'singbox'
+        : cf
+          ? 'cf'
         : !pe
           ? 'direct'
           : poolOn || poolN > 0

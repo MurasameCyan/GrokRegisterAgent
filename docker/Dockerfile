@@ -55,7 +55,7 @@ RUN apt-get update \
 
 # 内置 Python 注册机及其依赖(DrissionPage / curl_cffi / requests)
 # /app/register = 运行目录；/opt/register-seed = 启动时恢复用种子（防空挂载覆盖）
-# 含 CF 独立代理 Linux 客户端：register/bin/cfwp/linux-amd64|linux-arm64（无 Windows）
+# 含 CF/sing-box 独立代理 Linux 客户端：register/bin/cfwp|sing-box/linux-amd64|linux-arm64（无 Windows）
 COPY register /app/register
 COPY register /opt/register-seed
 # pip 依赖 + rsync（entrypoint 热同步宿主 register 用）
@@ -65,7 +65,9 @@ RUN python -m pip install --upgrade pip \
  && apt-get update \
  && apt-get install -y --no-install-recommends rsync \
  && chmod +x /app/register/bin/cfwp/linux-amd64 /app/register/bin/cfwp/linux-arm64 2>/dev/null || true \
+ && chmod +x /app/register/bin/sing-box/linux-amd64 /app/register/bin/sing-box/linux-arm64 2>/dev/null || true \
  && chmod +x /opt/register-seed/bin/cfwp/linux-amd64 /opt/register-seed/bin/cfwp/linux-arm64 2>/dev/null || true \
+ && chmod +x /opt/register-seed/bin/sing-box/linux-amd64 /opt/register-seed/bin/sing-box/linux-arm64 2>/dev/null || true \
  && rm -rf /var/lib/apt/lists/*
 
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node

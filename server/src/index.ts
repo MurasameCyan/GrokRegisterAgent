@@ -34,6 +34,13 @@ import {
   stopCfwp,
   syncCfwpFromSettings
 } from './cfwpManager.js';
+import {
+  getSingBoxStatus,
+  listSingBoxNodeSummaries,
+  readSingBoxLog,
+  stopSingBox,
+  syncSingBoxFromSettings
+} from './singboxManager.js';
 import { proxiedRequest } from './httpClient.js';
 import { checkSso } from './ssoCheck.js';
 import {
@@ -206,14 +213,17 @@ app.get('/api/settings', async (_req, res) => {
 app.put('/api/settings', async (req: Request, res: Response) => {
   const body = req.body as AppSettings;
   await saveSettings(body);
-  // 保存后同步 CF 独立代理进程（开=启动/重载，关=停止）
+  // 保存后同步 sing-box / CF 独立代理进程（开=启动/重载，关=停止）
   try {
     const s = await loadSettings();
-    const cf = await syncCfwpFromSettings(s);
-    res.json({ ok: true, cfwp: cf });
+    const [singbox, cfwp] = await Promise.all([
+      syncSingBoxFromSettings(s),
+      syncCfwpFromSettings(s)
+    ]);
+    res.json({ ok: true, singbox, cfwp });
   } catch (err) {
-    console.error('[settings] cfwp sync failed', err);
-    res.json({ ok: true, cfwpError: String(err) });
+    console.error('[settings] proxy sync failed', err);
+    res.json({ ok: true, syncError: String(err) });
   }
 });
 
@@ -256,6 +266,54 @@ app.get('/api/cf-proxy/log', async (req, res) => {
   const tailRaw = Number(req.query.tail);
   const tail = Number.isFinite(tailRaw) ? tailRaw : 200;
   res.json(readCfwpLog(s, tail));
+});
+
+/** sing-box 独立代理状态 */
+app.get('/api/singbox/status', async (_req, res) => {
+  const s = await loadSettings();
+  res.json(getSingBoxStatus(s));
+});
+
+/** 解析 settings 中的节点摘要 + 当前选中 */
+app.get('/api/singbox/nodes', async (_req, res) => {
+  const s = await loadSettings();
+  const nodes = listSingBoxNodeSummaries(s.singBoxNodes || '');
+  res.json({ nodes, selected: s.singBoxSelected || '' });
+});
+
+/** 按当前配置启动/重载 sing-box */
+app.post('/api/singbox/start', async (_req, res) => {
+  const s = await loadSettings();
+  if (!s.singBoxEnabled) {
+    res.status(400).json({
+      ok: false,
+      error: '请先在设置中开启「sing-box 独立代理」并保存'
+    });
+    return;
+  }
+  const status = await syncSingBoxFromSettings(s);
+  res.json({ ok: !status.lastError || status.running, ...status });
+});
+
+/** 停止 sing-box（不改 settings；下次保存若仍开启会再启） */
+app.post('/api/singbox/stop', async (_req, res) => {
+  const status = await stopSingBox();
+  res.json({ ok: true, ...status });
+});
+
+/** 按当前 settings 同步（与保存时相同） */
+app.post('/api/singbox/sync', async (_req, res) => {
+  const s = await loadSettings();
+  const status = await syncSingBoxFromSettings(s);
+  res.json({ ok: true, ...status });
+});
+
+/** 读取 sing-box 最近日志（只读） */
+app.get('/api/singbox/log', async (req, res) => {
+  const s = await loadSettings();
+  const tailRaw = Number(req.query.tail);
+  const tail = Number.isFinite(tailRaw) ? tailRaw : 200;
+  res.json(readSingBoxLog(s, tail));
 });
 
 app.get('/api/system/health', async (_req, res) => {
@@ -1058,19 +1116,30 @@ httpServer.listen(PORT, HOST, () => {
       console.log(`[Grok Register Agent] web account configured: ${info.username}`);
     }
   });
-  // 启动时按已保存配置同步 CF 独立代理（Linux 镜像内可跑 cfwp）
+  // 启动时按已保存配置同步 sing-box / CF 独立代理（Linux 镜像内可跑）
   void loadSettings()
-    .then((s) => syncCfwpFromSettings(s))
-    .then((st) => {
-      if (sLikeEnabled(st)) {
+    .then(async (s) => {
+      const sb = await syncSingBoxFromSettings(s);
+      const cf = await syncCfwpFromSettings(s);
+      return { sb, cf };
+    })
+    .then(({ sb, cf }) => {
+      if (sb.running || sb.lastError || sb.nodeCount > 0) {
         console.log(
-          `[Grok Register Agent] cfwp: ${st.running ? 'running' : 'stopped'} ` +
-            `port=${st.port} binary=${st.binaryExists ? 'ok' : 'missing'}` +
-            (st.lastError ? ` err=${st.lastError}` : '')
+          `[Grok Register Agent] sing-box: ${sb.running ? 'running' : 'stopped'} ` +
+            `port=${sb.port} nodes=${sb.nodeCount} binary=${sb.binaryExists ? 'ok' : 'missing'}` +
+            (sb.lastError ? ` err=${sb.lastError}` : '')
+        );
+      }
+      if (sLikeEnabled(cf)) {
+        console.log(
+          `[Grok Register Agent] cfwp: ${cf.running ? 'running' : 'stopped'} ` +
+            `port=${cf.port} binary=${cf.binaryExists ? 'ok' : 'missing'}` +
+            (cf.lastError ? ` err=${cf.lastError}` : '')
         );
       }
     })
-    .catch((err) => console.error('[Grok Register Agent] cfwp boot sync failed', err));
+    .catch((err) => console.error('[Grok Register Agent] proxy boot sync failed', err));
 });
 
 function sLikeEnabled(st: { domain?: string; running?: boolean; lastError?: string | null }) {

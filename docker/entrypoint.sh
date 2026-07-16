@@ -99,6 +99,18 @@ if register_is_complete "$REGISTER_DIR"; then
   else
     echo "[entrypoint] WARN missing cfwp binary at ${cfwp_bin}（CF 独立代理不可用）"
   fi
+
+  # sing-box 独立代理 Linux 客户端（仅 amd64/arm64）
+  case "$arch" in
+    aarch64|arm64) sb_bin="${REGISTER_DIR}/bin/sing-box/linux-arm64" ;;
+    *) sb_bin="${REGISTER_DIR}/bin/sing-box/linux-amd64" ;;
+  esac
+  if [[ -f "$sb_bin" ]]; then
+    chmod +x "$sb_bin" 2>/dev/null || true
+    echo "[entrypoint] OK sing-box $(basename "$sb_bin")"
+  else
+    echo "[entrypoint] WARN missing sing-box binary at ${sb_bin}（sing-box 独立代理不可用）"
+  fi
 else
   echo "[entrypoint] ERROR: ${REGISTER_DIR} still incomplete — registration will fail"
 fi
