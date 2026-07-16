@@ -178,7 +178,7 @@ export interface AppSettings {
   cloudflareAuthMode: string;
   /** mint 成功后尝试开启 NSFW（可选，失败不挡主流程） */
   enableNsfw: boolean;
-  /** 注册后 SSO 导出前尝试关闭 ZDR（失败标开、不挡流水线） */
+  /** 注册后关 ZDR（已断开主流程，默认 false；模块保留） */
   enableDisableZdr: boolean;
   /** mint 成功后导出 sub2api accounts（可选） */
   sub2apiExportEnabled: boolean;
@@ -265,17 +265,17 @@ export interface AppSettings {
    */
   proxyFetchUrl: string;
   /**
-   * 注册方案 Plan A：全程 Drission + 临时邮 + Turnstile（默认开）。
+   * 注册方案 Plan A：全程 Drission + 临时邮 + Turnstile（约 1～3 分钟）。
    * 可与 B/C 同时开：按 A→B→C 顺序兜底。
    */
   registerPlanAEnabled: boolean;
   /**
-   * 注册方案 Plan B：FlowPilot 人机等待/模拟点击/CF 拦截识别（默认开）。
+   * 注册方案 Plan B：FlowPilot 人机等待/模拟点击/CF 拦截识别（约 2～5 分钟）。
    * 上一方案失败后再试一次。
    */
   registerPlanBEnabled: boolean;
   /**
-   * 注册方案 Plan C：hybrid 短浏览器采 token + 协议（默认关，依赖适配层）。
+   * 注册方案 Plan C：hybrid 短浏览器采 token + 协议（约 1～2 分钟，依赖适配层）。
    * 写入 Python config：register_plan_c_enabled；兼容旧 registerMode=hybrid。
    */
   registerPlanCEnabled: boolean;
@@ -351,7 +351,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   authExportQueueMax: 0,
   cloudflareAuthMode: 'x-admin-auth',
   enableNsfw: false,
-  enableDisableZdr: true,
+  enableDisableZdr: false,
   sub2apiExportEnabled: false,
   browserRecycleEvery: 5,
   maxMailRetry: 3,

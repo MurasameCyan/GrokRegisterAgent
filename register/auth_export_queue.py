@@ -324,7 +324,10 @@ def _maybe_zdr_after_mint(
     sso: str = "",
     cloudflare_cookies: str = "",
 ) -> None:
-    """mint 后补刀关 ZDR：已 closed 则跳过；写 tag + patch auth。"""
+    """mint 后补刀关 ZDR（已断开注册/授权流水线，保留入口供后续研究）。"""
+    # 2026-07-16：ZDR 与主流程断开；不调用 disable_zdr_for_sso。
+    _ = (mint_result, conf, proxy, log, sso, cloudflare_cookies)
+    return
     if not mint_result or not mint_result.get("ok"):
         return
     # 默认 true（A1）；仅显式 falsy 跳过
@@ -365,6 +368,8 @@ def _maybe_zdr_after_mint(
                     except Exception:
                         pass
             return
+        # 注册路径已尝试过且非明确 closed：mint 只做轻量 probe，不重喷 9 个 feature
+        light_zdr = bool(prev.get("zdr_attempted")) and prev.get("zdr_closed") is not True
 
         cf = ""
         raw_cf = (cloudflare_cookies or "").strip()
@@ -381,8 +386,15 @@ def _maybe_zdr_after_mint(
         err = ""
         steps = None
         if sso_val:
+            if light_zdr:
+                log("[auth-queue] ZDR 补刀：注册已尝试 → 仅 probe（不重喷 feature）")
             r = disable_zdr_for_sso(
-                sso_val, cf_clearance=cf, proxy=proxy or "", log=log
+                sso_val,
+                cf_clearance=cf,
+                proxy=proxy or "",
+                log=log,
+                max_attempts=1 if light_zdr else 2,
+                spray_features=not light_zdr,
             )
             closed = bool(r.get("ok"))
             err = str(r.get("error") or "")
@@ -390,7 +402,12 @@ def _maybe_zdr_after_mint(
             if closed:
                 log(f"[auth-queue] ✔ ZDR 已关 · {r.get('message')}")
             else:
-                log(f"[auth-queue] ✘ ZDR 仍开（不影响授权）: {err}")
+                # 无 X-Zero-Retention 证据时属 unknown，不误报「仍开」
+                st = str(r.get("zdr_status") or "")
+                if st == "unknown":
+                    log(f"[auth-queue] … ZDR 未知（无 probe 头，不影响授权）: {err}")
+                else:
+                    log(f"[auth-queue] ✘ ZDR 仍开（不影响授权）: {err}")
         else:
             err = "no sso"
             log("[auth-queue] ZDR 跳过：无 SSO")
@@ -641,14 +658,8 @@ def _run_mint_and_auth_push(
                 sso=sso,
                 cloudflare_cookies=cloudflare_cookies or "",
             )
-            _maybe_zdr_after_mint(
-                r,
-                conf=conf,
-                proxy=proxy,
-                log=log,
-                sso=sso,
-                cloudflare_cookies=cloudflare_cookies or "",
-            )
+            # ZDR 已断开：_maybe_zdr_after_mint 立即 return
+            # _maybe_zdr_after_mint(r, conf=conf, proxy=proxy, log=log, sso=sso, cloudflare_cookies=cloudflare_cookies or "")
             return r
         # 可选：SSO 失败时密码路径 browser Device 兜底（P2）
         err = (r or {}).get("error") or "mint failed"
@@ -697,14 +708,8 @@ def _run_mint_and_auth_push(
                             sso=sso,
                             cloudflare_cookies=cloudflare_cookies or "",
                         )
-                        _maybe_zdr_after_mint(
-                            r2,
-                            conf=conf,
-                            proxy=proxy,
-                            log=log,
-                            sso=sso,
-                            cloudflare_cookies=cloudflare_cookies or "",
-                        )
+                        # ZDR 已断开
+                        # _maybe_zdr_after_mint(r2, conf=conf, proxy=proxy, log=log, sso=sso, cloudflare_cookies=cloudflare_cookies or "")
                         return r2
                     r = r2 or r
             except ImportError:

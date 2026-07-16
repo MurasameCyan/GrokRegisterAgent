@@ -1407,6 +1407,7 @@ function AccountCard({
             }
             error={account.nsfwError}
           />
+          {/* ZDR 徽章已隐藏（流程已断开）
           <ZdrBadge
             status={
               account.zdrStatus ??
@@ -1418,6 +1419,7 @@ function AccountCard({
             }
             error={account.zdrError}
           />
+          */}
           <span
             title={
               flagFrom === 'auth'

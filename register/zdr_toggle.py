@@ -4,6 +4,12 @@
 协议优先：UpdateUserFeatureControls 候选 feature keys + 响应头 X-Zero-Retention probe。
 失败不抛；由调用方写 tag（关=closed / 开=open）。
 
+优化（2026-07-16）：
+  - feature 候选只喷一轮（避免 5×9 次刷屏）
+  - 无结论时仅重试 probe（不重复打 feature）
+  - 默认最多 2 轮 probe；日志压缩为摘要行
+  - 调用方可传 spray_features=False 做纯探测补刀
+
 注意：公开文档无已证实 key；DEFAULT_FEATURE_ATTEMPTS 可配置增补。
 """
 from __future__ import annotations
@@ -97,7 +103,7 @@ def _is_cf_block(res: Any) -> bool:
 
 
 def _try_feature(
-    session: Any, log: LogFn, timeout: float, feature: str, enabled: int
+    session: Any, log: LogFn, timeout: float, feature: str, enabled: int, *, verbose: bool
 ) -> dict[str, Any]:
     headers = {
         "content-type": "application/grpc-web+proto",
@@ -113,10 +119,12 @@ def _try_feature(
             timeout=timeout,
         )
         zdr = _header_zdr_true(res)
-        log(
-            f"[zdr] feature={feature} en={enabled} status={res.status_code} "
-            f"x-zero-retention={zdr} body={_preview(res)}"
-        )
+        body = _preview(res)
+        if verbose or zdr is not None or not (200 <= int(res.status_code or 0) < 300):
+            log(
+                f"[zdr] feature={feature} en={enabled} status={res.status_code} "
+                f"x-zero-retention={zdr} body={body}"
+            )
         return {
             "feature": feature,
             "enabled": enabled,
@@ -124,9 +132,11 @@ def _try_feature(
             "status": int(res.status_code or 0),
             "zdr_header": zdr,
             "cf_block": _is_cf_block(res),
-            "body": _preview(res),
+            "body": body,
         }
     except Exception as e:
+        if verbose:
+            log(f"[zdr] feature={feature} err={e}")
         return {
             "feature": feature,
             "enabled": enabled,
@@ -137,11 +147,13 @@ def _try_feature(
 
 
 def _probe_retention(session: Any, log: LogFn, timeout: float) -> dict[str, Any]:
-    """轻量 probe：GET grok.com/ + 可选 rest，收集 X-Zero-Retention。"""
+    """轻量 probe：GET + 可选 REST，收集 X-Zero-Retention。"""
     out: dict[str, Any] = {"skipped": False, "samples": []}
     urls = [
         "https://grok.com/",
         "https://grok.com/rest/app-chat/conversations",
+        # 设置页类端点偶发带账号策略头
+        "https://grok.com/user-feature-controls-static",
     ]
     any_true = False
     any_false = False
@@ -155,7 +167,10 @@ def _probe_retention(session: Any, log: LogFn, timeout: float) -> dict[str, Any]
                 "zdr_header": zdr,
             }
             out["samples"].append(sample)
-            log(f"[zdr] probe {url} status={sample['status']} x-zero-retention={zdr}")
+            if zdr is not None or int(sample["status"] or 0) >= 400:
+                log(
+                    f"[zdr] probe {url} status={sample['status']} x-zero-retention={zdr}"
+                )
             if zdr is True:
                 any_true = True
             elif zdr is False:
@@ -172,18 +187,51 @@ def _probe_retention(session: Any, log: LogFn, timeout: float) -> dict[str, Any]
     return out
 
 
+def _spray_features(
+    session: Any,
+    log: LogFn,
+    timeout: float,
+    attempts_list: list[tuple[str, int]],
+    *,
+    verbose: bool,
+) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for feat, en in attempts_list:
+        results.append(
+            _try_feature(session, log, timeout, feat, en, verbose=verbose)
+        )
+    ok_n = sum(1 for x in results if x.get("ok_http"))
+    header_hits = [x for x in results if x.get("zdr_header") is not None]
+    log(
+        f"[zdr] features spray done ok_http={ok_n}/{len(results)}"
+        + (
+            f" header_hits={len(header_hits)}"
+            if header_hits
+            else " (responses silent; no x-zero-retention)"
+        )
+    )
+    return results
+
+
 def disable_zdr_for_sso(
     sso: str,
     *,
     cf_clearance: str = "",
     proxy: str = "",
     timeout: float = 20.0,
-    max_attempts: int = 5,
-    retry_delay_sec: float = 3.0,
+    max_attempts: int = 2,
+    retry_delay_sec: float = 2.0,
     feature_attempts: list[tuple[str, int]] | None = None,
+    spray_features: bool = True,
+    verbose: bool = False,
     log: Optional[LogFn] = None,
 ) -> dict[str, Any]:
     """尽力关闭 ZDR 并 probe。
+
+    参数:
+      max_attempts: probe 轮数（feature 默认只在第 1 轮喷一次）
+      spray_features: False 时只 probe / 不改 feature（mint 轻量补刀）
+      verbose: True 时逐 feature 打日志
 
     返回:
       ok: bool  — True 仅当判定已关（closed）
@@ -219,15 +267,23 @@ def disable_zdr_for_sso(
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
     )
-    n_att = max(1, min(int(max_attempts or 5), 6))
+    # probe 轮次：默认 2，上限 4（不再 5 轮×全量 feature）
+    n_att = max(1, min(int(max_attempts or 2), 4))
     last: dict[str, Any] = {
         "ok": False,
         "zdr_status": "open",
         "error": "not attempted",
     }
+    feature_steps: list[dict[str, Any]] = []
+    sprayed = False
+
+    log(
+        f"[zdr] start spray={bool(spray_features)} "
+        f"probe_rounds={n_att} features={len(attempts_list) if spray_features else 0}"
+    )
 
     for attempt in range(1, n_att + 1):
-        steps: dict[str, Any] = {"features": []}
+        steps: dict[str, Any] = {"features": feature_steps}
         try:
             with cf_requests.Session(
                 impersonate="chrome120", proxies=proxies
@@ -244,17 +300,33 @@ def disable_zdr_for_sso(
                 except Exception:
                     pass
 
-                for feat, en in attempts_list:
-                    steps["features"].append(
-                        _try_feature(session, log, timeout, feat, en)
+                # feature 只喷一轮
+                if spray_features and not sprayed:
+                    feature_steps = _spray_features(
+                        session, log, timeout, attempts_list, verbose=verbose
                     )
+                    sprayed = True
+                    steps["features"] = feature_steps
+                    # 若任一 feature 响应已带明确头，可提前判定
+                    for fr in feature_steps:
+                        zh = fr.get("zdr_header")
+                        if zh is False:
+                            log("[zdr] ✔ feature 响应 x-zero-retention=false")
+                            return {
+                                "ok": True,
+                                "zdr_status": "closed",
+                                "message": "ZDR closed (feature response header false)",
+                                "steps": steps,
+                                "attempts": attempt,
+                            }
+                        if zh is True:
+                            # 仍开，继续 probe / 后续轮只 probe
+                            pass
 
                 probe = _probe_retention(session, log, timeout)
                 steps["probe"] = probe
                 still = probe.get("still_zdr")
 
-                # 判定：probe 明确仍 ZDR → open；明确非 ZDR → closed；
-                # 未知 → 保守 open（规格：无证据不标关）
                 if still is True:
                     last = {
                         "ok": False,
@@ -264,6 +336,7 @@ def disable_zdr_for_sso(
                         "probe": probe,
                         "attempts": attempt,
                     }
+                    log(f"[zdr] probe 仍 ZDR（第 {attempt}/{n_att}）")
                 elif still is False:
                     log(f"[zdr] ✔ probe 非 ZDR（第 {attempt} 次）")
                     return {
@@ -275,7 +348,6 @@ def disable_zdr_for_sso(
                         "attempts": attempt,
                     }
                 else:
-                    # 无 X-Zero-Retention 头：多试几轮；全部用尽再标 unknown（仍不谎报 closed）
                     any_feat_ok = any(
                         bool(x.get("ok_http")) for x in (steps.get("features") or [])
                     )
@@ -283,7 +355,7 @@ def disable_zdr_for_sso(
                         "ok": False,
                         "zdr_status": "unknown",
                         "error": (
-                            "probe inconclusive; will retry"
+                            "probe inconclusive; will retry probe"
                             if attempt < n_att
                             else "probe inconclusive after retries; mark unknown (not proven closed)"
                         ),
@@ -293,9 +365,9 @@ def disable_zdr_for_sso(
                         "any_feature_http_ok": any_feat_ok,
                     }
                     log(
-                        f"[zdr] … 第 {attempt}/{n_att} probe 无结论"
-                        + ("，继续重试" if attempt < n_att else "，结束")
-                        + f": {last['error']}"
+                        f"[zdr] … probe 无结论 {attempt}/{n_att}"
+                        + ("，仅重试 probe" if attempt < n_att else "，结束")
+                        + f" · features_ok={any_feat_ok}"
                     )
         except Exception as e:
             last = {

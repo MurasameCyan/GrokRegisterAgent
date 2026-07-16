@@ -347,6 +347,9 @@ export function SettingsForm() {
   const [alivePoolOpen, setAlivePoolOpen] = useState(false);
   /** 待定池折叠（与可用池同风格） */
   const [pendingPoolOpen, setPendingPoolOpen] = useState(true);
+  /** 推送设置：连接设定默认折叠 */
+  const [cpaConnOpen, setCpaConnOpen] = useState(false);
+  const [g2ConnOpen, setG2ConnOpen] = useState(false);
   const [fetchingProxies, setFetchingProxies] = useState(false);
   /** 拉列表时是否走当前 HTTP 代理（被墙时） */
   const [fetchViaProxy, setFetchViaProxy] = useState(false);
@@ -1314,7 +1317,13 @@ export function SettingsForm() {
       <Card collapsible defaultCollapsed>
         <CardHeader
           title="邮件设置"
-          description="Cloudflare Temp Email / DuckMail / YYDS"
+          description={
+            (draft.mailProvider || 'cloudflare') === 'duckmail'
+              ? 'DuckMail'
+              : (draft.mailProvider || 'cloudflare') === 'yyds'
+                ? 'YYDS Mail'
+                : 'Cloudflare Temp Email'
+          }
           right={
             <div className="flex flex-wrap items-center gap-2">
               <RepoLink
@@ -2748,12 +2757,14 @@ export function SettingsForm() {
             checked={!!draft.enableNsfw}
             onChange={(v) => update('enableNsfw', v)}
           />
+          {/* ZDR 开关已隐藏（流程已断开，后续研究再开放）
           <ToggleRow
             label="关闭 ZDR"
             hint="注册成功后、SSO 导出前用 SSO 尝试关 Zero Retention；probe 失败标「开」，不影响导出与授权"
             checked={draft.enableDisableZdr !== false}
             onChange={(v) => update('enableDisableZdr', v)}
           />
+          */}
           <div className="grid gap-3 sm:grid-cols-2">
             <Field
               label="每 N 成功重启浏览器"
@@ -2877,7 +2888,7 @@ export function SettingsForm() {
           />
           <ToggleRow
             label="Plan A · 浏览器主流程"
-            hint="临时邮 + Drission 填表 + Turnstile（默认开）"
+            hint="临时邮 + Drission 填表 + Turnstile（约 1～3 分钟）"
             checked={draft.registerPlanAEnabled !== false}
             onChange={(v) => {
               update('registerPlanAEnabled', v);
@@ -2885,13 +2896,13 @@ export function SettingsForm() {
           />
           <ToggleRow
             label="Plan B · 拟人兜底"
-            hint="重启浏览器、更长延迟、等 Turnstile 自然成功、模拟点击；CF 拦截则放弃（默认开）"
+            hint="重启浏览器、更长延迟、等 Turnstile 自然成功、模拟点击；CF 拦截则放弃（约 2～5 分钟）"
             checked={draft.registerPlanBEnabled !== false}
             onChange={(v) => update('registerPlanBEnabled', v)}
           />
           <ToggleRow
             label="Plan C · Hybrid 协议"
-            hint="短浏览器采 token + 协议注册（默认关；需适配层，失败不影响已开的 A/B）"
+            hint="短浏览器采 token + 协议注册（约 1～2 分钟；失败不影响已开的 A/B）"
             checked={
               draft.registerPlanCEnabled === true ||
               draft.registerMode === 'hybrid'
@@ -2903,24 +2914,6 @@ export function SettingsForm() {
               });
             }}
           />
-          <div className="space-y-1.5 rounded-xl border border-border/60 bg-muted/40 p-3 text-[12px] leading-5 text-muted-foreground">
-            <p className="font-medium text-foreground">执行顺序（仅尝试已开启方案）</p>
-            <ol className="list-decimal space-y-1 pl-4">
-              <li>
-                <span className="text-foreground">Plan A</span>
-                ：现有临时邮 + Drission 填表 + Turnstile
-              </li>
-              <li>
-                <span className="text-foreground">Plan B</span>
-                ：重启浏览器 → 拟人延迟 → 等 Turnstile → 模拟点击 → CF 则放弃
-              </li>
-              <li>
-                <span className="text-foreground">Plan C</span>
-                ：hybrid 短浏览器 + 协议（可选）
-              </li>
-              <li>已开方案均失败：记失败、可选降级代理、进入下一账号</li>
-            </ol>
-          </div>
         </CardBody>
       </Card>
 
@@ -3088,14 +3081,27 @@ export function SettingsForm() {
                 {/* CPA 连接（Auth→CPA 启用时展开）— 与上方 Auth 推送块同壳 */}
                 {needCpaConfig && (
                   <div className="space-y-3 rounded-xl border border-border/70 bg-muted/30 p-3">
-                    <div>
-                      <div className="text-[14px] font-medium text-foreground">
-                        CPA 连接设定
+                    <button
+                      type="button"
+                      className="flex w-full items-start gap-2 text-left"
+                      onClick={() => setCpaConnOpen((v) => !v)}
+                      aria-expanded={cpaConnOpen}
+                    >
+                      {cpaConnOpen ? (
+                        <ChevronDown className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                      ) : (
+                        <ChevronRight className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[14px] font-medium text-foreground">
+                          CPA 连接设定
+                        </div>
+                        <div className="mt-0.5 text-[11px] text-muted-foreground">
+                          Management API · 远程 CPA 推送目标
+                        </div>
                       </div>
-                      <div className="mt-0.5 text-[11px] text-muted-foreground">
-                        Management API · 远程 CPA 推送目标
-                      </div>
-                    </div>
+                    </button>
+                    {cpaConnOpen && (
                     <div className="space-y-3 border-t border-border/50 pt-3">
                       <Field
                         label="远程 CPA 地址"
@@ -3137,20 +3143,34 @@ export function SettingsForm() {
                         />
                       </div>
                     </div>
+                    )}
                   </div>
                 )}
 
                 {/* grok2api 连接（任一 grok2api 目标启用时展开）— 与上方 Auth 推送块同壳 */}
                 {needG2Config && (
                   <div className="space-y-3 rounded-xl border border-border/70 bg-muted/30 p-3">
-                    <div>
-                      <div className="text-[14px] font-medium text-foreground">
-                        grok2api 连接设定
+                    <button
+                      type="button"
+                      className="flex w-full items-start gap-2 text-left"
+                      onClick={() => setG2ConnOpen((v) => !v)}
+                      aria-expanded={g2ConnOpen}
+                    >
+                      {g2ConnOpen ? (
+                        <ChevronDown className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                      ) : (
+                        <ChevronRight className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[14px] font-medium text-foreground">
+                          grok2api 连接设定
+                        </div>
+                        <div className="mt-0.5 text-[11px] text-muted-foreground">
+                          SSO / Auth 共用 · 管理面板根地址与账号
+                        </div>
                       </div>
-                      <div className="mt-0.5 text-[11px] text-muted-foreground">
-                        SSO / Auth 共用 · 管理面板根地址与账号
-                      </div>
-                    </div>
+                    </button>
+                    {g2ConnOpen && (
                     <div className="space-y-3 border-t border-border/50 pt-3">
                       <Field label="grok2api URL" hint="管理面板根地址">
                         <Input
@@ -3198,6 +3218,7 @@ export function SettingsForm() {
                         />
                       </div>
                     </div>
+                    )}
                   </div>
                 )}
               </>

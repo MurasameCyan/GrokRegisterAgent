@@ -391,12 +391,8 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
   } else {
     config.enable_nsfw = false;
   }
-  // ZDR 关闭：默认 true（A1）；仅显式 false 时关闭
-  if ((settings as { enableDisableZdr?: boolean }).enableDisableZdr === false) {
-    config.enable_disable_zdr = false;
-  } else {
-    config.enable_disable_zdr = true;
-  }
+  // ZDR：已从注册流程断开（默认写入 false；模块保留后续研究）
+  config.enable_disable_zdr = false;
   if ((settings as { sub2apiExportEnabled?: boolean }).sub2apiExportEnabled === true) {
     config.sub2api_export_enabled = true;
   } else {

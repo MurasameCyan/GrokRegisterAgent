@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 import time
 from dataclasses import dataclass, field
@@ -28,6 +29,7 @@ class BrowserTokenSession:
         self.log = log or (lambda _m: None)
         self._started = False
         self._hooked = False
+        self._listen_started = False
 
     def _lg(self, msg: str):
         try:
@@ -43,85 +45,134 @@ class BrowserTokenSession:
         return self
 
     def install_network_hook(self) -> bool:
-        """Capture castleRequestToken from native React fetch/XHR bodies."""
+        """Capture castleRequestToken from native React fetch/XHR bodies.
+
+        Also starts DrissionPage network listener (CDP) as a side channel:
+        gRPC-web CreateEmail often uses binary body; JS fetch hooks alone miss it.
+        """
         from grok_register_ttk import _get_page
 
         page = _get_page()
+        if page is None:
+            self._lg("[Debug] net hook: page is None")
+            return False
         try:
             res = page.run_js(
                 r"""
 (function(){
   if (window.__hybrid_net_hooked) return 'already';
   window.__hybrid_net_hooked = true;
-  window.__hybrid_castles = [];
-  window.__hybrid_castle = '';
-  window.__hybrid_net = [];
+  window.__hybrid_castles = window.__hybrid_castles || [];
+  window.__hybrid_castle = window.__hybrid_castle || '';
+  window.__hybrid_net = window.__hybrid_net || [];
   window.__hybrid_create_email_ok = false;
   window.__hybrid_create_email_status = 0;
-  function captureBody(body, url) {
+  window.__hybrid_create_email_seen = false;
+
+  function pushCastle(tok) {
     try {
-      if (!body) return;
-      let s = '';
-      if (typeof body === 'string') s = body;
-      else if (body instanceof ArrayBuffer) s = new TextDecoder().decode(body);
-      else if (body instanceof Uint8Array) s = new TextDecoder().decode(body);
-      else return;
-      const u = String(url||'');
-      window.__hybrid_net.push({url: u, len: s.length});
-      if (u.includes('CreateEmailValidationCode')) {
-        window.__hybrid_create_email_seen = true;
-      }
-      if (s.includes('castleRequestToken')) {
-        try {
-          const j = JSON.parse(s);
-          const tok = j && j[0] && j[0].castleRequestToken;
-          if (tok && String(tok).length > 200) {
-            window.__hybrid_castle = String(tok);
-            window.__hybrid_castles.push(String(tok));
-          }
-        } catch (e) {
-          const m = s.match(/castleRequestToken["']?\s*:\s*["']([^"']{200,})/);
-          if (m) {
-            window.__hybrid_castle = m[1];
-            window.__hybrid_castles.push(m[1]);
-          }
-        }
-      }
-      const m2 = s.match(/IBYIll\|[A-Za-z0-9+/=|_-]{200,}/);
-      if (m2) {
-        window.__hybrid_castle = m2[0];
-        window.__hybrid_castles.push(m2[0]);
-      }
+      const s = String(tok || '');
+      if (s.length < 200) return;
+      window.__hybrid_castle = s;
+      window.__hybrid_castles.push(s);
     } catch (e) {}
   }
+
+  function extractCastleFromText(s) {
+    if (!s || typeof s !== 'string') return;
+    if (s.includes('castleRequestToken')) {
+      try {
+        const j = JSON.parse(s);
+        const tok = j && j[0] && j[0].castleRequestToken;
+        if (tok) pushCastle(tok);
+      } catch (e) {
+        const m = s.match(/castleRequestToken["']?\s*:\s*["']([^"']{200,})/);
+        if (m) pushCastle(m[1]);
+      }
+    }
+    const m2 = s.match(/IBYIll\|[A-Za-z0-9+/=|_-]{200,}/);
+    if (m2) pushCastle(m2[0]);
+  }
+
+  async function bodyToString(body) {
+    try {
+      if (!body) return '';
+      if (typeof body === 'string') return body;
+      if (body instanceof ArrayBuffer) return new TextDecoder().decode(body);
+      if (ArrayBuffer.isView(body)) return new TextDecoder().decode(body);
+      if (typeof Blob !== 'undefined' && body instanceof Blob) return await body.text();
+      if (typeof URLSearchParams !== 'undefined' && body instanceof URLSearchParams) return body.toString();
+      if (typeof FormData !== 'undefined' && body instanceof FormData) {
+        try { return JSON.stringify(Array.from(body.entries())); } catch (e) { return ''; }
+      }
+      if (typeof Request !== 'undefined' && body instanceof Request) {
+        try { return await body.clone().text(); } catch (e) { return ''; }
+      }
+      if (typeof body.text === 'function') {
+        try { return await body.text(); } catch (e) {}
+      }
+    } catch (e) {}
+    return '';
+  }
+
+  function captureBody(body, url) {
+    try {
+      const u = String(url || '');
+      Promise.resolve(bodyToString(body)).then(function(s) {
+        try {
+          if (!s) return;
+          window.__hybrid_net.push({url: u, len: s.length});
+          if (u.includes('CreateEmailValidationCode')) {
+            window.__hybrid_create_email_seen = true;
+          }
+          extractCastleFromText(s);
+        } catch (e) {}
+      });
+    } catch (e) {}
+  }
+
   const ofetch = window.fetch;
   window.fetch = async function(input, init) {
     let url = '';
     try {
-      url = (typeof input === 'string') ? input : (input && input.url) || '';
-      captureBody(init && init.body, url);
+      url = (typeof input === 'string')
+        ? input
+        : (input && (input.url || (input.href || ''))) || '';
+      const body = (init && init.body != null)
+        ? init.body
+        : (typeof Request !== 'undefined' && input instanceof Request ? input : null);
+      if (body != null) captureBody(body, url);
+      else if (typeof Request !== 'undefined' && input instanceof Request) {
+        try { captureBody(await input.clone().text(), url); } catch (e) {}
+      }
     } catch (e) {}
     const resp = await ofetch.apply(this, arguments);
     try {
       if (String(url).includes('CreateEmailValidationCode')) {
         window.__hybrid_create_email_status = resp.status || 0;
         window.__hybrid_create_email_ok = !!(resp.ok || (resp.status >= 200 && resp.status < 300));
+        window.__hybrid_create_email_seen = true;
       }
     } catch (e) {}
     return resp;
   };
+
   const oopen = XMLHttpRequest.prototype.open;
   const osend = XMLHttpRequest.prototype.send;
-  XMLHttpRequest.prototype.open = function(m,u){ this.__u=u; return oopen.apply(this, arguments); };
-  XMLHttpRequest.prototype.send = function(body){
+  XMLHttpRequest.prototype.open = function(m, u) {
+    this.__u = u;
+    return oopen.apply(this, arguments);
+  };
+  XMLHttpRequest.prototype.send = function(body) {
     captureBody(body, this.__u);
     const xhr = this;
     try {
-      xhr.addEventListener('load', function(){
+      xhr.addEventListener('load', function() {
         try {
-          if (String(xhr.__u||'').includes('CreateEmailValidationCode')) {
+          if (String(xhr.__u || '').includes('CreateEmailValidationCode')) {
             window.__hybrid_create_email_status = xhr.status || 0;
             window.__hybrid_create_email_ok = xhr.status >= 200 && xhr.status < 300;
+            window.__hybrid_create_email_seen = true;
           }
         } catch (e) {}
       });
@@ -132,12 +183,202 @@ class BrowserTokenSession:
 })();
 """
             )
+            # DrissionPage may return None for JS that ends with return inside IIFE.
+            if res is None:
+                probe = page.run_js(
+                    "return window.__hybrid_net_hooked ? (window.__hybrid_net_hooked === true ? 'hooked' : String(window.__hybrid_net_hooked)) : 'missing';"
+                )
+                res = probe if probe not in (None, "missing") else "hooked"
             self._hooked = True
             self._lg(f"[*] net hook={res}")
-            return True
         except Exception as e:
             self._lg(f"[Debug] net hook: {e}")
+            self._hooked = False
+
+        # CDP listener: reliable for request postData (JSON server-action + any post body)
+        try:
+            self._start_cdp_listener(page)
+        except Exception as e:
+            self._lg(f"[Debug] cdp listen: {e}")
+
+        return self._hooked
+
+    def _start_cdp_listener(self, page) -> bool:
+        """Listen for CreateEmail / castle-bearing POSTs via DrissionPage listener."""
+        if page is None:
             return False
+        try:
+            listen = getattr(page, "listen", None)
+            if listen is None:
+                return False
+            if not getattr(listen, "listening", False):
+                # Match CreateEmail RPC and signup server actions
+                # substring match on request URL (not body). CreateEmail carries castle.
+                listen.start(
+                    targets=[
+                        "CreateEmailValidationCode",
+                        "AuthManagement",
+                        "accounts.x.ai/sign-up",
+                    ],
+                    method=("POST",),
+                    res_type=True,
+                )
+            else:
+                try:
+                    listen.set_targets(
+                        targets=[
+                            "CreateEmailValidationCode",
+                            "AuthManagement",
+                            "accounts.x.ai/sign-up",
+                        ],
+                        method=("POST",),
+                        res_type=True,
+                    )
+                except Exception:
+                    pass
+            self._listen_started = True
+            self._lg("[*] cdp listen=on")
+            return True
+        except Exception as e:
+            self._lg(f"[Debug] cdp listen start: {e}")
+            return False
+
+    @staticmethod
+    def _extract_castle_from_blob(blob) -> str:
+        """Pull IBYIll / long castleRequestToken from post body / response."""
+        if blob is None or blob is False:
+            return ""
+        if isinstance(blob, (bytes, bytearray)):
+            try:
+                s = bytes(blob).decode("utf-8", errors="ignore")
+            except Exception:
+                s = ""
+            # binary protobuf may still contain ascii castle string
+            if not s or "IBYIll" not in s:
+                try:
+                    raw = bytes(blob)
+                    # scan printable runs for IBYIll|...
+                    m = re.search(rb"IBYIll\|[A-Za-z0-9+/=|_-]{200,}", raw)
+                    if m:
+                        return m.group(0).decode("ascii", errors="ignore")
+                except Exception:
+                    pass
+            text = s
+        elif isinstance(blob, dict):
+            # parsed JSON
+            try:
+                import json as _json
+
+                text = _json.dumps(blob, ensure_ascii=False)
+            except Exception:
+                text = str(blob)
+            # direct path
+            try:
+                if isinstance(blob, list) and blob and isinstance(blob[0], dict):
+                    tok = blob[0].get("castleRequestToken") or ""
+                    if len(str(tok)) >= 200:
+                        return str(tok)
+                if isinstance(blob, dict):
+                    tok = blob.get("castleRequestToken") or ""
+                    if len(str(tok)) >= 200:
+                        return str(tok)
+            except Exception:
+                pass
+        else:
+            text = str(blob)
+
+        if not text:
+            return ""
+        if "castleRequestToken" in text:
+            try:
+                import json as _json
+
+                j = _json.loads(text)
+                if isinstance(j, list) and j and isinstance(j[0], dict):
+                    tok = j[0].get("castleRequestToken") or ""
+                    if len(str(tok)) >= 200:
+                        return str(tok)
+            except Exception:
+                m = re.search(r'castleRequestToken["\']?\s*:\s*["\']([^"\']{200,})', text)
+                if m:
+                    return m.group(1)
+        m2 = re.search(r"IBYIll\|[A-Za-z0-9+/=|_-]{200,}", text)
+        if m2:
+            return m2.group(0)
+        return ""
+
+    def _poll_cdp_castle(self) -> str:
+        """Drain listener packets for castle token."""
+        from grok_register_ttk import _get_page
+
+        page = _get_page()
+        if page is None:
+            return ""
+        listen = getattr(page, "listen", None)
+        if listen is None or not getattr(listen, "listening", False):
+            return ""
+        best = ""
+        try:
+            # Non-blocking drain via private queue size if available
+            q = getattr(listen, "_caught", None)
+            n = 0
+            if q is not None:
+                try:
+                    n = int(q.qsize())
+                except Exception:
+                    n = 0
+            for _ in range(max(n, 0) + 3):
+                try:
+                    # wait with tiny timeout to avoid hang
+                    pkt = listen.wait(count=1, timeout=0.05, fit_count=True, raise_err=False)
+                except TypeError:
+                    try:
+                        pkt = listen.wait(1, 0.05)
+                    except Exception:
+                        break
+                except Exception:
+                    break
+                if not pkt:
+                    break
+                try:
+                    req = getattr(pkt, "request", None)
+                    post = getattr(req, "postData", None) if req is not None else None
+                    c = self._extract_castle_from_blob(post)
+                    if len(c) > len(best):
+                        best = c
+                    # also check url for CreateEmail
+                    url = str(getattr(pkt, "url", "") or "")
+                    if "CreateEmailValidationCode" in url:
+                        try:
+                            page.run_js(
+                                "window.__hybrid_create_email_seen=true; true;"
+                            )
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+        except Exception as e:
+            self._lg(f"[Debug] cdp poll: {e}")
+        if best and len(best) >= 200:
+            # mirror into page globals for create_email_sent_via_browser
+            try:
+                page.run_js(
+                    """
+const t = String(arguments[0] || '');
+if (t.length > 200) {
+  window.__hybrid_castle = t;
+  window.__hybrid_castles = window.__hybrid_castles || [];
+  window.__hybrid_castles.push(t);
+  window.__hybrid_create_email_seen = true;
+}
+true;
+""",
+                    best,
+                )
+            except Exception:
+                pass
+            return best
+        return ""
 
     def create_email_sent_via_browser(self) -> bool:
         from grok_register_ttk import _get_page
@@ -179,6 +420,13 @@ return {
     def read_captured_castle(self) -> str:
         from grok_register_ttk import _get_page
 
+        # Prefer CDP side-channel first (binary gRPC postData)
+        cdp = self._poll_cdp_castle()
+        if cdp and len(cdp) >= 1000:
+            return cdp
+        if cdp and len(cdp) >= 800 and cdp.startswith("IBYIll"):
+            return cdp
+
         page = _get_page()
         try:
             data = page.run_js(
@@ -188,7 +436,14 @@ let best = window.__hybrid_castle || '';
 for (const t of list) {
   if (String(t||'').length > String(best||'').length) best = t;
 }
-return {castle: String(best||''), n: list.length};
+return {
+  castle: String(best||''),
+  n: list.length,
+  net: (window.__hybrid_net||[]).length,
+  seen: !!window.__hybrid_create_email_seen,
+  ok: !!window.__hybrid_create_email_ok,
+  status: Number(window.__hybrid_create_email_status||0)
+};
 """
             )
             if isinstance(data, dict):
@@ -197,76 +452,214 @@ return {castle: String(best||''), n: list.length};
                     return c
                 if len(c) >= 2000:
                     return c
+                if len(c) >= 800 and c.startswith("IBYIll"):
+                    return c
         except Exception:
             pass
+        if cdp and len(cdp) >= 800:
+            return cdp
         return ""
 
     def harvest_castle_via_email_submit(self, email: str, timeout: int = 40) -> str:
-        """Trigger React useCastle() by submitting email in UI; capture ~14KB token."""
+        """Trigger React useCastle() by submitting email in UI; capture ~14KB token.
+
+        Aligns fill/submit with Plan A (fill_email_and_submit): native value setter,
+        blur, short settle, then click 注册 (not 继续/Continue which may match wrong btn).
+        """
         from grok_register_ttk import _get_page
 
         if not self._hooked:
             self.install_network_hook()
+        else:
+            # re-assert hook after SPA navigations
+            try:
+                page0 = _get_page()
+                st = page0.run_js("return !!window.__hybrid_net_hooked;") if page0 else False
+                if not st:
+                    self._hooked = False
+                    self.install_network_hook()
+            except Exception:
+                self.install_network_hook()
         page = _get_page()
-        # clear previous
+        if page is None:
+            self._lg("[!] harvest castle: page is None")
+            return ""
+
+        # clear previous capture state
         try:
             page.run_js(
-                "window.__hybrid_castle=''; window.__hybrid_castles=[]; window.__hybrid_net=[]; true;"
+                """
+window.__hybrid_castle='';
+window.__hybrid_castles=[];
+window.__hybrid_net=[];
+window.__hybrid_create_email_ok=false;
+window.__hybrid_create_email_status=0;
+window.__hybrid_create_email_seen=false;
+true;
+"""
             )
         except Exception:
             pass
         try:
-            r = page.run_js(
+            listen = getattr(page, "listen", None)
+            if listen is not None and getattr(listen, "listening", False):
+                listen.clear()
+        except Exception:
+            pass
+
+        submit_result = ""
+        try:
+            # Phase 1: fill email (Plan A style selectors + events)
+            filled = page.run_js(
                 """
 const email = arguments[0];
 function isVisible(node) {
   if (!node) return false;
   const style = window.getComputedStyle(node);
-  if (style.display === 'none' || style.visibility === 'hidden') return false;
+  if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
   const rect = node.getBoundingClientRect();
   return rect.width > 0 && rect.height > 0;
 }
-function setInputValue(input, v) {
-  input.focus(); input.click();
-  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
-  const tracker = input._valueTracker;
-  if (tracker) tracker.setValue('');
-  if (setter) setter.call(input, v); else input.value = v;
-  input.dispatchEvent(new InputEvent('input', {bubbles:true, data:v, inputType:'insertText'}));
-  input.dispatchEvent(new Event('change', {bubbles:true}));
-}
-const input = Array.from(document.querySelectorAll('input')).find((n) => {
-  if (!isVisible(n)) return false;
-  const meta = [n.type, n.name, n.id, n.placeholder, n.getAttribute('data-testid')].join(' ').toLowerCase();
-  return meta.includes('email') || n.type === 'email';
-});
+const input = Array.from(document.querySelectorAll(
+  'input[data-testid="email"], input[name="email"], input[type="email"], input[autocomplete="email"]'
+)).find((node) => isVisible(node) && !node.disabled && !node.readOnly)
+  || Array.from(document.querySelectorAll('input')).find((n) => {
+      if (!isVisible(n) || n.disabled) return false;
+      const meta = [n.type, n.name, n.id, n.placeholder, n.getAttribute('data-testid')].join(' ').toLowerCase();
+      return meta.includes('email') || n.type === 'email';
+  }) || null;
 if (!input) return 'no-input';
-setInputValue(input, email);
-const btn = Array.from(document.querySelectorAll('button')).find((n) => {
-  if (!isVisible(n) || n.disabled) return false;
-  const t = (n.innerText||'').replace(/\\s+/g,'');
-  return t.includes('继续') || t.includes('注册') || t.includes('Continue') || n.type==='submit';
-});
-if (btn) { btn.click(); return 'submitted'; }
-return 'filled-no-button';
-                """,
+input.focus();
+input.click();
+const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+const tracker = input._valueTracker;
+if (tracker) tracker.setValue('');
+if (setter) setter.call(input, email); else input.value = email;
+input.dispatchEvent(new InputEvent('beforeinput', {bubbles:true, data:email, inputType:'insertText'}));
+input.dispatchEvent(new InputEvent('input', {bubbles:true, data:email, inputType:'insertText'}));
+input.dispatchEvent(new Event('change', {bubbles:true}));
+if ((input.value || '').trim() !== email) return 'fill-mismatch';
+input.blur();
+return 'filled';
+""",
                 email,
             )
-            self._lg(f"[*] UI email for castle: {r}")
+            self._lg(f"[*] UI email fill: {filled}")
+            if filled not in ("filled",):
+                # last resort: broader helper
+                filled2 = self._set_input_and_submit(email, "email")
+                self._lg(f"[*] UI email fallback submit: {filled2}")
+                submit_result = filled2
+            else:
+                time.sleep(0.8)
+                # Phase 2: click 注册 (Plan A) — avoid matching 继续 on other widgets
+                clicked = page.run_js(
+                    r"""
+function isVisible(node) {
+  if (!node) return false;
+  const style = window.getComputedStyle(node);
+  if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+  const rect = node.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0;
+}
+const input = Array.from(document.querySelectorAll(
+  'input[data-testid="email"], input[name="email"], input[type="email"], input[autocomplete="email"]'
+)).find((node) => isVisible(node) && !node.disabled) || null;
+if (!input || !(input.value || '').trim()) return 'no-email-value';
+const buttons = Array.from(document.querySelectorAll('button[type="submit"], button')).filter((node) => {
+  return isVisible(node) && !node.disabled && node.getAttribute('aria-disabled') !== 'true';
+});
+// Prefer 注册 / Sign up (Plan A), then Continue as fallback
+let submitButton = buttons.find((node) => {
+  const text = (node.innerText || node.textContent || '').replace(/\s+/g, '');
+  const t = text.toLowerCase();
+  return text === '注册' || text.includes('注册') || t === 'signup' || t.includes('signup') || t.includes('sign up');
+});
+if (!submitButton) {
+  submitButton = buttons.find((node) => {
+    const text = (node.innerText || node.textContent || '').replace(/\s+/g, '');
+    const t = text.toLowerCase();
+    return text.includes('继续') || t.includes('continue') || t.includes('next') || node.type === 'submit';
+  });
+}
+if (!submitButton) return 'no-button';
+submitButton.click();
+return 'submitted';
+"""
+                )
+                submit_result = str(clicked or "")
+                self._lg(f"[*] UI email for castle: {submit_result}")
         except Exception as e:
             self._lg(f"[Debug] UI email castle: {e}")
             return ""
 
-        deadline = time.time() + timeout
+        deadline = time.time() + max(15, int(timeout or 40))
+        last_diag = ""
         while time.time() < deadline:
             c = self.read_captured_castle()
             if c:
                 self._lg(f"[*] native castle len={len(c)} head={c[:20]}")
                 return c
-            time.sleep(0.4)
-        # fallback: injected SDK (usually wrong size; last resort)
-        self._lg("[!] native castle timeout; try injected SDK")
-        return self.get_castle_token_injected(timeout=15)
+            # periodic diagnostics (throttled via last_diag string)
+            try:
+                diag = page.run_js(
+                    """
+return {
+  net: (window.__hybrid_net||[]).length,
+  nCastle: (window.__hybrid_castles||[]).length,
+  clen: (window.__hybrid_castle||'').length,
+  seen: !!window.__hybrid_create_email_seen,
+  ok: !!window.__hybrid_create_email_ok,
+  status: Number(window.__hybrid_create_email_status||0),
+  hooked: !!window.__hybrid_net_hooked,
+  url: location.href.slice(0, 120)
+};
+"""
+                )
+                if isinstance(diag, dict):
+                    s = (
+                        f"net={diag.get('net')} castles={diag.get('nCastle')} "
+                        f"clen={diag.get('clen')} seen={diag.get('seen')} "
+                        f"ok={diag.get('ok')} st={diag.get('status')} "
+                        f"hooked={diag.get('hooked')}"
+                    )
+                    if s != last_diag and (
+                        diag.get("seen")
+                        or diag.get("net")
+                        or int(diag.get("clen") or 0) > 0
+                    ):
+                        self._lg(f"[*] castle wait: {s}")
+                        last_diag = s
+            except Exception:
+                pass
+            time.sleep(0.35)
+
+        # Final diagnostic dump before fallback
+        try:
+            diag = page.run_js(
+                """
+const nets = (window.__hybrid_net||[]).slice(-8);
+return {
+  net: nets,
+  nCastle: (window.__hybrid_castles||[]).length,
+  clen: (window.__hybrid_castle||'').length,
+  seen: !!window.__hybrid_create_email_seen,
+  ok: !!window.__hybrid_create_email_ok,
+  status: Number(window.__hybrid_create_email_status||0),
+  hooked: !!window.__hybrid_net_hooked,
+  submit: String(arguments[0]||'')
+};
+""",
+                submit_result,
+            )
+            self._lg(f"[!] native castle timeout diag={diag}")
+        except Exception as e:
+            self._lg(f"[!] native castle timeout ({e})")
+
+        # Injected CDN SDK almost never yields valid IBYIll (~14KB) tokens used by x.ai.
+        # Keep as last-ditch only; log clearly.
+        self._lg("[!] native castle timeout; try injected SDK (usually invalid for x.ai)")
+        return self.get_castle_token_injected(timeout=12)
 
     def get_castle_token_injected(self, timeout: int = 45) -> str:
         """Legacy CDN inject path (often short / wrong format)."""

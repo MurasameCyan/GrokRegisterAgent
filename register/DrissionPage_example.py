@@ -3995,8 +3995,7 @@ def run_single_registration(
     # plan="a"：本项目主流程；plan="b"：Plan B 兜底（FlowPilot 人机等待/模拟点击/CF 拦截）
     # 收码失败：换邮箱最多 max_mail_retry 次（AccountRetryNeeded），不整轮失败。
     plan_mode = "b" if str(plan or "a").lower() in ("b", "plan_b", "plan-b", "2") else "a"
-    if plan_mode == "b":
-        print("[plan-b] ═══ Plan B 注册开始 ═══")
+    # 横幅由主循环打印，避免与 run_single_registration 重复
 
     max_mail_retry = 3
     try:
@@ -4117,86 +4116,9 @@ def run_single_registration(
         except Exception as le:
             print(f"[Warn] sso ledger: {le}", flush=True)
 
-    # ZDR：导出 SSO 前尽力关闭（enable_disable_zdr 默认 true；失败不挡）
-    if sso_value:
-        try:
-            import json as _json
-
-            _cfg_z = {}
-            try:
-                _cp = os.path.join(os.path.dirname(__file__), "config.json")
-                with open(_cp, "r", encoding="utf-8") as _f:
-                    _cfg_z = _json.load(_f) or {}
-            except Exception:
-                _cfg_z = {}
-            _zdr_on = _cfg_z.get("enable_disable_zdr")
-            if _zdr_on is None:
-                _zdr_on = _cfg_z.get("enableDisableZdr")
-            # 默认开启（规格 A1）：仅当显式 false/0/off 时跳过
-            if _zdr_on is None:
-                _do_zdr = True
-            else:
-                _do_zdr = str(_zdr_on).strip().lower() not in (
-                    "0",
-                    "false",
-                    "no",
-                    "off",
-                    "",
-                )
-            if _do_zdr:
-                from zdr_toggle import disable_zdr_for_sso
-                from account_tags import set_zdr_tag
-
-                _proxy_z = ""
-                try:
-                    _proxy_z = next_proxy(_browser_proxy) or _browser_proxy or ""
-                except Exception:
-                    _proxy_z = _browser_proxy or ""
-                _cf_z = ""
-                try:
-                    if page is not None:
-                        for c in list(page.cookies() or []):
-                            if isinstance(c, dict):
-                                n = str(c.get("name") or "").lower()
-                                if n == "cf_clearance":
-                                    _cf_z = str(c.get("value") or "").strip()
-                                    break
-                except Exception:
-                    pass
-                _zr = disable_zdr_for_sso(
-                    sso_value,
-                    cf_clearance=_cf_z,
-                    proxy=_proxy_z,
-                    log=lambda m: print(m, flush=True),
-                )
-                _closed = bool(_zr.get("ok"))
-                set_zdr_tag(
-                    closed=_closed,
-                    email=email or "",
-                    sso=sso_value,
-                    error=str(_zr.get("error") or ""),
-                    steps=_zr.get("steps"),
-                )
-                if _closed:
-                    print(f"[zdr] ✔ ZDR 已关 · {_zr.get('message')}", flush=True)
-                else:
-                    print(
-                        f"[zdr] ✘ ZDR 仍开/未知（继续导出 SSO）: {_zr.get('error')}",
-                        flush=True,
-                    )
-        except Exception as _ze:
-            print(f"[Warn] zdr disable: {_ze}", flush=True)
-            try:
-                from account_tags import set_zdr_tag
-
-                set_zdr_tag(
-                    closed=False,
-                    email=email or "",
-                    sso=sso_value or "",
-                    error=str(_ze)[:300],
-                )
-            except Exception:
-                pass
+    # ZDR：已从注册主路径断开（2026-07-16）。
+    # 模块 register/zdr_toggle.py、account_tags.set_zdr_tag 仍保留，后续研究再接回。
+    # 原逻辑：enable_disable_zdr + disable_zdr_for_sso + set_zdr_tag（见 git 历史）。
 
     append_sso_to_txt(sso_value, output_path, email=email, password=password)
 
@@ -4794,7 +4716,7 @@ def main():
             # ---------- Plan A ----------
             if result is None and plan_a_enabled:
                 try:
-                    print("[plan-a] ═══ Plan A 注册开始 ═══")
+                    print("═══ Plan A 注册开始 ═══")
                     result = run_single_registration(
                         args.output, extract_numbers=args.extract_numbers, plan="a"
                     )
@@ -4826,7 +4748,7 @@ def main():
 
             if result is None and plan_b_enabled and not skip_b_hard:
                 try:
-                    print("[plan-b] ═══ Plan B 注册开始 ═══")
+                    print("═══ Plan B 注册开始 ═══")
                     try:
                         stop_browser()
                     except Exception:
@@ -4854,7 +4776,7 @@ def main():
                 try:
                     from hybrid_register import run_hybrid_registration
 
-                    print("[plan-c] ═══ Plan C 注册开始 ═══")
+                    print("═══ Plan C 注册开始 ═══")
                     hy = run_hybrid_registration(
                         args.output, extract_numbers=args.extract_numbers
                     )
