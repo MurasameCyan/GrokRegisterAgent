@@ -6,12 +6,13 @@ import {
   type ErrorInfo,
   type ReactNode
 } from 'react';
-import { ChevronDown, ChevronRight, KeyRound, ShieldCheck } from 'lucide-react';
+import { KeyRound, UserRound } from 'lucide-react';
 import { SettingsForm } from '@renderer/components/domain/SettingsForm';
+import { CardHeaderIcon } from '@renderer/components/domain/CardHeaderIcon';
 import { Button } from '@renderer/components/ui/Button';
+import { Card, CardBody, CardHeader } from '@renderer/components/ui/Card';
 import { Input } from '@renderer/components/ui/Input';
 import { PasswordInput } from '@renderer/components/ui/PasswordInput';
-import { cn } from '@renderer/lib/cn';
 import { useSettingsStore } from '@renderer/store/settingsStore';
 import { useToastStore } from '@renderer/store/toastStore';
 import type { AuthState, ChangeCredentialsInput } from '@shared/ipc';
@@ -88,7 +89,6 @@ function CredentialsPanel({
   username: string;
   onAuthChanged(next: AuthState): void;
 }) {
-  const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<ChangeCredentialsInput>({
     currentPassword: '',
     username,
@@ -126,60 +126,53 @@ function CredentialsPanel({
     }
   };
 
+  const displayName = username || 'admin';
+
   return (
-    <form onSubmit={submit} className="ios-group">
-      <div
-        className={cn(
-          'flex cursor-pointer select-none items-center justify-between gap-3 px-4 py-3.5 hover:bg-muted/30',
-          open && 'border-b border-border/70'
-        )}
-        role="button"
-        tabIndex={0}
-        onClick={() => setOpen((v) => !v)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            setOpen((v) => !v);
-          }
-        }}
-      >
-        <div className="flex min-w-0 items-start gap-2">
-          {open ? (
-            <ChevronDown className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-          ) : (
-            <ChevronRight className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-          )}
-          <div className="min-w-0">
-            <h3 className="text-[17px] font-semibold tracking-[-0.02em]">账号设置</h3>
-          </div>
-        </div>
-        <ShieldCheck className="h-4 w-4 shrink-0 text-ok" />
-      </div>
-      {open && (
-        <div className="space-y-4 p-4" onClick={(e) => e.stopPropagation()}>
+    <form onSubmit={submit}>
+      {/* 与下方邮件/代理等卡片同壳：ios-group + CardHeader 高度/说明/右侧圆标 */}
+      <Card collapsible defaultCollapsed>
+        <CardHeader
+          title="账号设置"
+          description={`当前登录 · ${displayName} · 修改后立即生效，请妥善保管`}
+          right={<CardHeaderIcon icon={UserRound} title="Web 控制台账号" />}
+        />
+        <CardBody className="space-y-4">
+          <p className="text-[12px] leading-5 text-muted-foreground">
+            此为控制台登录账号（默认 admin/admin 首次登录会强制修改），与 Grok 注册号池、邮件
+            API、CPA 密钥无关。
+          </p>
           <div className="grid gap-4 lg:grid-cols-2">
-            <Field label="当前密码">
+            <Field label="当前密码" hint="验证身份后才能改名/改密">
               <PasswordInput
                 value={draft.currentPassword}
-                onChange={(e) => setDraft({ ...draft, currentPassword: e.target.value })}
+                onChange={(e) =>
+                  setDraft({ ...draft, currentPassword: e.target.value })
+                }
+                autoComplete="current-password"
               />
             </Field>
-            <Field label="新用户名">
+            <Field label="新用户名" hint="控制台登录名，可与默认 admin 不同">
               <Input
                 value={draft.username}
                 onChange={(e) => setDraft({ ...draft, username: e.target.value })}
+                autoComplete="username"
               />
             </Field>
-            <Field label="新密码">
+            <Field label="新密码" hint="建议 8 位以上，勿与 API 密钥相同">
               <PasswordInput
                 value={draft.password}
                 onChange={(e) => setDraft({ ...draft, password: e.target.value })}
+                autoComplete="new-password"
               />
             </Field>
-            <Field label="确认密码">
+            <Field label="确认密码" hint="须与新密码一致">
               <PasswordInput
                 value={draft.confirmPassword}
-                onChange={(e) => setDraft({ ...draft, confirmPassword: e.target.value })}
+                onChange={(e) =>
+                  setDraft({ ...draft, confirmPassword: e.target.value })
+                }
+                autoComplete="new-password"
               />
             </Field>
           </div>
@@ -189,16 +182,29 @@ function CredentialsPanel({
               {busy ? '保存中…' : '修改账号密码'}
             </Button>
           </div>
-        </div>
-      )}
+        </CardBody>
+      </Card>
     </form>
   );
 }
 
-function Field({ label, children }: { label: string; children: ReactNode }) {
+function Field({
+  label,
+  hint,
+  children
+}: {
+  label: string;
+  hint?: string;
+  children: ReactNode;
+}) {
   return (
     <label className="block space-y-2">
-      <span className="field-label">{label}</span>
+      <div className="flex flex-col gap-0.5">
+        <span className="field-label">{label}</span>
+        {hint ? (
+          <span className="text-[11px] leading-4 text-muted-foreground">{hint}</span>
+        ) : null}
+      </div>
       {children}
     </label>
   );
