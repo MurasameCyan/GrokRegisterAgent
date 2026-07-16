@@ -542,7 +542,7 @@ def register_one_hybrid(
             accounts_file = Path(accounts_file)
             accounts_file.parent.mkdir(parents=True, exist_ok=True)
             with accounts_file.open("a", encoding="utf-8") as f:
-                f.write(f"{email}----{password}----{sso}\n")
+                f.write(f"{email} | {password} | {sso}\n")
         except Exception as e:
             log(f"[hybrid] save file fail: {e}")
     return True
@@ -576,7 +576,8 @@ def run_hybrid_registration(
         out = Path(out)
         out.parent.mkdir(parents=True, exist_ok=True)
         with open(out, "a", encoding="utf-8") as f:
-            f.write(f"{email}|{password}|{sso}\n")
+            # 与 Plan A append_sso_to_txt 一致：email | password | sso（号池/导入可解析）
+            f.write(f"{email} | {password} | {sso}\n")
         log(f"[hybrid] 已写入 {out}")
         # 与 Plan A 对齐，便于 Node 侧抓 email 并触发号池/自动验活
         if email:

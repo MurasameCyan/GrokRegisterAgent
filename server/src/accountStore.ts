@@ -103,6 +103,12 @@ function parseHistoryLine(line: string, fileName: string, lineIndex: number): Ac
   const trimmed = line.trim();
   if (!trimmed) return null;
 
+  const base = {
+    id: randomUUID(),
+    runId: `import:${basename(fileName)}:${lineIndex}`,
+    createdAt: createdAtFromSsoFilename(fileName)
+  };
+
   // 标准输出：email | password | sso
   if (trimmed.includes(' | ')) {
     const parts = trimmed.split(' | ').map((p) => p.trim());
@@ -111,14 +117,7 @@ function parseHistoryLine(line: string, fileName: string, lineIndex: number): Ac
       const password = parts[1];
       const sso = parts.slice(2).join(' | ').replace(/^sso=/i, '');
       if (!email && !password && !sso) return null;
-      return {
-        id: randomUUID(),
-        runId: `import:${basename(fileName)}:${lineIndex}`,
-        email,
-        password,
-        sso,
-        createdAt: createdAtFromSsoFilename(fileName)
-      };
+      return { ...base, email, password, sso };
     }
   }
 
@@ -128,30 +127,65 @@ function parseHistoryLine(line: string, fileName: string, lineIndex: number): Ac
     if (parts.length >= 3) {
       const email = parts[0].trim();
       const password = parts[1].trim();
-      const sso = parts.slice(2).join('----').trim();
+      const sso = parts.slice(2).join('----').trim().replace(/^sso=/i, '');
       if (!email && !password && !sso) return null;
-      return {
-        id: randomUUID(),
-        runId: `import:${basename(fileName)}:${lineIndex}`,
-        email,
-        password,
-        sso: sso.replace(/^sso=/i, ''),
-        createdAt: createdAtFromSsoFilename(fileName)
-      };
+      return { ...base, email, password, sso };
+    }
+  }
+
+  // Plan C hybrid 曾写：email|password|sso（无空格）。勿把整行当纯 SSO。
+  if (trimmed.includes('|') && !trimmed.includes(' | ')) {
+    const parts = trimmed.split('|').map((p) => p.trim());
+    if (parts.length >= 3) {
+      const email = parts[0];
+      const password = parts[1];
+      const sso = parts.slice(2).join('|').replace(/^sso=/i, '');
+      // email 列应像邮箱；否则仍可能是别的格式
+      const looksEmail = /@/.test(email) || !email;
+      if (looksEmail && sso.length >= 8) {
+        return { ...base, email: email || '', password: password || '', sso };
+      }
     }
   }
 
   // 纯 SSO token（历史文件）
   const sso = trimmed.replace(/^sso=/i, '');
-  if (!sso || sso.length < 8) return null;
+  // 若误把 email|pass|sso 整行当 sso，上面已拦截
+  if (!sso || sso.length < 8 || sso.includes('|')) return null;
   return {
-    id: randomUUID(),
-    runId: `import:${basename(fileName)}:${lineIndex}`,
+    ...base,
     email: '',
     password: '',
-    sso,
-    createdAt: createdAtFromSsoFilename(fileName)
+    sso
   };
+}
+
+/** 修复历史坏行：sso 字段里塞了 email|password|token 或 email | password | token */
+export function repairAccountFields(a: AccountRecord): AccountRecord {
+  const email = String(a.email || '').trim();
+  const password = String(a.password || '').trim();
+  let sso = String(a.sso || '').trim().replace(/^sso=/i, '');
+  if (email && password && sso && !sso.includes('|') && !sso.includes(' | ')) {
+    return a;
+  }
+  // sso 列被写成整行
+  if ((!email || !password) && (sso.includes(' | ') || sso.includes('|'))) {
+    let parts: string[] = [];
+    if (sso.includes(' | ')) {
+      parts = sso.split(' | ').map((p) => p.trim());
+    } else {
+      parts = sso.split('|').map((p) => p.trim());
+    }
+    if (parts.length >= 3 && (/@/.test(parts[0]) || !parts[0])) {
+      const e = parts[0] || email;
+      const p = parts[1] || password;
+      const t = parts.slice(2).join(sso.includes(' | ') ? ' | ' : '|').replace(/^sso=/i, '');
+      if (t.length >= 8) {
+        return { ...a, email: e, password: p, sso: t };
+      }
+    }
+  }
+  return a;
 }
 
 function importFromSsoFiles(existing: AccountRecord[]): AccountRecord[] {
@@ -262,7 +296,23 @@ export async function appendAccount(
 }
 
 export async function listAccounts(): Promise<AccountRecord[]> {
-  const all = await readAll();
+  const raw = await readAll();
+  let dirty = false;
+  const all = raw.map((a) => {
+    const fixed = repairAccountFields(a);
+    if (fixed !== a && (fixed.email !== a.email || fixed.password !== a.password || fixed.sso !== a.sso)) {
+      dirty = true;
+    }
+    return fixed;
+  });
+  if (dirty) {
+    try {
+      await writeAll(all);
+      console.log('[accountStore] repaired hybrid email|password|sso rows in accounts.json');
+    } catch {
+      /* ignore */
+    }
+  }
   // 合并 NSFW 侧车 tag（email / sso_hash）
   let withTags = all;
   try {

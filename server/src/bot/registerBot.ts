@@ -884,6 +884,12 @@ export class RegisterBot extends EventEmitter {
         } else if (token.includes('----')) {
           const parts = token.split('----');
           token = parts.slice(2).join('----').trim() || parts[parts.length - 1] || '';
+        } else if (token.includes('|')) {
+          // Plan C 旧格式 email|password|sso
+          const parts = token.split('|').map((p) => p.trim());
+          if (parts.length >= 3 && /@/.test(parts[0] || '')) {
+            token = parts.slice(2).join('|');
+          }
         }
         token = token.replace(/^sso=/i, '');
         if (token) {
