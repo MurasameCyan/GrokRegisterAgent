@@ -8,7 +8,6 @@ import {
   KeyRound,
   Layers,
   Loader2,
-  Network,
   RefreshCw,
   Save,
   Send,
@@ -611,7 +610,6 @@ export function SettingsForm() {
         <CardHeader
           title="代理设置"
           description={draft.singBoxEnabled ? 'Sing-Box' : '直连'}
-          right={<CardHeaderIcon icon={Network} title="代理" />}
         />
         <CardBody className="grid gap-4 lg:grid-cols-2">
           {/* 单行：Sing-Box | 直连 */}
