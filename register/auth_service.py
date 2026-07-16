@@ -82,6 +82,7 @@ def _via_pkce_token(
     proxy: str = "",
     log: LogFn | None = None,
     allow_device_fallback: bool = True,
+    cloudflare_cookies: str = "",
 ) -> dict[str, Any] | None:
     """PKCE main path; optionally device then short browser Allow.
 
@@ -124,6 +125,7 @@ def _via_pkce_token(
                 log=log,
                 headless=True,
                 timeout=55.0,
+                cloudflare_cookies=cloudflare_cookies or "",
             )
         if tokens and tokens.get("access_token"):
             return tokens
@@ -178,6 +180,7 @@ def _mint_tokens(
     *,
     proxy: str = "",
     mint_mode: str = "",
+    cloudflare_cookies: str = "",
     log: LogFn | None = None,
 ) -> tuple[dict[str, Any] | None, str]:
     """按 mint_mode 换 token（单通道）。
@@ -200,9 +203,19 @@ def _mint_tokens(
         return t, "device"
     if mode == "double":
         # 调用方应走 double 双写；此处兜底只取 pkce
-        t = _via_pkce_token(sso, proxy=proxy, log=log)
+        t = _via_pkce_token(
+            sso,
+            proxy=proxy,
+            log=log,
+            cloudflare_cookies=cloudflare_cookies or "",
+        )
         return t, "pkce"
-    t = _via_pkce_token(sso, proxy=proxy, log=log)
+    t = _via_pkce_token(
+        sso,
+        proxy=proxy,
+        log=log,
+        cloudflare_cookies=cloudflare_cookies or "",
+    )
     return t, "pkce"
 
 
@@ -543,6 +556,7 @@ def sso_to_cpa_auth(
     mint_mode: str = "",
     page: Any = None,
     require_grok_45: bool = True,
+    cloudflare_cookies: str = "",
     log: LogFn | None = None,
 ) -> dict[str, Any]:
     """SSO cookie → mint → data/auth/xai-<email>[-channel].json [+ 远程推送]
@@ -607,6 +621,7 @@ def sso_to_cpa_auth(
                             proxy=proxy or "",
                             log=log,
                             allow_device_fallback=False,
+                            cloudflare_cookies=cloudflare_cookies or "",
                         )
                     else:
                         tok = _via_device_token(
@@ -709,7 +724,11 @@ def sso_to_cpa_auth(
         f"[auth] SSO→CPA mint mode={resolved_mode} email={email or '-'} dir={out_dir}"
     )
     token, used_mode = _mint_tokens(
-        sso, proxy=proxy or "", mint_mode=resolved_mode, log=log
+        sso,
+        proxy=proxy or "",
+        mint_mode=resolved_mode,
+        cloudflare_cookies=cloudflare_cookies or "",
+        log=log,
     )
     if not token or not token.get("access_token"):
         return {

@@ -603,6 +603,7 @@ def _run_mint_and_auth_push(
             mint_mode=mint_mode,
             skip_remote=not push_cpa,
             require_grok_45=True,
+            cloudflare_cookies=cloudflare_cookies or "",
             log=log,
         )
         if r and r.get("ok"):

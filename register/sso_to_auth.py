@@ -451,13 +451,17 @@ def sso_to_token_via_browser_consent(
     log=print,
     headless: bool = True,
     timeout: float = 55.0,
+    cloudflare_cookies: str = "",
 ) -> dict | None:
     """Browser PKCE: SSO → authorize → Allow → code on local callback.
 
     Fixes field failures where page stuck on auth.x.ai/oauth2/authorize:
     - set sso on .x.ai / accounts.x.ai / auth.x.ai
+    - inject cf_clearance/__cf_bm when provided (same edge as register)
+    - proxy via auth-extension / local-forward (set_proxy drops user:pass)
     - local HTTP listener on redirect_uri port to catch ?code=
     - never click Continue/Next; only Allow/允许
+    - CF hard-block page → early exit (no 55s spin)
     """
     import threading
     from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -621,6 +625,7 @@ def sso_to_token_via_browser_consent(
         "--no-first-run",
         "--no-default-browser-check",
         "--disable-features=Translate,MediaRouter",
+        "--disable-blink-features=AutomationControlled",
     ):
         try:
             co.set_argument(arg)
@@ -631,17 +636,94 @@ def sso_to_token_via_browser_consent(
             co.set_argument(f"--remote-debugging-port={int(consent_port)}")
         except Exception:
             pass
+    # 代理：禁止裸 set_proxy(user:pass)——Drission 会静默直连 → auth.x.ai 必被 CF 硬拦
     proxy_s = str(proxy or "").strip()
+    proxy_mode = "none"
     if proxy_s:
+        applied = False
         try:
-            # do NOT proxy loopback callback
-            co.set_proxy(proxy_s)
+            from proxy_auth_ext import apply_proxy_to_chromium_options
+
+            pref_local = True
+            try:
+                import json as _jpx
+                _cp = Path(__file__).resolve().parent / "config.json"
+                if _cp.is_file():
+                    pref_local = bool(
+                        (_jpx.loads(_cp.read_text(encoding="utf-8")) or {}).get(
+                            "proxy_prefer_local_forward", True
+                        )
+                    )
+            except Exception:
+                pass
+            res = apply_proxy_to_chromium_options(
+                co,
+                proxy_s,
+                work_dir=consent_profile,
+                prefer_local_forward=pref_local,
+            )
+            proxy_mode = str((res or {}).get("mode") or "unknown")
+            applied = bool(res and res.get("mode"))
+            if applied:
+                log(
+                    f"  🔑 browser consent proxy mode={proxy_mode} "
+                    f"via={str((res or {}).get('local_proxy') or (res or {}).get('proxy') or '')[:80]}"
+                )
         except Exception as e:
-            log(f"  ⚠ browser consent set_proxy: {e}")
+            log(f"  ⚠ browser consent proxy_auth_ext: {e}")
+        if not applied:
+            try:
+                # 无扩展时仅允许无凭据代理直 set；有 user:pass 则尝试本地转发
+                from proxy_auth_ext import parse_proxy_url
+
+                info = parse_proxy_url(proxy_s) if parse_proxy_url else None
+                has_auth = bool(info and info.get("has_auth"))
+            except Exception:
+                has_auth = "@" in proxy_s
+            if has_auth:
+                try:
+                    from proxy_local_forward import start_local_forward
+
+                    fr = start_local_forward(proxy_s)
+                    lp = str((fr or {}).get("local_proxy") or "").strip()
+                    if lp:
+                        co.set_proxy(lp)
+                        proxy_mode = "local_forward"
+                        applied = True
+                        log(f"  🔑 browser consent proxy mode=local_forward {lp}")
+                except Exception as e:
+                    log(f"  ⚠ browser consent local_forward: {e}")
+            if not applied:
+                try:
+                    co.set_proxy(proxy_s)
+                    proxy_mode = "set_proxy"
+                    log("  🔑 browser consent proxy mode=set_proxy (no-auth or fallback)")
+                except Exception as e:
+                    log(f"  ⚠ browser consent set_proxy: {e}")
     log(
         f"  🔑 browser consent isolate profile={consent_profile!r} "
-        f"debug_port={consent_port or 'auto'}"
+        f"debug_port={consent_port or 'auto'} proxy_mode={proxy_mode}"
     )
+    # 解析入队带来的 CF cookie（cf_clearance=…; __cf_bm=…）
+    _cf_pairs: list[tuple[str, str]] = []
+    try:
+        raw_cf = str(cloudflare_cookies or "").strip()
+        if raw_cf:
+            for part in raw_cf.split(";"):
+                part = part.strip()
+                if not part or "=" not in part:
+                    continue
+                k, v = part.split("=", 1)
+                k, v = k.strip(), v.strip()
+                if k.lower() in ("cf_clearance", "__cf_bm") and v:
+                    _cf_pairs.append((k, v))
+    except Exception:
+        _cf_pairs = []
+    if _cf_pairs:
+        log(
+            "  🔑 browser consent CF cookies: "
+            + ",".join(k for k, _ in _cf_pairs)
+        )
 
     browser = None
     done = {"v": False}
@@ -663,7 +745,7 @@ def sso_to_token_via_browser_consent(
     _start_cb_server()
 
     def _inject_sso(page, *, reason: str = "") -> int:
-        """多通道写 sso/sso-rw：CDP Network.setCookie > set.cookies > document.cookie。
+        """多通道写 sso/sso-rw（+可选 CF）：CDP Network.setCookie > set.cookies > document.cookie。
 
         返回成功写入的 cookie 条数（约数，仅诊断用）。
         """
@@ -684,6 +766,20 @@ def sso_to_token_via_browser_consent(
                     {
                         "name": name,
                         "value": sso_cookie,
+                        "domain": domain,
+                        "path": "/",
+                        "secure": True,
+                        "httpOnly": False,
+                        "sameSite": "None",
+                    }
+                )
+        # 注册入队带来的 cf_clearance / __cf_bm（减轻 auth.x.ai 硬拦；不完全保证）
+        for domain in domains:
+            for ck, cv in _cf_pairs:
+                cookie_dicts.append(
+                    {
+                        "name": ck,
+                        "value": cv,
                         "domain": domain,
                         "path": "/",
                         "secure": True,
@@ -755,7 +851,7 @@ const hasAllow = !!Array.from(document.querySelectorAll('button,[role="button"],
   ));
 const hasSignIn = /sign\s*in|log\s*in|登录|create account|sign\s*up|注册/i.test(body + ' ' + title);
 const hasConsent = /consent|授权|请求访问|wants to access|requesting access/i.test(body + ' ' + title);
-const hasCf = /just a moment|checking your browser|cf-browser|turnstile|verify you are human/i.test(body);
+const hasCf = /just a moment|checking your browser|cf-browser|turnstile|verify you are human|attention required|been blocked|unable to access/i.test(body + ' ' + title);
 const cookie = (document.cookie || '');
 const hasSso = /(?:^|;\s*)sso=/.test(cookie);
 return {
@@ -996,7 +1092,20 @@ return (t.innerText || t.value || 'Allow').trim().slice(0, 32);
                 # 周期诊断
                 if now - last_diag_log >= 12.0:
                     last_diag_log = now
-                    log(f"  🔑 browser consent stuck authorize {stuck_for:.0f}s · {_page_diag(page)}")
+                    diag = _page_diag(page)
+                    log(f"  🔑 browser consent stuck authorize {stuck_for:.0f}s · {diag}")
+                    # CF 硬拦（Attention Required / been blocked）——重试无意义，早退省时间
+                    if (
+                        "Attention Required" in diag
+                        or "been blocked" in diag
+                        or "unable to access x.ai" in diag
+                        or ("title='Attention Required" in diag)
+                    ):
+                        log(
+                            "  ❌ browser consent CF hard-block on auth.x.ai "
+                            "(proxy/IP/headless) — abort early"
+                        )
+                        return None
                 # 卡 authorize 超过 ~8s：重注 cookie + 硬跳 authorize（最多 max_reauth）
                 if stuck_for >= 8.0 and reauth_count < max_reauth:
                     reauth_count += 1
