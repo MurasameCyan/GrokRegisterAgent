@@ -36,7 +36,8 @@ from cpa_probe import probe_and_cleanup, probe_models, probe_mini_response
 
 LogFn = Callable[[str], None]
 
-# 全局锁：browser consent 另开 Chromium，并行注册时避免多进程/线程同时起浏览器抢资源
+# 全局锁：browser consent 串行起独立 Chromium（独占 debug port + 临时 profile）
+# 与注册机主浏览器隔离；并行 mint 时避免两路 consent 同时 auto/撞口
 import threading as _threading
 
 _BROWSER_CONSENT_LOCK = _threading.Lock()

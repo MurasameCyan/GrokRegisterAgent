@@ -558,20 +558,53 @@ def sso_to_token_via_browser_consent(
 
     # 必须与注册机主 Chromium 隔离：共用默认 profile/port 会抢页导致
     # 「页面已被刷新 / 与页面的连接已断开」并把注册/ mint 一起撞死。
+    # 关键：禁止 auto_port 撞上注册机 debugger 口后「附着」已有 Chromium
+    # （附着后 latest_tab 可能是注册页，page.get(authorize) 会毁掉注册流）。
     import tempfile
     import shutil
+    import socket
+
+    def _pick_free_local_port() -> int:
+        """Bind 0 拿系统分配端口；失败则扫高位随机段。"""
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                s.bind(("127.0.0.1", 0))
+                return int(s.getsockname()[1])
+        except Exception:
+            pass
+        import random
+
+        for _ in range(40):
+            p = random.randint(39000, 49000)
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.bind(("127.0.0.1", p))
+                    return p
+            except OSError:
+                continue
+        return 0
 
     consent_profile = tempfile.mkdtemp(prefix="gra-pkce-consent-")
+    consent_port = _pick_free_local_port()
     co = ChromiumOptions()
     try:
         co.headless(bool(headless))
     except Exception:
         pass
-    try:
-        co.auto_port()
-    except Exception:
+    # 显式独占端口；绝不 auto_port（可能选中注册机已占用口并附着）
+    if consent_port > 0:
         try:
-            co.set_local_port(0)
+            co.set_local_port(int(consent_port))
+        except Exception as e:
+            log(f"  ⚠ browser consent set_local_port({consent_port}): {e}")
+            try:
+                co.auto_port()
+            except Exception:
+                pass
+    else:
+        try:
+            co.auto_port()
         except Exception:
             pass
     try:
@@ -587,9 +620,15 @@ def sso_to_token_via_browser_consent(
         "--disable-web-security",
         "--no-first-run",
         "--no-default-browser-check",
+        "--disable-features=Translate,MediaRouter",
     ):
         try:
             co.set_argument(arg)
+        except Exception:
+            pass
+    if consent_port > 0:
+        try:
+            co.set_argument(f"--remote-debugging-port={int(consent_port)}")
         except Exception:
             pass
     proxy_s = str(proxy or "").strip()
@@ -599,6 +638,10 @@ def sso_to_token_via_browser_consent(
             co.set_proxy(proxy_s)
         except Exception as e:
             log(f"  ⚠ browser consent set_proxy: {e}")
+    log(
+        f"  🔑 browser consent isolate profile={consent_profile!r} "
+        f"debug_port={consent_port or 'auto'}"
+    )
 
     browser = None
     done = {"v": False}
@@ -660,9 +703,23 @@ def sso_to_token_via_browser_consent(
 
     try:
         browser = Chromium(co)
-        page = browser.latest_tab
+        # 新开 tab：即使误附着已有实例，也不用 latest（可能是注册页）
+        try:
+            page = browser.new_tab()
+        except Exception:
+            page = browser.latest_tab
         try:
             page.set.timeouts(base=min(25.0, hard_timeout / 2.0))
+        except Exception:
+            pass
+        # 隔离自检：tab 过多说明可能附着到注册 Chromium
+        try:
+            n_tabs = len(list(browser.tab_ids or []))
+            if n_tabs > 2:
+                log(
+                    f"  ⚠ browser consent tab_count={n_tabs} "
+                    f"(>2 可能附着到已有浏览器；请核对 debug_port 隔离)"
+                )
         except Exception:
             pass
 

@@ -3383,7 +3383,7 @@ def wait_for_sso_cookie(timeout=30, prefer_domain: str = "grok.com"):
     raise Exception(f"注册完成后未获取到 sso cookie，当前已见 cookie: {sorted(last_seen_names)}")
 
 
-def wait_for_grok_com_landing(timeout: int = 90) -> bool:
+def wait_for_grok_com_landing(timeout: int = 90, *, skip_cf_retry: bool = False) -> bool:
     # 注册流（accounts.x.ai/sign-up?redirect=grok-com）完成后，浏览器会经过一段
     # SSO 重定向链，最终落到 grok.com 并把会话 cookie 写到 grok.com 域上。
     # grok.com 是独立域，跟 .x.ai 不共享 cookie。
@@ -3391,10 +3391,18 @@ def wait_for_grok_com_landing(timeout: int = 90) -> bool:
     # sso 抢跑返回，warm-up 接着用硬跳 (page.get) 去 grok.com，结果落在未登录状态。
     # 这里显式等到 URL 真正变成 grok.com 且页面进入登录态再返回。
     # P1：最终页 CF/Turnstile 卡住时 soft reset + 二次 token 复用。
+    # skip_cf_retry=True（soft-nav 已提交）：禁止再点「完成注册」，只等重定向。
     global page
     deadline = time.time() + timeout
     last_url = ""
     cf_retry = 0
+    # soft-nav：先静等重定向；仅当长时间仍停在 accounts 最终页才允许二次复用
+    soft_grace_until = time.time() + (22.0 if skip_cf_retry else 0.0)
+    if skip_cf_retry:
+        print(
+            "[*] soft-nav 已提交：先静等重定向 ~22s，期间跳过最终页二次点提交",
+            flush=True,
+        )
     while time.time() < deadline:
         try:
             refresh_active_page()
@@ -3402,6 +3410,21 @@ def wait_for_grok_com_landing(timeout: int = 90) -> bool:
             if current_url != last_url:
                 print(f"[*] 等待重定向到 grok.com，当前: {current_url}")
                 last_url = current_url
+
+            # mint browser-consent 若误附着注册 Chromium，会把 URL 打到 oauth2/authorize
+            # 此时不要当 CF 卡住去点「完成注册」——只等/报超时，避免二次污染
+            try:
+                cu = (current_url or "").lower()
+                if (
+                    "oauth2/authorize" in cu
+                    or "oauth2/consent" in cu
+                    or "/callback" in cu
+                    and "127.0.0.1" in cu
+                ):
+                    time.sleep(1)
+                    continue
+            except Exception:
+                pass
 
             # 最终页仍停在 accounts.x.ai 且出现 Turnstile / CF 挑战
             stuck_cf = False
@@ -3420,7 +3443,14 @@ return /checking your browser|just a moment|cf-browser-verification|turnstile|ve
                     stuck_cf = bool(body_cf)
             except Exception:
                 stuck_cf = False
-            if stuck_cf and cf_retry < 3 and time.time() + 12 < deadline:
+            # soft-nav 静等窗口内禁止二次点提交；窗口过后若仍卡 accounts 才复用
+            allow_cf_retry = (not skip_cf_retry) or (time.time() >= soft_grace_until)
+            if (
+                stuck_cf
+                and allow_cf_retry
+                and cf_retry < 3
+                and time.time() + 12 < deadline
+            ):
                 cf_retry += 1
                 print(f"[*] 最终页疑似 CF/Turnstile 卡住，二次复用 #{cf_retry}…")
                 try:
@@ -4204,7 +4234,9 @@ def run_single_registration(
         raise Exception(f"邮箱/收码阶段失败: {last_mail_err or 'unknown'}")
     # 注册完成后等浏览器跑完 SSO 重定向链落到 grok.com 并登录——grok.com 域的
     # 会话 cookie（含 cf_clearance / sso / sso-rw）此时才会真正写下来。
-    if not wait_for_grok_com_landing():
+    # soft-nav：提交已触发导航，禁止最终页二次点「完成注册」
+    _nav_soft = bool(isinstance(profile, dict) and profile.get("nav_soft"))
+    if not wait_for_grok_com_landing(skip_cf_retry=_nav_soft):
         print("[Warn] 未能落到 grok.com 登录态，sso 质量可能受影响")
 
     # 发随机英文短消息触发生日/年龄确认弹窗，并自动填随机成年出生年（失败不阻断写 sso）
