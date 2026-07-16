@@ -202,12 +202,62 @@ export const useAccountsStore = create<AccountsState>((set, get) => ({
     return r;
   },
 
-  applyAccount: (record) =>
+  applyAccount: (record) => {
+    // 注册先推一次无 ssoCheck 的 account；自动验活后再推同 id + ssoCheck。
+    // 旧逻辑「id 已存在则整段忽略」会导致号池永远显示「未验」。
+    const fromCheck = resultFromAccount(record);
     set((state) => {
-      if (state.accounts.some((a) => a.id === record.id)) return state;
-      if (record.sso && state.accounts.some((a) => a.sso && a.sso === record.sso)) return state;
-      return { accounts: [record, ...state.accounts] };
-    }),
+      const byId = state.accounts.findIndex((a) => a.id === record.id);
+      let accounts = state.accounts;
+      if (byId >= 0) {
+        const prev = state.accounts[byId]!;
+        const merged: AccountRecord = {
+          ...prev,
+          ...record,
+          email: String(record.email || '').trim() || prev.email,
+          password: String(record.password || '').trim() || prev.password,
+          sso: String(record.sso || '').trim() || prev.sso,
+          ssoCheck: record.ssoCheck ?? prev.ssoCheck
+        };
+        accounts = state.accounts.slice();
+        accounts[byId] = merged;
+      } else if (record.sso && state.accounts.some((a) => a.sso && a.sso === record.sso)) {
+        // 同 sso 不同 id：更新已有行（验活补丁）
+        const si = state.accounts.findIndex((a) => a.sso && a.sso === record.sso);
+        if (si >= 0) {
+          const prev = state.accounts[si]!;
+          accounts = state.accounts.slice();
+          accounts[si] = {
+            ...prev,
+            ...record,
+            id: prev.id,
+            email: String(record.email || '').trim() || prev.email,
+            ssoCheck: record.ssoCheck ?? prev.ssoCheck
+          };
+          if (fromCheck) {
+            // 用稳定 id 写 ssoMap
+            fromCheck.id = prev.id;
+          }
+        } else {
+          accounts = [record, ...state.accounts];
+        }
+      } else {
+        accounts = [record, ...state.accounts];
+      }
+
+      let ssoMap = state.ssoMap;
+      if (fromCheck) {
+        ssoMap = new Map(state.ssoMap);
+        const mapId =
+          byId >= 0
+            ? record.id
+            : fromCheck.id || record.id;
+        ssoMap.set(mapId, { ...fromCheck, id: mapId });
+        persistSsoMap(ssoMap);
+      }
+      return { accounts, ssoMap };
+    });
+  },
 
   applySsoResults: (results) => {
     if (!results?.length) return;
