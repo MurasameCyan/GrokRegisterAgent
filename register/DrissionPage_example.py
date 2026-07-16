@@ -27,6 +27,7 @@ import logging
 import time
 import secrets
 import platform
+from pathlib import Path
 
 from email_register import get_email_and_token, get_oai_code
 
@@ -237,9 +238,64 @@ try:
 except Exception:
     _stop_local_forward_early = None
 
-# 启动自检：新代码是否在容器内
-_REGISTER_BUILD = "plan-a+b-2026-07-14"
-print(f"[*] register build: {_REGISTER_BUILD}")
+# 启动自检：构建版本（Docker ENV / BUILD_ID 文件 / git short SHA）
+def _resolve_register_build() -> str:
+    """Prefer CI/image stamp, then BUILD_ID file, then local git short SHA."""
+    for key in (
+        "REGISTER_BUILD",
+        "GIT_COMMIT",
+        "GIT_SHA",
+        "SOURCE_COMMIT",
+        "GITHUB_SHA",
+    ):
+        v = (os.environ.get(key) or "").strip()
+        if not v:
+            continue
+        # full GITHUB_SHA → short
+        if len(v) >= 7 and all(c in "0123456789abcdefABCDEF" for c in v[:40]):
+            return v[:7]
+        return v[:32]
+    for cand in (
+        Path(__file__).resolve().parent / "BUILD_ID",
+        Path("/app/register/BUILD_ID"),
+        Path("/app/BUILD_ID"),
+    ):
+        try:
+            if cand.is_file():
+                line = cand.read_text(encoding="utf-8").strip().splitlines()[0].strip()
+                if line:
+                    if len(line) >= 7 and all(
+                        c in "0123456789abcdefABCDEF" for c in line[:40]
+                    ):
+                        return line[:7]
+                    return line[:32]
+        except Exception:
+            pass
+    try:
+        import subprocess
+
+        root = Path(__file__).resolve().parent
+        for cwd in (root, root.parent, Path("/app")):
+            try:
+                r = subprocess.run(
+                    ["git", "-C", str(cwd), "rev-parse", "--short=7", "HEAD"],
+                    capture_output=True,
+                    text=True,
+                    timeout=2,
+                    check=False,
+                )
+                sha = (r.stdout or "").strip()
+                if r.returncode == 0 and sha:
+                    return sha
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return "unknown"
+
+
+_REGISTER_BUILD = _resolve_register_build()
+print(f"[*] register build: {_REGISTER_BUILD}", flush=True)
 if apply_proxy_to_chromium_options is None:
     print("[Warn] 缺少 proxy_auth_ext —— 请确认 ./register 已挂载并重启容器")
 else:
@@ -4392,7 +4448,7 @@ def main():
     _emit(f"[*] 浏览器版本(启动前): {_probe_browser_version()}")
     print("", flush=True)
     print("══════════════════════════════════════", flush=True)
-    print("  Grok 注册机启动", flush=True)
+    print(f"  Grok 注册机启动   Build: {_REGISTER_BUILD}", flush=True)
     print(f"  计划轮数: {total}", flush=True)
     print(f"  SSO 输出: {args.output}", flush=True)
     print("══════════════════════════════════════", flush=True)

@@ -80,6 +80,12 @@ COPY --from=builder /app/server/dist /app/server/dist
 COPY --from=builder /app/node_modules /app/node_modules
 COPY --from=builder /app/package.json /app/package.json
 
+# 构建版本：CI 传入 short SHA；注册机启动横幅 Build: <sha>
+ARG REGISTER_BUILD=unknown
+ENV REGISTER_BUILD=$REGISTER_BUILD
+RUN printf '%s\n' "$REGISTER_BUILD" > /app/register/BUILD_ID \
+ && printf '%s\n' "$REGISTER_BUILD" > /opt/register-seed/BUILD_ID || true
+
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh \
  && mkdir -p /data /data/sso /app/register/sso /app/register/logs \
