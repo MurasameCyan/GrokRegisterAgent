@@ -266,19 +266,38 @@ def hybrid_register(
             except Exception:
                 pass
 
-            turnstile = browser.get_turnstile_token(timeout=90, inject=True)
-            if len(turnstile) < 80:
-                # 尝试驱动 UI 到 profile 再取 turnstile
+            # 协议已 VerifyEmail：先把浏览器推到资料/Turnstile 页，再取 token。
+            # 先 inject 浮层再 prepare 会在错误页点 Turnstile，且 open_signup 会冲掉进度。
+            turnstile = ""
+            try:
+                ready = browser.prepare_profile_step_for_turnstile(
+                    email, clean, timeout=75
+                )
+                log(f"[hybrid] profile/turnstile page ready={ready}")
+            except Exception as te:
+                log(f"[hybrid] prepare profile: {te}")
+            try:
+                turnstile = browser.get_turnstile_token(timeout=90, inject=True)
+            except Exception as te:
+                log(f"[hybrid] turnstile get: {te}")
+            if len(str(turnstile or "")) < 80:
                 try:
-                    browser.prepare_profile_step_for_turnstile(email, clean, timeout=60)
+                    from grok_register_ttk import refresh_active_page
+
+                    if callable(refresh_active_page):
+                        refresh_active_page()
+                except Exception:
+                    pass
+                try:
+                    browser.prepare_profile_step_for_turnstile(email, clean, timeout=45)
                     turnstile = browser.get_turnstile_token(timeout=60, inject=True)
                 except Exception as te:
                     log(f"[hybrid] turnstile retry: {te}")
-            if len(turnstile) < 80:
-                log(f"[hybrid] turnstile short len={len(turnstile)}")
+            if len(str(turnstile or "")) < 80:
+                log(f"[hybrid] turnstile short len={len(str(turnstile or ''))}")
                 return {
                     "ok": False,
-                    "error": f"turnstile short len={len(turnstile)}",
+                    "error": f"turnstile short len={len(str(turnstile or ''))}",
                     "mode": "hybrid",
                 }
 
