@@ -443,6 +443,201 @@ def access_token_referrer(access_token: str) -> str:
     return (decode_jwt_payload(access_token).get("referrer") or "").strip()
 
 
+
+def sso_to_token_via_browser_consent(
+    sso_cookie: str,
+    *,
+    proxy: str = "",
+    log=print,
+    headless: bool = True,
+    timeout: float = 120.0,
+) -> dict | None:
+    """PKCE 协议 consent next-action 全 404 时：浏览器带 SSO 打开 authorize，点 Allow 拿 code。"""
+    sso_cookie = str(sso_cookie or "").strip()
+    if not sso_cookie:
+        return None
+    try:
+        from DrissionPage import Chromium, ChromiumOptions  # type: ignore
+    except Exception as e:
+        log(f"  ❌ browser consent: DrissionPage unavailable: {e}")
+        return None
+
+    verifier, challenge, state, nonce = _gen_pkce()
+    authorize_params = urllib.parse.urlencode(
+        {
+            "client_id": CLIENT_ID,
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "nonce": nonce,
+            "plan": GROK_PLAN,
+            "redirect_uri": REDIRECT_URI,
+            "referrer": GROK_REFERRER,
+            "response_type": "code",
+            "scope": SCOPES,
+            "state": state,
+        }
+    )
+    auth_url = f"{OIDC_ISSUER}/oauth2/authorize?{authorize_params}"
+
+    co = ChromiumOptions()
+    try:
+        co.headless(bool(headless))
+    except Exception:
+        pass
+    for arg in ("--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--lang=en-US"):
+        try:
+            co.set_argument(arg)
+        except Exception:
+            pass
+    proxy_s = str(proxy or "").strip()
+    if proxy_s:
+        try:
+            co.set_proxy(proxy_s)
+        except Exception as e:
+            log(f"  ⚠ browser consent set_proxy: {e}")
+
+    browser = None
+    try:
+        browser = Chromium(co)
+        page = browser.latest_tab
+        page.get("https://accounts.x.ai/")
+        time.sleep(0.6)
+        try:
+            page.set.cookies(
+                [
+                    {"name": "sso", "value": sso_cookie, "domain": ".x.ai", "path": "/"},
+                    {"name": "sso-rw", "value": sso_cookie, "domain": ".x.ai", "path": "/"},
+                    {
+                        "name": "sso",
+                        "value": sso_cookie,
+                        "domain": "accounts.x.ai",
+                        "path": "/",
+                    },
+                    {
+                        "name": "sso-rw",
+                        "value": sso_cookie,
+                        "domain": "accounts.x.ai",
+                        "path": "/",
+                    },
+                ]
+            )
+        except Exception as e:
+            log(f"  ⚠ set sso cookies: {e}")
+            try:
+                page.run_js(
+                    "const sso=arguments[0];"
+                    "document.cookie='sso='+sso+'; domain=.x.ai; path=/';"
+                    "document.cookie='sso-rw='+sso+'; domain=.x.ai; path=/';",
+                    sso_cookie,
+                )
+            except Exception:
+                pass
+
+        log("  🔑 browser consent: open authorize…")
+        page.get(auth_url)
+        time.sleep(1.2)
+
+        code = None
+        deadline = time.time() + max(40.0, float(timeout))
+        while time.time() < deadline:
+            try:
+                url = page.url or ""
+            except Exception:
+                url = ""
+            if "code=" in url:
+                try:
+                    q = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+                    codes = q.get("code") or []
+                    if codes:
+                        code = codes[0]
+                        log("  🔑 browser consent: got code from redirect")
+                        break
+                except Exception:
+                    pass
+            try:
+                clicked = page.run_js(
+                    r"""
+function isVisible(n) {
+  if (!n) return false;
+  const s = window.getComputedStyle(n);
+  if (s.display === 'none' || s.visibility === 'hidden') return false;
+  const r = n.getBoundingClientRect();
+  return r.width > 0 && r.height > 0;
+}
+const deny = /continue|next|sign\s*in|log\s*in|继续|下一步|登录/i;
+const ok = /允许|allow|authorize|approve|同意|批准|grant/i;
+const btns = Array.from(document.querySelectorAll('button, [role="button"]')).filter(isVisible);
+const t = btns.find(b => {
+  const text = (b.innerText || b.textContent || '').trim();
+  if (!text || deny.test(text)) return false;
+  return ok.test(text);
+});
+if (t) { t.click(); return (t.innerText || '').trim().slice(0, 32); }
+return '';
+"""
+                )
+                if clicked:
+                    log(f"  🔑 browser consent click={clicked}")
+                    time.sleep(1.5)
+                    continue
+            except Exception:
+                pass
+            time.sleep(0.7)
+
+        if not code:
+            log("  ❌ browser consent: no authorization code")
+            return None
+
+        proxies = {"http": proxy, "https": proxy} if proxy else None
+        s = requests.Session()
+        if proxies:
+            s.proxies = proxies
+        for domain in (".x.ai", "accounts.x.ai", "auth.x.ai"):
+            s.cookies.set("sso", sso_cookie, domain=domain)
+            s.cookies.set("sso-rw", sso_cookie, domain=domain)
+        try:
+            tr = s.post(
+                f"{OIDC_ISSUER}/oauth2/token",
+                data={
+                    "grant_type": "authorization_code",
+                    "client_id": CLIENT_ID,
+                    "code": code,
+                    "redirect_uri": REDIRECT_URI,
+                    "code_verifier": verifier,
+                },
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Accept": "application/json",
+                },
+                impersonate="chrome",
+                timeout=20,
+            )
+        except Exception as e:
+            log(f"  ❌ browser consent token exchange: {e}")
+            return None
+        if tr.status_code != 200:
+            log(
+                f"  ❌ browser consent token HTTP {tr.status_code}: "
+                f"{(tr.text or '')[:160]}"
+            )
+            return None
+        data = tr.json() if tr.text else {}
+        if not data.get("access_token"):
+            log(f"  ❌ browser consent no access_token: {data}")
+            return None
+        log("  ✔ browser consent PKCE token ok")
+        return data
+    except Exception as e:
+        log(f"  ❌ browser consent exception: {e}")
+        return None
+    finally:
+        if browser is not None:
+            try:
+                browser.quit()
+            except Exception:
+                pass
+
+
 def sso_to_token(sso_cookie: str, proxy: str = "", log=print) -> dict | None:
     """SSO cookie → token dict (access/refresh/expires_in)。
 

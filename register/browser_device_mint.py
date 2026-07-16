@@ -119,6 +119,10 @@ def _poll_token(
             if err == "expired_token":
                 return {"ok": False, "error": "expired_token", "mode": "browser_device"}
             # 其它状态稍等再试
+            if err:
+                log(f"[browser-mint] poll status={r.status_code} err={err}")
+            elif r.status_code >= 400:
+                log(f"[browser-mint] poll HTTP {r.status_code}: {(r.text or '')[:120]}")
             time.sleep(interval)
         except Exception as e:
             log(f"[browser-mint] poll err: {e}")
@@ -127,15 +131,20 @@ def _poll_token(
 
 
 def _click_consent(page: Any, log: LogFn) -> bool:
-    """真点击「允许 / Allow / Authorize」—— JS click 常无效。"""
+    """真点击 OAuth「允许 / Allow / Authorize」。
+
+    切勿把 Continue/Next 当 consent——那是登录下一步，点了 poll 会一直 pending。
+    """
+    # 精确文案：只认授权类按钮
     labels = (
         "允许",
         "Allow",
         "Authorize",
-        "Continue",
+        "Approve",
         "批准",
         "同意",
         "Accept",
+        "Grant access",
     )
     for label in labels:
         try:
@@ -147,15 +156,12 @@ def _click_consent(page: Any, log: LogFn) -> bool:
                     try:
                         el.click()
                     except Exception:
-                        page.run_js(
-                            "arguments[0].click();",
-                            el,
-                        )
+                        page.run_js("arguments[0].click();", el)
                 log(f"[browser-mint] consent clicked label={label}")
                 return True
         except Exception:
             continue
-    # 模糊匹配
+    # 模糊：排除 continue/next/sign in
     try:
         clicked = page.run_js(
             r"""
@@ -166,15 +172,20 @@ function isVisible(n) {
   const r = n.getBoundingClientRect();
   return r.width > 0 && r.height > 0;
 }
-const re = /允许|allow|authorize|approve|同意|批准/i;
+const deny = /continue|next|sign\s*in|log\s*in|继续|下一步|登录/i;
+const ok = /允许|allow|authorize|approve|同意|批准|grant/i;
 const btns = Array.from(document.querySelectorAll('button, [role="button"]')).filter(isVisible);
-const t = btns.find(b => re.test((b.innerText || b.textContent || '').trim()));
-if (t) { t.click(); return true; }
-return false;
+const t = btns.find(b => {
+  const text = (b.innerText || b.textContent || '').trim();
+  if (!text || deny.test(text)) return false;
+  return ok.test(text);
+});
+if (t) { t.click(); return (t.innerText || t.textContent || '').trim().slice(0, 40); }
+return '';
 """
         )
         if clicked:
-            log("[browser-mint] consent clicked via fuzzy JS")
+            log(f"[browser-mint] consent clicked via fuzzy JS label={clicked}")
             return True
     except Exception:
         pass
@@ -368,13 +379,21 @@ if (b) b.click();
             log("[browser-mint] ⚠ 未确认 consent 点击，仍尝试 poll token")
 
         log("[browser-mint] poll token…")
-        return _poll_token(
+        polled = _poll_token(
             device_code,
             interval=interval,
-            timeout=max(30.0, timeout - 40),
+            timeout=max(45.0, timeout - 30),
             proxy=proxy,
             log=log,
         )
+        if polled.get("ok"):
+            log(
+                f"[browser-mint] ✔ token ok access_len="
+                f"{len(str(polled.get('access_token') or ''))}"
+            )
+        else:
+            log(f"[browser-mint] ✘ poll fail: {polled.get('error')}")
+        return polled
     except Exception as e:
         return {"ok": False, "error": str(e), "mode": "browser_device"}
     finally:

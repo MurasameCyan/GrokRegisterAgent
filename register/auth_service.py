@@ -74,7 +74,22 @@ def _via_pkce_token(
 ) -> dict[str, Any] | None:
     log = log or _noop
     log("[auth] mint channel=pkce (Auth Code+PKCE)…")
-    return sso_to_token(sso, proxy=proxy or "", log=log)
+    tokens = sso_to_token(sso, proxy=proxy or "", log=log)
+    if tokens and tokens.get("access_token"):
+        return tokens
+    # Server Action next-action 常 404：浏览器带 SSO 点 Allow 拿 code
+    try:
+        from sso_to_auth import sso_to_token_via_browser_consent
+
+        log("[auth] PKCE server-action failed → browser consent fallback…")
+        tokens = sso_to_token_via_browser_consent(
+            sso, proxy=proxy or "", log=log, headless=True
+        )
+        if tokens and tokens.get("access_token"):
+            return tokens
+    except Exception as be:
+        log(f"[auth] browser consent fallback err: {be}")
+    return tokens
 
 
 def _via_device_token(
