@@ -98,8 +98,16 @@ class BrowserTokenSession:
     try {
       if (!body) return '';
       if (typeof body === 'string') return body;
-      if (body instanceof ArrayBuffer) return new TextDecoder().decode(body);
-      if (ArrayBuffer.isView(body)) return new TextDecoder().decode(body);
+      // Prefer latin1 so protobuf binary keeps ASCII castle spans intact for regex
+      function dec(buf) {
+        try {
+          return new TextDecoder('latin1').decode(buf);
+        } catch (e) {
+          try { return new TextDecoder().decode(buf); } catch (e2) { return ''; }
+        }
+      }
+      if (body instanceof ArrayBuffer) return dec(body);
+      if (ArrayBuffer.isView(body)) return dec(body.buffer ? body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength) : body);
       if (typeof Blob !== 'undefined' && body instanceof Blob) return await body.text();
       if (typeof URLSearchParams !== 'undefined' && body instanceof URLSearchParams) return body.toString();
       if (typeof FormData !== 'undefined' && body instanceof FormData) {
@@ -118,14 +126,25 @@ class BrowserTokenSession:
   function captureBody(body, url) {
     try {
       const u = String(url || '');
+      let rawLen = 0;
+      try {
+        if (typeof body === 'string') rawLen = body.length;
+        else if (body instanceof ArrayBuffer) rawLen = body.byteLength || 0;
+        else if (ArrayBuffer.isView(body)) rawLen = body.byteLength || 0;
+        else if (typeof Blob !== 'undefined' && body instanceof Blob) rawLen = body.size || 0;
+      } catch (e) {}
       Promise.resolve(bodyToString(body)).then(function(s) {
         try {
-          if (!s) return;
-          window.__hybrid_net.push({url: u, len: s.length});
+          const len = Math.max(rawLen || 0, (s && s.length) || 0);
+          if (!s && !len) return;
+          window.__hybrid_net.push({url: u, len: len});
           if (u.includes('CreateEmailValidationCode')) {
             window.__hybrid_create_email_seen = true;
+            if (len > 0 && len < 200) {
+              window.__hybrid_create_email_short = true;
+            }
           }
-          extractCastleFromText(s);
+          if (s) extractCastleFromText(s);
         } catch (e) {}
       });
     } catch (e) {}
@@ -249,20 +268,29 @@ class BrowserTokenSession:
         if blob is None or blob is False:
             return ""
         if isinstance(blob, (bytes, bytearray)):
+            raw = bytes(blob)
+            # gRPC-web frame may be: 1 byte flags + 4 byte len + protobuf (email + castle)
+            # Castle string is almost always plain ASCII inside protobuf.
             try:
-                s = bytes(blob).decode("utf-8", errors="ignore")
+                m = re.search(rb"IBYIll\|[A-Za-z0-9+/=|_\-]{800,}", raw)
+                if m:
+                    return m.group(0).decode("ascii", errors="ignore")
             except Exception:
-                s = ""
-            # binary protobuf may still contain ascii castle string
-            if not s or "IBYIll" not in s:
+                pass
+            try:
+                # looser: any IBYIll run ≥200
+                m = re.search(rb"IBYIll\|[A-Za-z0-9+/=|_\-]{200,}", raw)
+                if m:
+                    return m.group(0).decode("ascii", errors="ignore")
+            except Exception:
+                pass
+            try:
+                s = raw.decode("utf-8", errors="ignore")
+            except Exception:
                 try:
-                    raw = bytes(blob)
-                    # scan printable runs for IBYIll|...
-                    m = re.search(rb"IBYIll\|[A-Za-z0-9+/=|_-]{200,}", raw)
-                    if m:
-                        return m.group(0).decode("ascii", errors="ignore")
+                    s = raw.decode("latin-1", errors="ignore")
                 except Exception:
-                    pass
+                    s = ""
             text = s
         elif isinstance(blob, dict):
             # parsed JSON
@@ -342,13 +370,43 @@ class BrowserTokenSession:
                     break
                 try:
                     req = getattr(pkt, "request", None)
-                    post = getattr(req, "postData", None) if req is not None else None
+                    post = None
+                    if req is not None:
+                        for attr in (
+                            "postData",
+                            "body",
+                            "data",
+                            "postDataRaw",
+                            "post_data",
+                        ):
+                            v = getattr(req, attr, None)
+                            if v:
+                                post = v
+                                break
+                        # some versions expose postData as method
+                        if post is None and callable(getattr(req, "postData", None)):
+                            try:
+                                post = req.postData()
+                            except Exception:
+                                pass
                     c = self._extract_castle_from_blob(post)
                     if len(c) > len(best):
                         best = c
-                    # also check url for CreateEmail
                     url = str(getattr(pkt, "url", "") or "")
                     if "CreateEmailValidationCode" in url:
+                        plen = 0
+                        try:
+                            if isinstance(post, (bytes, bytearray)):
+                                plen = len(post)
+                            elif post is not None:
+                                plen = len(str(post))
+                        except Exception:
+                            plen = 0
+                        if plen and plen < 200:
+                            self._lg(
+                                f"[!] CDP CreateEmail postData too short len={plen} "
+                                f"(likely missing castle field)"
+                            )
                         try:
                             page.run_js(
                                 "window.__hybrid_create_email_seen=true; true;"
@@ -469,6 +527,87 @@ return {
             return cdp
         return ""
 
+
+    def _wait_castle_ready_before_submit(self, page, max_wait: float = 6.0) -> None:
+        """Poll DOM / page globals for a long castle token before clicking 注册."""
+        deadline = time.time() + max(1.0, float(max_wait or 6))
+        last = ""
+        while time.time() < deadline:
+            try:
+                data = page.run_js(
+                    r"""
+let best = '';
+try {
+  if (window.__hybrid_castle) best = String(window.__hybrid_castle);
+  for (const t of (window.__hybrid_castles||[])) {
+    if (String(t||'').length > best.length) best = String(t);
+  }
+} catch (e) {}
+try {
+  for (const el of document.querySelectorAll('input,textarea')) {
+    const v = String(el.value || '');
+    if (v.includes('IBYIll|') && v.length > best.length) best = v;
+  }
+} catch (e) {}
+// Castle SDK may expose createRequestToken readiness without token yet
+let sdk = false;
+try {
+  const C = window.Castle || window.castle || null;
+  sdk = !!(C && (C.createRequestToken || (C.default && C.default.createRequestToken)));
+} catch (e) {}
+return { len: best.length, head: best.slice(0, 12), sdk: sdk };
+"""
+                )
+                if isinstance(data, dict):
+                    ln = int(data.get("len") or 0)
+                    s = f"len={ln} sdk={data.get('sdk')}"
+                    if s != last:
+                        self._lg(f"[*] pre-submit castle wait: {s}")
+                        last = s
+                    if ln >= 1000:
+                        return
+            except Exception:
+                pass
+            time.sleep(0.35)
+
+    def _click_register_button(self, page) -> str:
+        try:
+            return str(
+                page.run_js(
+                    r"""
+function isVisible(node) {
+  if (!node) return false;
+  const style = window.getComputedStyle(node);
+  if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+  const rect = node.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0;
+}
+const buttons = Array.from(document.querySelectorAll('button[type="submit"], button')).filter((node) => {
+  return isVisible(node) && !node.disabled && node.getAttribute('aria-disabled') !== 'true';
+});
+let submitButton = buttons.find((node) => {
+  const text = (node.innerText || node.textContent || '').replace(/\s+/g, '');
+  const t = text.toLowerCase();
+  return text === '注册' || text.includes('注册') || t === 'signup' || t.includes('signup') || t.includes('sign up');
+});
+if (!submitButton) {
+  submitButton = buttons.find((node) => {
+    const text = (node.innerText || node.textContent || '').replace(/\s+/g, '');
+    const t = text.toLowerCase();
+    return text.includes('继续') || t.includes('continue') || t.includes('next') || node.type === 'submit';
+  });
+}
+if (!submitButton) return 'no-button';
+submitButton.click();
+return 'submitted';
+"""
+                )
+                or ""
+            )
+        except Exception as e:
+            return f"click-err:{e}"
+
+
     def harvest_castle_via_email_submit(self, email: str, timeout: int = 40) -> str:
         """Trigger React useCastle() by submitting email in UI; capture ~14KB token.
 
@@ -560,7 +699,10 @@ return 'filled';
                 self._lg(f"[*] UI email fallback submit: {filled2}")
                 submit_result = filled2
             else:
-                time.sleep(0.8)
+                # Wait for React useCastle() / hidden fields before submit.
+                # Logs showed CreateEmail body ~33B (email only) when we click too early.
+                self._wait_castle_ready_before_submit(page, max_wait=6.0)
+                time.sleep(0.4 + (0.3 * (time.time() % 1)))
                 # Phase 2: click 注册 (Plan A) — avoid matching 继续 on other widgets
                 clicked = page.run_js(
                     r"""
@@ -604,11 +746,50 @@ return 'submitted';
 
         deadline = time.time() + max(15, int(timeout or 40))
         last_diag = ""
+        retried_submit = False
         while time.time() < deadline:
             c = self.read_captured_castle()
             if c:
                 self._lg(f"[*] native castle len={len(c)} head={c[:20]}")
                 return c
+            # CreateEmail fired with empty castle → wait & re-click once
+            if not retried_submit:
+                try:
+                    st = page.run_js(
+                        """
+const nets = window.__hybrid_net || [];
+let short = false;
+for (const n of nets) {
+  const u = String((n && n.url) || '');
+  const len = Number((n && n.len) || 0);
+  if (u.includes('CreateEmailValidationCode') && len > 0 && len < 200) short = true;
+}
+return {
+  short: short,
+  seen: !!window.__hybrid_create_email_seen,
+  ok: !!window.__hybrid_create_email_ok,
+  status: Number(window.__hybrid_create_email_status||0)
+};
+"""
+                    )
+                    if (
+                        isinstance(st, dict)
+                        and st.get("short")
+                        and (st.get("ok") or int(st.get("status") or 0) == 200)
+                    ):
+                        retried_submit = True
+                        self._lg(
+                            "[!] CreateEmail body too short (no castle); "
+                            "wait + re-click 注册 once"
+                        )
+                        time.sleep(2.0)
+                        self._wait_castle_ready_before_submit(page, max_wait=4.0)
+                        r2 = self._click_register_button(page)
+                        self._lg(f"[*] UI email re-submit: {r2}")
+                        submit_result = f"{submit_result}|retry:{r2}"
+                except Exception as re:
+                    retried_submit = True
+                    self._lg(f"[Debug] re-submit: {re}")
             # periodic diagnostics (throttled via last_diag string)
             try:
                 diag = page.run_js(
