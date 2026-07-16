@@ -285,6 +285,8 @@ const webApi: RendererApi = {
     http('GET', `/api/singbox/log?tail=${encodeURIComponent(String(tail))}`),
 
   getSystemHealth: () => http('GET', '/api/system/health'),
+  getSystemVersion: () =>
+    http<{ current: string; buildId?: string; version?: string }>('GET', '/api/system/version'),
   checkUpdate: () => http('GET', '/api/system/update-check')
 };
 

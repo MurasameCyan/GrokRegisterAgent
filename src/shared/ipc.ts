@@ -512,6 +512,7 @@ export interface RendererApi {
 
   // system
   getSystemHealth(): Promise<SystemHealth>;
+  getSystemVersion(): Promise<{ current: string; buildId?: string; version?: string }>;
   checkUpdate(): Promise<UpdateInfo>;
 }
 

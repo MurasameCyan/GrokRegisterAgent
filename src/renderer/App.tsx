@@ -93,7 +93,28 @@ export default function App() {
         description: err instanceof Error ? err.message : String(err)
       });
     });
-    void loadUpdate();
+    // 仅拉本地 BUILD_ID 展示，不自动检查更新（需用户点击「检查更新」）
+    void (async () => {
+      try {
+        const r = await window.api.getSystemVersion();
+        const buildId = r?.buildId || r?.current;
+        if (!buildId) return;
+        setUpdate((prev) =>
+          prev
+            ? { ...prev, current: buildId, buildId }
+            : {
+                current: buildId,
+                latest: null,
+                hasUpdate: false,
+                htmlUrl: null,
+                publishedAt: null,
+                buildId
+              }
+        );
+      } catch {
+        /* ignore */
+      }
+    })();
   }, [auth.authenticated, pushToast, reloadSettings]);
 
   useEffect(() => {
