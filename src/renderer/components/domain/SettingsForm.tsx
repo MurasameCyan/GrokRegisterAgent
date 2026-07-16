@@ -860,7 +860,7 @@ export function SettingsForm() {
         </CardBody>
       </Card>
 
-      <Card collapsible defaultCollapsed>
+            <Card collapsible defaultCollapsed>
         <CardHeader
           title="授权管理"
           description={(() => {
@@ -872,7 +872,12 @@ export function SettingsForm() {
             } else {
               bits.push('Auth 关');
             }
-            bits.push(draft.sub2apiExportEnabled ? 'sub2api 开' : 'sub2api 关');
+            const mode = String(draft.cpaMintMode || 'pkce');
+            if (mode === 'device') bits.push('Mint B');
+            else if (mode === 'double' || mode === 'auto' || mode === 'merged')
+              bits.push('Mint C');
+            else bits.push('Mint A');
+            if (draft.autoResignOn401 === true) bits.push('401重签');
             return bits.join(' · ');
           })()}
           right={
@@ -881,230 +886,252 @@ export function SettingsForm() {
             </span>
           }
         />
-        <CardBody className="space-y-3">
-          <div className="grid gap-3 sm:grid-cols-2">
+        <CardBody className="space-y-4">
+          {/* —— 核心：出 Auth 流水线 —— */}
+          <div className="space-y-3">
+            <div className="text-[12px] font-semibold tracking-tight text-muted-foreground">
+              核心 · SSO → Auth
+            </div>
             <ToggleRow
               label="自动转换 Auth"
               hint="注册只交 SSO 到授权队列：延迟后后台 SSO 推送 / mint / Auth 推送，不阻塞注册"
               checked={draft.autoAuthExport}
               onChange={(v) => update('autoAuthExport', v)}
             />
-            <ToggleRow
-              label="自动转换 sub2api"
-              hint="mint 成功后写 data/sub2api/；默认关"
-              checked={!!draft.sub2apiExportEnabled}
-              onChange={(v) => update('sub2apiExportEnabled', v)}
-            />
-          </div>
-          {draft.autoAuthExport !== false && (
-            <>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <Field
-                  label="转换延迟下限（秒）"
-                  hint="拿到 SSO 后至少等待再 mint，默认 60"
-                >
-                  <Input
-                    type="number"
-                    min={0}
-                    max={3600}
-                    value={draft.autoAuthDelayMinSec ?? 60}
-                    onChange={(e) => {
-                      const n = Number(e.target.value);
-                      update(
-                        'autoAuthDelayMinSec',
-                        Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 60
-                      );
-                    }}
-                  />
-                </Field>
-                <Field
-                  label="转换延迟上限（秒）"
-                  hint="与下限组成随机等待，默认 120（1～2 分钟）"
-                >
-                  <Input
-                    type="number"
-                    min={0}
-                    max={7200}
-                    value={draft.autoAuthDelayMaxSec ?? 120}
-                    onChange={(e) => {
-                      const n = Number(e.target.value);
-                      update(
-                        'autoAuthDelayMaxSec',
-                        Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 120
-                      );
-                    }}
-                  />
-                </Field>
-              </div>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <Field
-                  label="授权队列 Worker"
-                  hint="并发 mint/推送数，1～8，默认 2；高并发注册时提高吞吐"
-                >
-                  <Input
-                    type="number"
-                    min={1}
-                    max={8}
-                    value={draft.authExportWorkers ?? 2}
-                    onChange={(e) => {
-                      const n = Number(e.target.value);
-                      update(
-                        'authExportWorkers',
-                        Number.isFinite(n)
-                          ? Math.max(1, Math.min(8, Math.floor(n)))
-                          : 2
-                      );
-                    }}
-                  />
-                </Field>
-                <Field
-                  label="队列上限（背压）"
-                  hint="0=2×Worker；满则入队等待，防堆积崩"
-                >
-                  <Input
-                    type="number"
-                    min={0}
-                    max={64}
-                    value={draft.authExportQueueMax ?? 0}
-                    onChange={(e) => {
-                      const n = Number(e.target.value);
-                      update(
-                        'authExportQueueMax',
-                        Number.isFinite(n)
-                          ? Math.max(0, Math.min(64, Math.floor(n)))
-                          : 0
-                      );
-                    }}
-                  />
-                </Field>
-              </div>
-            </>
-          )}
-          <Field
-            label="CPA Mint 模式"
-            hint="A=PKCE；B=Device；C=double 同时产出两份不同通道 auth，分别测活。mint 后无 grok-4.5 不进 CPA"
-          >
-            <select
-              className={SELECT_CLASS}
-              value={
-                (draft.cpaMintMode as string) === 'auto' ||
-                (draft.cpaMintMode as string) === 'merged'
-                  ? 'double'
-                  : draft.cpaMintMode || 'pkce'
-              }
-              onChange={(e) =>
-                update('cpaMintMode', e.target.value as CpaMintMode)
-              }
-            >
-              <option value="pkce">A · Auth Code + PKCE（推荐）</option>
-              <option value="device">B · Device Flow</option>
-              <option value="double">
-                C · Double（PKCE + Device 各一份，分别测活）
-              </option>
-            </select>
-          </Field>
-          <ToggleRow
-            label="开启 NSFW"
-            hint="授权队列 mint 后用 SSO 尝试 gRPC always_show_nsfw_content；成败均写 tag，不影响授权流水线"
-            checked={!!draft.enableNsfw}
-            onChange={(v) => update('enableNsfw', v)}
-          />
-          {/* ZDR 开关已隐藏（流程已断开，后续研究再开放）
-          <ToggleRow
-            label="关闭 ZDR"
-            hint="注册成功后、SSO 导出前用 SSO 尝试关 Zero Retention；probe 失败标「开」，不影响导出与授权"
-            checked={draft.enableDisableZdr !== false}
-            onChange={(v) => update('enableDisableZdr', v)}
-          />
-          */}
-          <div className="grid gap-3 sm:grid-cols-2">
             <Field
-              label="每 N 成功重启浏览器"
-              hint="长跑防泄漏；0=仅失败/首轮强制重启，默认 5"
+              label="CPA Mint 模式"
+              hint="A=PKCE；B=Device；C=double 各出一份并分别测活。mint 后无 grok-4.5 不进 CPA。PKCE 失败会自动 device 兜底"
             >
-              <Input
-                type="number"
-                min={0}
-                max={100}
-                value={draft.browserRecycleEvery ?? 5}
-                onChange={(e) => {
-                  const n = Number(e.target.value);
-                  update(
-                    'browserRecycleEvery',
-                    Number.isFinite(n)
-                      ? Math.max(0, Math.min(100, Math.floor(n)))
-                      : 5
-                  );
-                }}
-              />
+              <select
+                className={SELECT_CLASS}
+                value={
+                  (draft.cpaMintMode as string) === 'auto' ||
+                  (draft.cpaMintMode as string) === 'merged'
+                    ? 'double'
+                    : draft.cpaMintMode || 'pkce'
+                }
+                onChange={(e) =>
+                  update('cpaMintMode', e.target.value as CpaMintMode)
+                }
+              >
+                <option value="pkce">A · Auth Code + PKCE（推荐）</option>
+                <option value="device">B · Device Flow</option>
+                <option value="double">
+                  C · Double（PKCE + Device 各一份，分别测活）
+                </option>
+              </select>
             </Field>
+            {draft.autoAuthExport !== false && (
+              <>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Field
+                    label="转换延迟下限（秒）"
+                    hint="拿到 SSO 后至少等待再 mint，默认 60"
+                  >
+                    <Input
+                      type="number"
+                      min={0}
+                      max={3600}
+                      value={draft.autoAuthDelayMinSec ?? 60}
+                      onChange={(e) => {
+                        const n = Number(e.target.value);
+                        update(
+                          'autoAuthDelayMinSec',
+                          Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 60
+                        );
+                      }}
+                    />
+                  </Field>
+                  <Field
+                    label="转换延迟上限（秒）"
+                    hint="与下限组成随机等待，默认 120（1～2 分钟）"
+                  >
+                    <Input
+                      type="number"
+                      min={0}
+                      max={7200}
+                      value={draft.autoAuthDelayMaxSec ?? 120}
+                      onChange={(e) => {
+                        const n = Number(e.target.value);
+                        update(
+                          'autoAuthDelayMaxSec',
+                          Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 120
+                        );
+                      }}
+                    />
+                  </Field>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Field
+                    label="授权队列 Worker"
+                    hint="并发 mint/推送数，1～8，默认 2；高并发注册时提高吞吐"
+                  >
+                    <Input
+                      type="number"
+                      min={1}
+                      max={8}
+                      value={draft.authExportWorkers ?? 2}
+                      onChange={(e) => {
+                        const n = Number(e.target.value);
+                        update(
+                          'authExportWorkers',
+                          Number.isFinite(n)
+                            ? Math.max(1, Math.min(8, Math.floor(n)))
+                            : 2
+                        );
+                      }}
+                    />
+                  </Field>
+                  <Field
+                    label="队列上限（背压）"
+                    hint="0=2×Worker；满则入队等待，防堆积崩"
+                  >
+                    <Input
+                      type="number"
+                      min={0}
+                      max={64}
+                      value={draft.authExportQueueMax ?? 0}
+                      onChange={(e) => {
+                        const n = Number(e.target.value);
+                        update(
+                          'authExportQueueMax',
+                          Number.isFinite(n)
+                            ? Math.max(0, Math.min(64, Math.floor(n)))
+                            : 0
+                        );
+                      }}
+                    />
+                  </Field>
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* —— 测活 / 401 保活 —— */}
+          <div className="space-y-3 border-t border-border/50 pt-3">
+            <div className="text-[12px] font-semibold tracking-tight text-muted-foreground">
+              测活 · 401 保活
+            </div>
+            <ToggleRow
+              label="401 自动重签"
+              hint="默认关。测活 HTTP 401 后自动 refresh→SSO 重签（不含密码重登）；建议配合代理"
+              checked={draft.autoResignOn401 === true}
+              onChange={(v) => update('autoResignOn401', v)}
+            />
             <Field
-              label="收码失败换邮箱次数"
-              hint="验证码超时/邮箱失败时换邮箱重试上限，默认 3"
+              label="重签/刷新401 并发"
+              hint="1～3，默认 2。过高易触发 accounts.x.ai 限流；走代理见「Auth 转换用代理」"
             >
               <Input
                 type="number"
                 min={1}
-                max={10}
-                value={draft.maxMailRetry ?? 3}
+                max={3}
+                value={
+                  draft.cpaResignConcurrency == null
+                    ? 2
+                    : draft.cpaResignConcurrency
+                }
                 onChange={(e) => {
                   const n = Number(e.target.value);
                   update(
-                    'maxMailRetry',
+                    'cpaResignConcurrency',
                     Number.isFinite(n)
-                      ? Math.max(1, Math.min(10, Math.floor(n)))
-                      : 3
+                      ? Math.min(3, Math.max(1, Math.floor(n)))
+                      : 2
                   );
                 }}
               />
             </Field>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <ToggleRow
+                label="测活死号自动删除"
+                hint="默认关。开启后 Auth 测活遇 401/402/403 才删除本地 Auth 文件；关闭则仅标记死号"
+                checked={draft.cpaProbeDeleteOnDead === true}
+                onChange={(v) => update('cpaProbeDeleteOnDead', v)}
+              />
+              <ToggleRow
+                label="测活死号同步删除 SSO"
+                hint="默认关。Auth 测活死号且已删 Auth 时，同步删除号池同邮箱账号（仅 accounts.json）"
+                checked={draft.cpaProbeDeleteSsoOnDead === true}
+                onChange={(v) => update('cpaProbeDeleteSsoOnDead', v)}
+              />
+            </div>
           </div>
-          <ToggleRow
-            label="测活死号自动删除"
-            hint="默认关。开启后 Auth 测活遇 401/402/403 才删除本地 Auth 文件；关闭则仅标记死号"
-            checked={draft.cpaProbeDeleteOnDead === true}
-            onChange={(v) => update('cpaProbeDeleteOnDead', v)}
-          />
-          <ToggleRow
-            label="测活死号同步删除 SSO"
-            hint="默认关。Auth 测活死号且已删 Auth 时，同步删除号池同邮箱账号（仅 accounts.json）"
-            checked={draft.cpaProbeDeleteSsoOnDead === true}
-            onChange={(v) => update('cpaProbeDeleteSsoOnDead', v)}
-          />
-          <ToggleRow
-            label="401 自动重签"
-            hint="默认关。测活 HTTP 401 后自动 refresh→SSO 重签（不含密码重登）；建议配合代理"
-            checked={draft.autoResignOn401 === true}
-            onChange={(v) => update('autoResignOn401', v)}
-          />
-          <Field
-            label="重签/刷新401 并发"
-            hint="1～3，默认 2。过高易触发 accounts.x.ai 限流；走代理见「Auth 转换用代理」"
-          >
-            <Input
-              type="number"
-              min={1}
-              max={3}
-              value={
-                draft.cpaResignConcurrency == null
-                  ? 2
-                  : draft.cpaResignConcurrency
-              }
-              onChange={(e) => {
-                const n = Number(e.target.value);
-                update(
-                  'cpaResignConcurrency',
-                  Number.isFinite(n)
-                    ? Math.min(3, Math.max(1, Math.floor(n)))
-                    : 2
-                );
-              }}
+
+          {/* —— 次要：导出 / 特性 / 运行参数 —— */}
+          <div className="space-y-3 border-t border-border/50 pt-3">
+            <div className="text-[12px] font-semibold tracking-tight text-muted-foreground">
+              其它
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <ToggleRow
+                label="自动转换 sub2api"
+                hint="mint 成功后写 data/sub2api/；默认关"
+                checked={!!draft.sub2apiExportEnabled}
+                onChange={(v) => update('sub2apiExportEnabled', v)}
+              />
+              <ToggleRow
+                label="开启 NSFW"
+                hint="授权队列 mint 后用 SSO 尝试 gRPC always_show_nsfw_content；成败均写 tag，不影响授权流水线"
+                checked={!!draft.enableNsfw}
+                onChange={(v) => update('enableNsfw', v)}
+              />
+            </div>
+            {/* ZDR 开关已隐藏（流程已断开，后续研究再开放）
+            <ToggleRow
+              label="关闭 ZDR"
+              hint="注册成功后、SSO 导出前用 SSO 尝试关 Zero Retention；probe 失败标「开」，不影响导出与授权"
+              checked={draft.enableDisableZdr !== false}
+              onChange={(v) => update('enableDisableZdr', v)}
             />
-          </Field>
+            */}
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field
+                label="每 N 成功重启浏览器"
+                hint="长跑防泄漏；0=仅失败/首轮强制重启，默认 5"
+              >
+                <Input
+                  type="number"
+                  min={0}
+                  max={100}
+                  value={draft.browserRecycleEvery ?? 5}
+                  onChange={(e) => {
+                    const n = Number(e.target.value);
+                    update(
+                      'browserRecycleEvery',
+                      Number.isFinite(n)
+                        ? Math.max(0, Math.min(100, Math.floor(n)))
+                        : 5
+                    );
+                  }}
+                />
+              </Field>
+              <Field
+                label="收码失败换邮箱次数"
+                hint="验证码超时/邮箱失败时换邮箱重试上限，默认 3"
+              >
+                <Input
+                  type="number"
+                  min={1}
+                  max={10}
+                  value={draft.maxMailRetry ?? 3}
+                  onChange={(e) => {
+                    const n = Number(e.target.value);
+                    update(
+                      'maxMailRetry',
+                      Number.isFinite(n)
+                        ? Math.max(1, Math.min(10, Math.floor(n)))
+                        : 3
+                    );
+                  }}
+                />
+              </Field>
+            </div>
+          </div>
         </CardBody>
       </Card>
 
-      <Card collapsible defaultCollapsed>
+<Card collapsible defaultCollapsed>
         <CardHeader
           title="注册方案"
           description={(() => {
