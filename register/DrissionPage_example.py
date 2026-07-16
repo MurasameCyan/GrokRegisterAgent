@@ -2957,7 +2957,29 @@ def getTurnstileToken(timeout=50, log_callback=None, *, fast=False, auto_wait_ca
             raise
         print(f"[Debug] Turnstile 失败诊断不可用: {e} | last={last_diag}")
 
-    raise Exception("failed to solve turnstile")
+        # 外置 Solver 兜底（可选组件）
+    try:
+        from turnstile_solver_client import solve_turnstile, solver_enabled, yescaptcha_key
+
+        if solver_enabled() or yescaptcha_key():
+            print("[*] Turnstile page miss → external solver…")
+            ext = solve_turnstile(
+                siteurl="https://accounts.x.ai/sign-up",
+                sitekey="",
+                max_wait=90,
+                log=lambda m: print(m),
+            )
+            if ext and len(str(ext)) >= 80:
+                try:
+                    _inject_turnstile_token(str(ext))
+                except Exception:
+                    pass
+                print(f"[*] Turnstile external token len={len(ext)}")
+                return str(ext)
+    except Exception as ee:
+        print(f"[Debug] external turnstile: {ee}")
+
+raise Exception("failed to solve turnstile")
 
 
 _GIVEN_NAMES = [

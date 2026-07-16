@@ -51,6 +51,23 @@ export interface AppSettings {
    * 实际每次在 [30, turnstileAutoWaitMax] 内随机；必须 ≥ 30。
    */
   turnstileAutoWaitMax: number;
+  /**
+   * 是否启用外置 Turnstile Solver（本地子容器 / 远程 URL）。
+   * 默认 false。开启后页内点选失败可回落 HTTP solver。
+   * 写入 Python config：turnstile_solver_enabled
+   */
+  turnstileSolverEnabled: boolean;
+  /**
+   * 本地/内网 Solver 根地址。
+   * Docker compose profile=solver 时默认 http://turnstile-solver:5072
+   * 写入 Python：turnstile_solver_url
+   */
+  turnstileSolverUrl: string;
+  /**
+   * YesCaptcha API Key（可选；有 key 时外解可走第三方）。
+   * 写入 Python：yescaptcha_key
+   */
+  yescaptchaKey: string;
   mail: MailSettings;
   /**
    * 临时邮箱提供方。写入 Python config：mail_provider
@@ -313,6 +330,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   runCount: 10,
   maxParallelWorkers: 3,
   turnstileAutoWaitMax: 60,
+  turnstileSolverEnabled: false,
+  turnstileSolverUrl: 'http://turnstile-solver:5072',
+  yescaptchaKey: '',
   mail: {
     apiBase: '',
     adminAuth: '',

@@ -1536,6 +1536,28 @@ return {
             except Exception:
                 pass
             time.sleep(1)
+        # 外置 Solver / YesCaptcha 兜底（设置页开关或 env）
+        try:
+            from turnstile_solver_client import solve_turnstile, solver_enabled, yescaptcha_key
+
+            if solver_enabled() or yescaptcha_key():
+                self._lg("[*] turnstile page miss → external solver…")
+                sk = ""
+                try:
+                    sk = self._extract_turnstile_sitekey() or ""
+                except Exception:
+                    sk = ""
+                ext = solve_turnstile(
+                    siteurl="https://accounts.x.ai/sign-up",
+                    sitekey=sk,
+                    max_wait=min(90, max(30, int(timeout or 50))),
+                    log=self._lg,
+                )
+                if ext and len(str(ext)) >= 80:
+                    self._lg(f"[*] turnstile external len={len(ext)}")
+                    return str(ext)
+        except Exception as ee:
+            self._lg(f"[Debug] external turnstile: {ee}")
         self._lg("[!] turnstile timeout")
         return ""
 

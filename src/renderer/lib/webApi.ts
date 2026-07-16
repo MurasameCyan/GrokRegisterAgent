@@ -233,6 +233,18 @@ const webApi: RendererApi = {
   },
 
   testMail: (b) => http<TestResult>('POST', '/api/test/mail', b),
+  testTurnstileSolver: (input) =>
+    http<
+      TestResult & {
+        status?: number;
+        url?: string;
+        latencyMs?: number;
+        enabled?: boolean;
+      }
+    >('POST', '/api/test/turnstile-solver', {
+      url: input?.url,
+      enabled: input?.enabled
+    }),
   testCpaRemote: (input) =>
     http<TestResult & { status?: number; remoteUrl?: string }>('POST', '/api/test/cpa-remote', {
       url: input?.url,

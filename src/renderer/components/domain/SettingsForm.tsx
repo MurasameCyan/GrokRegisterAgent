@@ -15,6 +15,7 @@ import {
 import { CardHeaderIcon } from '@renderer/components/domain/CardHeaderIcon';
 import { MailConnectivityIcon } from '@renderer/components/domain/MailConnectivityIcon';
 import { PushConnectivityIcon } from '@renderer/components/domain/PushConnectivityIcon';
+import { TurnstileSolverIcon } from '@renderer/components/domain/TurnstileSolverIcon';
 import { ProxyModeIcon } from '@renderer/components/domain/ProxyModeIcon';
 import { Card, CardBody, CardHeader } from '@renderer/components/ui/Card';
 import { Button } from '@renderer/components/ui/Button';
@@ -958,6 +959,56 @@ export function SettingsForm() {
               });
             }}
           />
+          <div className="space-y-3 rounded-xl border border-border/60 bg-muted/40 p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="field-label">外置 Turnstile Solver</div>
+                <div className="mt-1 text-[12px] text-muted-foreground">
+                  可选子容器：页内 1×1 失败时 HTTP 外解。默认不拉取。
+                  启动：
+                  <code className="mx-1 rounded bg-background/80 px-1">
+                    docker compose --profile solver up -d
+                  </code>
+                  或 .env 写 COMPOSE_PROFILES=solver
+                </div>
+              </div>
+              <TurnstileSolverIcon
+                enabled={draft.turnstileSolverEnabled === true}
+                url={
+                  draft.turnstileSolverUrl ||
+                  'http://turnstile-solver:5072'
+                }
+              />
+            </div>
+            <ToggleRow
+              label="启用外置 Solver"
+              hint="写入 config 后注册页内失败可回落；需 solver 容器在跑或可达 URL"
+              checked={draft.turnstileSolverEnabled === true}
+              onChange={(v) => update('turnstileSolverEnabled', v)}
+            />
+            <Field
+              label="Solver URL"
+              hint="compose 内网默认 http://turnstile-solver:5072；宿主机调试可用 http://127.0.0.1:5072"
+            >
+              <Input
+                value={draft.turnstileSolverUrl || ''}
+                placeholder="http://turnstile-solver:5072"
+                onChange={(e) => update('turnstileSolverUrl', e.target.value)}
+              />
+            </Field>
+            <Field
+              label="YesCaptcha Key（可选）"
+              hint="有 key 时外解可走第三方；留空则仅本地 solver"
+            >
+              <Input
+                type="password"
+                autoComplete="off"
+                value={draft.yescaptchaKey || ''}
+                placeholder="可选"
+                onChange={(e) => update('yescaptchaKey', e.target.value)}
+              />
+            </Field>
+          </div>
         </CardBody>
       </Card>
 

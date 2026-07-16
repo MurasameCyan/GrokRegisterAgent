@@ -431,6 +431,18 @@ export interface RendererApi {
 
   // tests
   testMail(block: MailSettings): Promise<TestResult>;
+  /** 外置 Turnstile Solver 探活 */
+  testTurnstileSolver(input?: {
+    url?: string;
+    enabled?: boolean;
+  }): Promise<
+    TestResult & {
+      status?: number;
+      url?: string;
+      latencyMs?: number;
+      enabled?: boolean;
+    }
+  >;
   /** 远程 CPA Management API 连通性（地址+密钥；不上传文件） */
   testCpaRemote(input?: { url?: string; key?: string }): Promise<
     TestResult & { status?: number; remoteUrl?: string }

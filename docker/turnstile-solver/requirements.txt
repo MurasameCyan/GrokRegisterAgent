@@ -1,0 +1,6 @@
+quart>=0.19.0
+patchright>=1.49.0
+rich>=13.0.0
+requests>=2.31.0
+# camoufox is optional/heavy; default browser_type=chromium via patchright
+# camoufox[geoip]

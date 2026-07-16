@@ -27,7 +27,37 @@ services:
       BROWSER_PATH: "/usr/bin/chromium"
       COOKIE_SECURE: "${COOKIE_SECURE:-}"
       DISPLAY: ":99"
+      # 可选外置 Turnstile Solver（compose --profile solver 时建议打开）
+      TURNSTILE_SOLVER_ENABLED: "${TURNSTILE_SOLVER_ENABLED:-0}"
+      TURNSTILE_SOLVER_URL: "${TURNSTILE_SOLVER_URL:-http://turnstile-solver:5072}"
+      YESCAPTCHA_KEY: "${YESCAPTCHA_KEY:-}"
     volumes:
       - ./data:/data
       - ./register:/opt/register-host:ro
+    shm_size: "1gb"
+
+  # 可选：本地 Turnstile 浏览器解算（默认不拉取/不启动）
+  # 启用：docker compose --profile solver up -d
+  # 或 .env 写 COMPOSE_PROFILES=solver
+  turnstile-solver:
+    profiles: ["solver"]
+    image: ghcr.io/murasamecyan/grok-turnstile-solver:beta
+    build:
+      context: ./docker/turnstile-solver
+      dockerfile: Dockerfile
+    container_name: grok-turnstile-solver
+    restart: unless-stopped
+    # 仅内部网络暴露；调试可取消注释映射
+    # ports:
+    #   - "5072:5072"
+    expose:
+      - "5072"
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "5072"
+      THREAD: "${TURNSTILE_SOLVER_THREADS:-2}"
+      BROWSER_TYPE: "${TURNSTILE_SOLVER_BROWSER:-chromium}"
+      DEBUG: "${TURNSTILE_SOLVER_DEBUG:-0}"
+      PROXY: "${TURNSTILE_SOLVER_PROXY:-0}"
+      DISPLAY: ":99"
     shm_size: "1gb"

@@ -423,5 +423,27 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
     };
   }
 
+  // 外置 Turnstile Solver / YesCaptcha（可选）
+  const solverOn =
+    (settings as { turnstileSolverEnabled?: boolean }).turnstileSolverEnabled === true;
+  const solverUrl = String(
+    (settings as { turnstileSolverUrl?: string }).turnstileSolverUrl ||
+      process.env.TURNSTILE_SOLVER_URL ||
+      'http://turnstile-solver:5072'
+  ).trim();
+  const ycKey = String(
+    (settings as { yescaptchaKey?: string }).yescaptchaKey ||
+      process.env.YESCAPTCHA_KEY ||
+      ''
+  ).trim();
+  const envSolverRaw = String(process.env.TURNSTILE_SOLVER_ENABLED || '')
+    .trim()
+    .toLowerCase();
+  const envSolver = envSolverRaw === '1' || envSolverRaw === 'true';
+  config.turnstile_solver_enabled = solverOn || envSolver;
+  config.turnstile_solver_url = solverUrl || 'http://turnstile-solver:5072';
+  if (ycKey) config.yescaptcha_key = ycKey;
+  else delete config.yescaptcha_key;
+
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
 }

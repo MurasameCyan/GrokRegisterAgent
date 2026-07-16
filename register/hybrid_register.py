@@ -339,6 +339,28 @@ def hybrid_register(
                 except Exception as te:
                     log(f"[hybrid] turnstile short-path retry: {te}")
             if len(str(turnstile or "")) < 80:
+                # 外置 Solver 最终兜底（与页内/短路径无关）
+                try:
+                    from turnstile_solver_client import (
+                        solve_turnstile,
+                        solver_enabled,
+                        yescaptcha_key,
+                    )
+
+                    if solver_enabled() or yescaptcha_key():
+                        log("[hybrid] turnstile page paths failed → external solver…")
+                        ext = solve_turnstile(
+                            siteurl="https://accounts.x.ai/sign-up",
+                            sitekey="",
+                            max_wait=90,
+                            log=log,
+                        )
+                        if ext and len(str(ext)) >= 80:
+                            turnstile = ext
+                            log(f"[hybrid] turnstile external len={len(ext)}")
+                except Exception as xe:
+                    log(f"[hybrid] external turnstile: {xe}")
+            if len(str(turnstile or "")) < 80:
                 log(f"[hybrid] turnstile short len={len(str(turnstile or ''))}")
                 return {
                     "ok": False,

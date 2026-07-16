@@ -738,6 +738,86 @@ app.post('/api/verify-code', async (req, res) => {
   }
 });
 
+
+app.post('/api/test/turnstile-solver', async (req, res) => {
+  try {
+    const settings = await loadSettings();
+    const body = (req.body ?? {}) as {
+      url?: string;
+      enabled?: boolean;
+    };
+    const envOn = ['1', 'true', 'yes', 'on'].includes(
+      String(process.env.TURNSTILE_SOLVER_ENABLED || '')
+        .trim()
+        .toLowerCase()
+    );
+    const enabled =
+      body.enabled === true || settings.turnstileSolverEnabled === true || envOn;
+    const url = String(
+      body.url ||
+        settings.turnstileSolverUrl ||
+        process.env.TURNSTILE_SOLVER_URL ||
+        'http://turnstile-solver:5072'
+    )
+      .trim()
+      .replace(/\/+$/, '');
+    if (!enabled) {
+      return res.json({
+        ok: false,
+        message: '外置 Solver 未启用（设置页开关或 TURNSTILE_SOLVER_ENABLED）',
+        url,
+        enabled: false
+      });
+    }
+    if (!url) {
+      return res.json({ ok: false, message: '未配置 Solver URL', enabled: true });
+    }
+    const t0 = Date.now();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    try {
+      const response = await fetch(url + '/', {
+        method: 'GET',
+        signal: controller.signal,
+        headers: { Accept: 'text/html,application/json,*/*' }
+      });
+      clearTimeout(timer);
+      const ms = Date.now() - t0;
+      const status = response.status;
+      if (status >= 200 && status < 500) {
+        return res.json({
+          ok: true,
+          message: `solver 可达 HTTP ${status}`,
+          status,
+          url,
+          latencyMs: ms,
+          enabled: true
+        });
+      }
+      return res.json({
+        ok: false,
+        message: `HTTP ${status}`,
+        status,
+        url,
+        latencyMs: ms,
+        enabled: true
+      });
+    } catch (e: any) {
+      clearTimeout(timer);
+      const ms = Date.now() - t0;
+      return res.json({
+        ok: false,
+        message: `连接失败: ${e?.message || e}`,
+        url,
+        latencyMs: ms,
+        enabled: true
+      });
+    }
+  } catch (e: any) {
+    return res.json({ ok: false, message: `检测异常: ${e?.message || e}` });
+  }
+});
+
 app.post('/api/test/mail', async (req, res) => {
   try {
     const { apiBase, adminAuth, domain } = req.body;

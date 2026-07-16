@@ -348,6 +348,19 @@ function merge(partial: unknown): AppSettings {
       (p as AppSettings).autoSsoCheckOnRegister,
       DEFAULT_SETTINGS.autoSsoCheckOnRegister
     ),
+    turnstileSolverEnabled: asBool(
+      (p as AppSettings).turnstileSolverEnabled,
+      DEFAULT_SETTINGS.turnstileSolverEnabled
+    ),
+    turnstileSolverUrl:
+      typeof (p as AppSettings).turnstileSolverUrl === 'string' &&
+      String((p as AppSettings).turnstileSolverUrl || '').trim()
+        ? String((p as AppSettings).turnstileSolverUrl).trim()
+        : DEFAULT_SETTINGS.turnstileSolverUrl,
+    yescaptchaKey:
+      typeof (p as AppSettings).yescaptchaKey === 'string'
+        ? (p as AppSettings).yescaptchaKey
+        : DEFAULT_SETTINGS.yescaptchaKey,
     cpaAuthUseProxy: asBool(
       (p as AppSettings).cpaAuthUseProxy,
       DEFAULT_SETTINGS.cpaAuthUseProxy
