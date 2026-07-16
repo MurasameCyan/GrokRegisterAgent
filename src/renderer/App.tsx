@@ -303,7 +303,7 @@ function SidebarUpdateBar({
           href={update?.htmlUrl ?? '#'}
           target="_blank"
           rel="noreferrer"
-          className="inline-flex min-w-0 flex-1 items-center justify-center gap-1 truncate rounded-full bg-danger/15 px-2 py-1 text-[11px] font-medium text-danger"
+          className="inline-flex min-w-0 flex-1 items-center justify-center gap-1 truncate rounded-full bg-ok/15 px-2 py-1 text-[11px] font-medium text-ok transition-colors hover:bg-ok/25"
           title={`远端 beta HEAD ${update?.latest ?? ''}，本地 ${buildId ?? ''}`}
         >
           <ArrowUpCircle className="h-3 w-3 shrink-0" />
@@ -314,7 +314,7 @@ function SidebarUpdateBar({
           type="button"
           onClick={onCheck}
           disabled={loading}
-          className="inline-flex min-w-0 flex-1 items-center justify-center gap-1 truncate rounded-full bg-muted px-2 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-60"
+          className="inline-flex min-w-0 flex-1 items-center justify-center gap-1 truncate rounded-full bg-ok/15 px-2 py-1 text-[11px] font-medium text-ok transition-colors hover:bg-ok/25 disabled:opacity-60"
           title={update?.error || '对照 GitHub beta 最新 commit hash'}
         >
           <RefreshCcw className={cn('h-3 w-3 shrink-0', loading && 'animate-spin')} />
