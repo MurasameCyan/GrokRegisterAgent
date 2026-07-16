@@ -8,7 +8,6 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
   # 与 scripts/fetch-sing-box.sh 默认一致；升级时改此处即可
   SING_BOX_VERSION: "1.13.14"
 
@@ -21,6 +20,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # GHCR 要求镜像名小写（repo 若含大写会导致 metadata-action Unicorn HTML）
+      - name: Image name (lowercase)
+        id: image
+        run: |
+          repo="$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
+          echo "full=${{ env.REGISTRY }}/${repo}" >> "$GITHUB_OUTPUT"
 
       - name: Download sing-box (linux-amd64 + linux-arm64)
         run: |
@@ -47,7 +53,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ steps.image.outputs.full }}
           # 开发主线在 beta：推送 beta 时打 beta + latest
           tags: |
             type=raw,value=beta,enable=${{ github.ref == 'refs/heads/beta' }}

@@ -11,8 +11,6 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  # separate image from main app
-  IMAGE_NAME: ${{ github.repository_owner }}/grok-turnstile-solver
 
 jobs:
   build-push:
@@ -23,6 +21,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # GHCR 镜像名必须全小写；owner 若含大写会触发 metadata-action Unicorn HTML 错误
+      - name: Image name (lowercase)
+        id: image
+        run: |
+          owner="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          echo "name=${owner}/grok-turnstile-solver" >> "$GITHUB_OUTPUT"
+          echo "full=${{ env.REGISTRY }}/${owner}/grok-turnstile-solver" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -41,7 +47,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ steps.image.outputs.full }}
           tags: |
             type=raw,value=beta,enable=${{ github.ref == 'refs/heads/beta' }}
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/beta' }}
