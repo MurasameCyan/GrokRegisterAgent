@@ -316,6 +316,12 @@ function SidebarUpdateBar({
       ? `本地 BUILD_ID=${buildId ?? '?'} · 远端 beta=${update?.latest ?? '?'}`
       : `BUILD_ID ${buildId ?? '…'}（与注册机启动 Build 一致；更新需手动点检查）`;
 
+  // 默认中性灰；仅「点击检查后发现有新版本」才绿色强调
+  const mutedBtnCls =
+    'inline-flex min-w-0 flex-1 items-center justify-center gap-1 truncate rounded-full bg-muted px-2 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-60';
+  const okBtnCls =
+    'inline-flex min-w-0 flex-1 items-center justify-center gap-1 truncate rounded-full bg-ok/15 px-2 py-1 text-[11px] font-medium text-ok transition-colors hover:bg-ok/25';
+
   return (
     <div className="flex min-w-0 items-center gap-1.5">
       <span
@@ -329,7 +335,7 @@ function SidebarUpdateBar({
           href={update?.htmlUrl ?? '#'}
           target="_blank"
           rel="noreferrer"
-          className="inline-flex min-w-0 flex-1 items-center justify-center gap-1 truncate rounded-full bg-ok/15 px-2 py-1 text-[11px] font-medium text-ok transition-colors hover:bg-ok/25"
+          className={okBtnCls}
           title={`远端 beta HEAD ${update?.latest ?? ''}，本地 ${buildId ?? ''}`}
         >
           <ArrowUpCircle className="h-3 w-3 shrink-0" />
@@ -340,7 +346,7 @@ function SidebarUpdateBar({
           type="button"
           onClick={onCheck}
           disabled={loading}
-          className="inline-flex min-w-0 flex-1 items-center justify-center gap-1 truncate rounded-full bg-ok/15 px-2 py-1 text-[11px] font-medium text-ok transition-colors hover:bg-ok/25 disabled:opacity-60"
+          className={mutedBtnCls}
           title={update?.error || '点击后对照 GitHub beta 最新 commit hash（不会自动检测）'}
         >
           <RefreshCcw className={cn('h-3 w-3 shrink-0', loading && 'animate-spin')} />
