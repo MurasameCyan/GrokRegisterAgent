@@ -15,7 +15,7 @@ import { JobListPanel } from '@renderer/components/domain/JobListPanel';
 import { useRunStore } from '@renderer/store/runStore';
 import { useSettingsStore } from '@renderer/store/settingsStore';
 import { useToastStore } from '@renderer/store/toastStore';
-import type { AppSettings } from '@shared/settings';
+import type { AppSettings, CpaMintMode } from '@shared/settings';
 
 export function RegisterPage({ onOpenSettings }: { onOpenSettings(): void }) {
   const status = useRunStore((s) => s.status);
@@ -209,20 +209,106 @@ function RuntimeSettingsInline() {
     );
   }
 
+  const planKey = (() => {
+    const a = draft.registerPlanAEnabled !== false;
+    const b = draft.registerPlanBEnabled !== false;
+    const c =
+      draft.registerPlanCEnabled === true || draft.registerMode === 'hybrid';
+    if (a && !b && !c) return 'A';
+    if (!a && b && !c) return 'B';
+    if (!a && !b && c) return 'C';
+    if (a && b && !c) return 'AB';
+    if (a && b && c) return 'ABC';
+    if (a && !b && c) return 'AC';
+    if (!a && b && c) return 'BC';
+    return 'custom';
+  })();
+
+  const mintMode: CpaMintMode =
+    draft.cpaMintMode === 'device' || draft.cpaMintMode === 'double'
+      ? draft.cpaMintMode
+      : 'pkce';
+
   const dirty =
     !!data &&
     (data.runCount !== draft.runCount ||
-      data.maxParallelWorkers !== draft.maxParallelWorkers);
+      data.maxParallelWorkers !== draft.maxParallelWorkers ||
+      (data.registerPlanAEnabled !== false) !== (draft.registerPlanAEnabled !== false) ||
+      (data.registerPlanBEnabled !== false) !== (draft.registerPlanBEnabled !== false) ||
+      (data.registerPlanCEnabled === true || data.registerMode === 'hybrid') !==
+        (draft.registerPlanCEnabled === true || draft.registerMode === 'hybrid') ||
+      (data.cpaMintMode || 'pkce') !== (draft.cpaMintMode || 'pkce'));
+
   const update = <K extends keyof AppSettings>(key: K, value: AppSettings[K]) =>
     setDraft({ ...draft, [key]: value });
+
+  const applyPlanPreset = (key: string) => {
+    const on = (v: boolean) => v;
+    if (key === 'A') {
+      setDraft({
+        ...draft,
+        registerPlanAEnabled: on(true),
+        registerPlanBEnabled: on(false),
+        registerPlanCEnabled: on(false),
+        registerMode: 'browser'
+      });
+      return;
+    }
+    if (key === 'B') {
+      setDraft({
+        ...draft,
+        registerPlanAEnabled: on(false),
+        registerPlanBEnabled: on(true),
+        registerPlanCEnabled: on(false),
+        registerMode: 'browser'
+      });
+      return;
+    }
+    if (key === 'C') {
+      setDraft({
+        ...draft,
+        registerPlanAEnabled: on(false),
+        registerPlanBEnabled: on(false),
+        registerPlanCEnabled: on(true),
+        registerMode: 'hybrid'
+      });
+      return;
+    }
+    if (key === 'AB') {
+      setDraft({
+        ...draft,
+        registerPlanAEnabled: on(true),
+        registerPlanBEnabled: on(true),
+        registerPlanCEnabled: on(false),
+        registerMode: 'browser'
+      });
+      return;
+    }
+    if (key === 'ABC') {
+      setDraft({
+        ...draft,
+        registerPlanAEnabled: on(true),
+        registerPlanBEnabled: on(true),
+        registerPlanCEnabled: on(true),
+        registerMode: 'hybrid'
+      });
+    }
+  };
 
   const save = async () => {
     setSaving(true);
     try {
+      const planC =
+        draft.registerPlanCEnabled === true || draft.registerMode === 'hybrid';
       const next = {
         ...data!,
         runCount: draft.runCount,
-        maxParallelWorkers: draft.maxParallelWorkers
+        maxParallelWorkers: draft.maxParallelWorkers,
+        registerPlanAEnabled: draft.registerPlanAEnabled !== false,
+        registerPlanBEnabled: draft.registerPlanBEnabled !== false,
+        registerPlanCEnabled: planC,
+        registerMode: planC ? ('hybrid' as const) : ('browser' as const),
+        cpaMintMode: mintMode
       };
       await window.api.saveSettings(next);
       await reload();
@@ -234,13 +320,16 @@ function RuntimeSettingsInline() {
     }
   };
 
+  const selectClass =
+    'flex h-9 w-full rounded-lg border border-input bg-card px-2.5 text-[13px] font-medium tracking-tight focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30';
+
   return (
     <div className="space-y-3 rounded-xl border border-border bg-card/80 p-3.5 shadow-[var(--ios-shadow)]">
       <div className="flex items-center justify-between gap-2">
         <div>
           <div className="text-[13px] font-semibold tracking-[-0.02em]">运行设置</div>
           <p className="mt-0.5 text-[11px] text-muted-foreground">
-            保存后下次启动生效
+            保存后下次启动生效 · 可快速切 Plan / Mint
           </p>
         </div>
         <Button
@@ -281,6 +370,39 @@ function RuntimeSettingsInline() {
               onValueChange={(v) => update('maxParallelWorkers', v)}
             />
           </div>
+        </div>
+        <div className="rounded-xl border border-border/60 bg-muted/50 p-3">
+          <div className="field-label mb-1.5">注册方案</div>
+          <select
+            className={selectClass}
+            value={planKey === 'custom' ? 'AB' : planKey}
+            onChange={(e) => applyPlanPreset(e.target.value)}
+            title="快速设定 Plan A/B/C 开关（与配置页同步）"
+          >
+            <option value="A">A · 浏览器主流程</option>
+            <option value="B">B · 拟人兜底</option>
+            <option value="C">C · Hybrid 协议</option>
+            <option value="AB">A + B</option>
+            <option value="ABC">A + B + C</option>
+          </select>
+          {planKey === 'custom' ? (
+            <p className="mt-1 text-[10px] text-muted-foreground">
+              当前为自定义组合，保存前请重选预设
+            </p>
+          ) : null}
+        </div>
+        <div className="rounded-xl border border-border/60 bg-muted/50 p-3">
+          <div className="field-label mb-1.5">Mint 模式</div>
+          <select
+            className={selectClass}
+            value={mintMode}
+            onChange={(e) => update('cpaMintMode', e.target.value as CpaMintMode)}
+            title="SSO→Auth 通道（与配置页同步）"
+          >
+            <option value="pkce">A · PKCE（推荐）</option>
+            <option value="device">B · Device</option>
+            <option value="double">C · Double（PKCE+Device）</option>
+          </select>
         </div>
       </div>
     </div>
