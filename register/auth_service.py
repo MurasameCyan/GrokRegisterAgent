@@ -36,6 +36,12 @@ from cpa_probe import probe_and_cleanup, probe_models, probe_mini_response
 
 LogFn = Callable[[str], None]
 
+# 全局锁：browser consent 另开 Chromium，并行注册时避免多进程/线程同时起浏览器抢资源
+import threading as _threading
+
+_BROWSER_CONSENT_LOCK = _threading.Lock()
+
+
 
 def _noop(msg: str) -> None:
     return None
@@ -110,13 +116,14 @@ def _via_pkce_token(
         from sso_to_auth import sso_to_token_via_browser_consent
 
         log("[auth] PKCE path → browser consent fallback (timeout=55s, local callback)…")
-        tokens = sso_to_token_via_browser_consent(
-            sso,
-            proxy=proxy or "",
-            log=log,
-            headless=True,
-            timeout=55.0,
-        )
+        with _BROWSER_CONSENT_LOCK:
+            tokens = sso_to_token_via_browser_consent(
+                sso,
+                proxy=proxy or "",
+                log=log,
+                headless=True,
+                timeout=55.0,
+            )
         if tokens and tokens.get("access_token"):
             return tokens
     except Exception as be:

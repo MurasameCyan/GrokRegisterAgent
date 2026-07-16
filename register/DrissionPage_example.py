@@ -3164,14 +3164,23 @@ return value ? 'ready' : 'pending';
                 clicked = False
 
         if not clicked:
+            nav_ok = False
             try:
                 submit_button = page.ele('tag:button@@text()=完成注册') or page.ele('tag:button@@text():Create Account') or page.ele('tag:button@@text():Sign up')
-            except Exception:
+            except Exception as e:
                 submit_button = None
+                em = str(e)
+                # 导航中途 Drission 抛「页面已被刷新」——常见于点完完成注册后
+                if "刷新" in em or "disconnected" in em.lower() or "连接已断开" in em:
+                    nav_ok = True
+                    print(f"[*] 提交阶段页面导航中（{em[:80]}），按已提交处理")
 
-            if not submit_button:
-                clicked = page.run_js(
-                    r"""
+            if nav_ok:
+                clicked = True
+            elif not submit_button:
+                try:
+                    clicked = page.run_js(
+                        r"""
 const challengeInput = document.querySelector('input[name="cf-turnstile-response"]');
 if (challengeInput && !String(challengeInput.value || '').trim()) {
     return false;
@@ -3187,24 +3196,41 @@ if (!submitButton || submitButton.disabled || submitButton.getAttribute('aria-di
 submitButton.focus();
 submitButton.click();
 return true;
-                    """
-                )
+                        """
+                    )
+                except Exception as e:
+                    em = str(e)
+                    if "刷新" in em or "disconnected" in em.lower() or "连接已断开" in em:
+                        clicked = True
+                        print(f"[*] JS 提交触发导航（{em[:80]}），按已提交处理")
+                    else:
+                        clicked = False
             else:
-                challenge_value = page.run_js(
-                    """
+                try:
+                    challenge_value = page.run_js(
+                        """
 const challengeInput = document.querySelector('input[name="cf-turnstile-response"]');
 return challengeInput ? String(challengeInput.value || '').trim() : 'not-found';
-                    """
-                )
-                if challenge_value not in ('not-found', ''):
-                    submit_button.click()
-                    clicked = True
-                else:
-                    clicked = False
+                        """
+                    )
+                    if challenge_value not in ('not-found', ''):
+                        submit_button.click()
+                        clicked = True
+                    else:
+                        clicked = False
+                except Exception as e:
+                    em = str(e)
+                    if "刷新" in em or "disconnected" in em.lower() or "连接已断开" in em:
+                        clicked = True
+                        print(f"[*] 点击完成注册后页面已跳转（{em[:80]}）")
+                    else:
+                        clicked = False
 
         if clicked:
             tag = "plan-b" if plan_b else "*"
             print(f"[{tag}] 已填写注册资料并点击完成注册: {given_name} {family_name} / {password}")
+            # 给导航一点时间，避免立刻读 cookie 撞断开
+            time.sleep(1.2)
             return {
                 "given_name": given_name,
                 "family_name": family_name,
@@ -4132,7 +4158,23 @@ def run_single_registration(
             email, dev_token = fill_email_and_submit()
             fill_code_and_submit(email, dev_token)
             print(f"[*] 填写注册资料并提交（Plan {plan_mode.upper()}）…")
-            profile = fill_profile_and_submit(mode=plan_mode)
+            try:
+                profile = fill_profile_and_submit(mode=plan_mode)
+            except Exception as pe:
+                em = str(pe)
+                # Turnstile 通过后提交触发导航时 Drission 偶发整段抛刷新
+                if "刷新" in em or "连接已断开" in em or "disconnected" in em.lower():
+                    print(f"[Warn] 资料提交遇导航断开，视为可能已提交: {em[:120]}")
+                    given_name, family_name, password = build_profile()
+                    profile = {
+                        "given_name": given_name,
+                        "family_name": family_name,
+                        "password": password,
+                        "plan": plan_mode,
+                        "nav_soft": True,
+                    }
+                else:
+                    raise
             last_mail_err = None
             break
         except AccountRetryNeeded as re:
