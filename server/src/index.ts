@@ -23,7 +23,7 @@ import {
   listAccounts,
   resyncAccountsFromDisk
 } from './accountStore.js';
-import { checkForUpdate, currentVersion } from './updateCheck.js';
+import { checkForUpdate, currentVersion, currentBuildId } from './updateCheck.js';
 import { fetchEmails, extractVerificationCode, fetchLatestCodeByAddress } from './api/emailApi.js';
 import { probeProxy, probeProxyBatch } from './api/proxyApi.js';
 import { fetchProxiesFromUrl } from './api/proxyFetchApi.js';
@@ -352,7 +352,8 @@ app.get('/api/system/health', async (_req, res) => {
 });
 
 app.get('/api/system/version', (_req, res) => {
-  res.json({ current: currentVersion() });
+  const buildId = currentBuildId();
+  res.json({ current: buildId, buildId, version: currentVersion() });
 });
 
 app.get('/api/system/update-check', async (_req, res) => {

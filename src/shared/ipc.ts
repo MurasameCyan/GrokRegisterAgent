@@ -33,18 +33,20 @@ export interface ThemeState {
   effective: 'light' | 'dark';
 }
 
-/** 检查更新结果 */
+/** 检查更新结果（以 BUILD_ID / git short SHA 为主） */
 export interface UpdateInfo {
-  /** 本地版本号（来自 package.json） */
+  /** 本地构建号：BUILD_ID short hash，无则 package.json version */
   current: string;
-  /** GitHub 最新 release 的 tag，无发布时为 null */
+  /** 远端 beta 最新 short SHA，失败时为 null */
   latest: string | null;
-  /** 是否有新版本 */
+  /** 本地 hash 与远端 beta HEAD 不一致则为 true */
   hasUpdate: boolean;
-  /** release 页面 URL */
+  /** 对照用的 commit / 提交列表 URL */
   htmlUrl: string | null;
-  /** 发布时间 ISO，可能为 null */
+  /** 远端 commit 时间 ISO，可能为 null */
   publishedAt: string | null;
+  /** 与 current 相同，显式 BUILD_ID 字段便于前端展示 */
+  buildId?: string;
   /** 检查失败时的错误说明 */
   error?: string;
 }

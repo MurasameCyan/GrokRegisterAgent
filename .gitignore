@@ -39,3 +39,8 @@ pnpm-debug.log*
 
 uploads/
 
+
+# runtime build stamp (docker/CI writes this)
+register/BUILD_ID
+BUILD_ID
+

@@ -276,19 +276,27 @@ function SidebarUpdateBar({
   loading: boolean;
   onCheck(): void;
 }) {
-  const current = update?.current;
+  // 显示 BUILD_ID（git short SHA），与注册机日志 Build: xxxxxxx 对照
+  const buildId = update?.buildId || update?.current;
   const hasUpdate = !!update?.hasUpdate;
 
   let actionLabel = '检查更新';
   if (loading) actionLabel = '检查中…';
   else if (hasUpdate && update?.latest) actionLabel = `新 ${update.latest}`;
   else if (update && !update.error && !hasUpdate) actionLabel = '已最新';
-  // error（含「仓库暂无发布版本」）仍显示「检查更新」，可点重试
+  // error 仍显示「检查更新」，可点重试
+
+  const chipTitle = hasUpdate
+    ? `本地 BUILD_ID=${buildId ?? '?'} · 远端 beta=${update?.latest ?? '?'}`
+    : `BUILD_ID ${buildId ?? '…'}（与注册机启动 Build 一致）`;
 
   return (
     <div className="flex min-w-0 items-center gap-1.5">
-      <span className="chip shrink-0 px-1.5 py-0.5 text-[11px] tabular-nums">
-        v{current ?? '…'}
+      <span
+        className="chip shrink-0 px-1.5 py-0.5 font-mono text-[11px] tabular-nums"
+        title={chipTitle}
+      >
+        {buildId ?? '…'}
       </span>
       {hasUpdate ? (
         <a
@@ -296,7 +304,7 @@ function SidebarUpdateBar({
           target="_blank"
           rel="noreferrer"
           className="inline-flex min-w-0 flex-1 items-center justify-center gap-1 truncate rounded-full bg-danger/15 px-2 py-1 text-[11px] font-medium text-danger"
-          title={`有新版本 ${update?.latest ?? ''}`}
+          title={`远端 beta HEAD ${update?.latest ?? ''}，本地 ${buildId ?? ''}`}
         >
           <ArrowUpCircle className="h-3 w-3 shrink-0" />
           <span className="truncate">{actionLabel}</span>
@@ -307,7 +315,7 @@ function SidebarUpdateBar({
           onClick={onCheck}
           disabled={loading}
           className="inline-flex min-w-0 flex-1 items-center justify-center gap-1 truncate rounded-full bg-muted px-2 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-60"
-          title={update?.error || '检查 GitHub Releases'}
+          title={update?.error || '对照 GitHub beta 最新 commit hash'}
         >
           <RefreshCcw className={cn('h-3 w-3 shrink-0', loading && 'animate-spin')} />
           <span className="truncate">{actionLabel}</span>
