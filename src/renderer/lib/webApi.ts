@@ -196,6 +196,8 @@ const webApi: RendererApi = {
     });
     return list as typeof list & { emailsFilled?: number };
   },
+  pushSsoToGrok2api: (input) =>
+    http('POST', '/api/accounts/push-grok2api', input),
 
   listCpaAuth: () => http('GET', '/api/cpa-auth'),
   resignCpaAuth: (input) => http('POST', '/api/cpa-auth/resign', input),

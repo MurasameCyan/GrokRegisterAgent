@@ -67,6 +67,7 @@ import {
   testCpaRemoteConnectivity,
   testSub2apiRemoteConnectivity
 } from './cpaAuthStore.js';
+import { pushSsoToGrok2apiBatch } from './ssoGrok2apiPush.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 6657);
@@ -501,6 +502,25 @@ app.post('/api/accounts/import', async (req: Request, res: Response) => {
       return;
     }
     res.json(await importAccountsFromText({ text, source }));
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(400).json({ error: message });
+  }
+});
+
+/** 号池 SSO → grok2api 手动推送（需推送设置开启 SSO→grok2api） */
+app.post('/api/accounts/push-grok2api', async (req: Request, res: Response) => {
+  try {
+    const body = (req.body ?? {}) as {
+      items?: { sso: string; email?: string; id?: string }[];
+      concurrency?: number;
+    };
+    res.json(
+      await pushSsoToGrok2apiBatch({
+        items: body.items || [],
+        concurrency: body.concurrency
+      })
+    );
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(400).json({ error: message });

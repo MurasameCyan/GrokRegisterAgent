@@ -328,6 +328,29 @@ export interface RendererApi {
     invalid: number;
     remaining: number;
   }>;
+  /**
+   * 号池 SSO → grok2api 手动推送。
+   * 需设置「推送设置」开启 SSO→grok2api 允许/自动，并填写 grok2api 连接。
+   */
+  pushSsoToGrok2api(input: {
+    items: { sso: string; email?: string; id?: string }[];
+    concurrency?: number;
+  }): Promise<{
+    total: number;
+    ok: number;
+    failed: number;
+    skipped: number;
+    remoteConfigured?: boolean;
+    remoteUrl?: string;
+    results?: {
+      ok: boolean;
+      skipped?: boolean;
+      error?: string;
+      email?: string;
+      id?: string;
+      mode?: string;
+    }[];
+  }>;
 
   // mail & sso
   getMailCode(address: string): Promise<MailCodeResult>;

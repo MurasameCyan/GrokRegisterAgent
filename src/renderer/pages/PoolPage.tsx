@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bot,
   CheckSquare,
+  CloudUpload,
   Copy,
   Database,
   Eye,
@@ -27,6 +28,7 @@ import { NsfwBadge } from '@renderer/components/domain/NsfwBadge';
 import { ZdrBadge } from '@renderer/components/domain/ZdrBadge';
 import { useClientPagination } from '@renderer/hooks/useClientPagination';
 import { useAccountsStore } from '@renderer/store/accountsStore';
+import { useSettingsStore } from '@renderer/store/settingsStore';
 import { useRunStore } from '@renderer/store/runStore';
 import { useToastStore } from '@renderer/store/toastStore';
 import { cn } from '@renderer/lib/cn';
@@ -130,8 +132,10 @@ export function PoolPage() {
   const applySsoResults = useAccountsStore((s) => s.applySsoResults);
   const phase = useRunStore((s) => s.status.phase);
   const push = useToastStore((s) => s.push);
+  const settings = useSettingsStore((s) => s.data);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [verifying, setVerifying] = useState(false);
+  const [pushingG2a, setPushingG2a] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [importing, setImporting] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
@@ -803,10 +807,77 @@ export function PoolPage() {
     }
   };
 
+  const g2aReady = Boolean(
+    (settings?.pushSsoToGrok2api === true ||
+      settings?.autoPushSsoToGrok2api === true ||
+      (settings?.pushSsoToGrok2api === undefined &&
+        settings?.autoPushSsoToGrok2api === undefined &&
+        settings?.grok2apiAutoUpload === true)) &&
+      String(settings?.grok2apiUrl || '').trim() &&
+      String(settings?.grok2apiUsername || '').trim() &&
+      String(settings?.grok2apiPassword || '').trim()
+  );
+
+  /** 号池 SSO → grok2api（需推送设置开启 SSO→grok2api） */
+  const pushG2aFromSso = async () => {
+    const pool = selected.size > 0 ? accounts.filter((a) => selected.has(a.id)) : filteredAccounts;
+    const targets = pool.filter((a) => a.sso);
+    if (targets.length === 0) {
+      push({ tone: 'warn', title: '没有可推送的 SSO' });
+      return;
+    }
+    if (!g2aReady) {
+      push({
+        tone: 'warn',
+        title: '未配置 SSO→grok2api',
+        description: '请在设置「推送设置」开启 SSO→grok2api 允许/自动，并填写 grok2api 地址与账号'
+      });
+      return;
+    }
+    if (targets.length > 100) {
+      push({ tone: 'warn', title: '单次最多 100 个', description: '请缩小选择范围后再试' });
+      return;
+    }
+    setPushingG2a(true);
+    try {
+      const CHUNK = 8;
+      let ok = 0;
+      let failed = 0;
+      let skipped = 0;
+      let remoteUrl = '';
+      for (let i = 0; i < targets.length; i += CHUNK) {
+        const chunk = targets.slice(i, i + CHUNK);
+        const r = await window.api.pushSsoToGrok2api({
+          items: chunk.map((a) => ({ sso: a.sso, email: a.email, id: a.id })),
+          concurrency: 1
+        });
+        ok += r.ok || 0;
+        failed += r.failed || 0;
+        skipped += r.skipped || 0;
+        if (r.remoteUrl) remoteUrl = r.remoteUrl;
+      }
+      push({
+        tone: failed > 0 ? 'warn' : 'ok',
+        title: '推送 G2A 完成',
+        description: `成功 ${ok} · 失败 ${failed}${skipped ? ` · 跳过 ${skipped}` : ''}${
+          remoteUrl ? ` · ${remoteUrl}` : ''
+        }`
+      });
+    } catch (err) {
+      push({
+        tone: 'danger',
+        title: '推送 G2A 失败',
+        description: err instanceof Error ? err.message : String(err)
+      });
+    } finally {
+      setPushingG2a(false);
+    }
+  };
+
   const picked = accounts.filter((a) => selected.has(a.id));
   const openAccount = accounts.find((a) => a.id === openId) ?? null;
   const minting = !!mintProg?.running;
-  const busy = verifying || minting || deleting || importing;
+  const busy = verifying || minting || deleting || importing || pushingG2a;
   const hasActiveFilter =
     authFilter !== 'all' || aliveFilter !== 'all' || ssoFilter !== 'all';
 
