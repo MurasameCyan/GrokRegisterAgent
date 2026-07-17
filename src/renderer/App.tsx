@@ -339,20 +339,18 @@ function SidebarUpdateBar({
 
   // 默认中性灰；仅「点击检查后发现有新版本」才绿色强调
   const mutedBtnCls =
-    'inline-flex w-full min-w-0 items-center justify-center gap-1 truncate rounded-xl bg-muted px-2.5 py-1.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-60';
+    'inline-flex h-8 shrink-0 items-center justify-center gap-1 rounded-xl bg-muted px-2.5 text-[11px] font-medium leading-none text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-60';
   const okBtnCls =
-    'inline-flex w-full min-w-0 items-center justify-center gap-1 truncate rounded-xl bg-ok/15 px-2.5 py-1.5 text-[11px] font-medium text-ok transition-colors hover:bg-ok/25';
+    'inline-flex h-8 shrink-0 items-center justify-center gap-1 rounded-xl bg-ok/15 px-2.5 text-[11px] font-medium leading-none text-ok transition-colors hover:bg-ok/25';
 
   return (
-    <div className="flex min-w-0 flex-col gap-1.5">
-      <div className="flex min-w-0 items-center gap-1.5">
-        <span
-          className="chip min-w-0 flex-1 truncate px-2 py-1 font-mono text-[11px] tabular-nums"
-          title={chipTitle}
-        >
-          {buildId ?? '…'}
-        </span>
-      </div>
+    <div className="flex min-w-0 items-center gap-1.5">
+      <span
+        className="chip min-w-0 flex-1 truncate px-2 py-1 font-mono text-[11px] tabular-nums"
+        title={chipTitle}
+      >
+        {buildId ?? '…'}
+      </span>
       {checkedOk && hasUpdate ? (
         <a
           href={update?.htmlUrl ?? '#'}
@@ -361,8 +359,8 @@ function SidebarUpdateBar({
           className={okBtnCls}
           title={`远端 beta HEAD ${update?.latest ?? ''}，本地 ${buildId ?? ''}`}
         >
-          <ArrowUpCircle className="h-3 w-3 shrink-0" />
-          <span className="truncate">{actionLabel}</span>
+          <ArrowUpCircle className="h-3 w-3 shrink-0" aria-hidden />
+          <span className="max-w-[5.5rem] truncate">{actionLabel}</span>
         </a>
       ) : (
         <button
@@ -372,8 +370,11 @@ function SidebarUpdateBar({
           className={mutedBtnCls}
           title={update?.error || '点击后对照 GitHub beta 最新 commit hash（不会自动检测）'}
         >
-          <RefreshCcw className={cn('h-3 w-3 shrink-0', loading && 'animate-spin')} />
-          <span className="truncate">{actionLabel}</span>
+          <RefreshCcw
+            className={cn('h-3 w-3 shrink-0', loading && 'animate-spin')}
+            aria-hidden
+          />
+          <span className="max-w-[5.5rem] truncate">{actionLabel}</span>
         </button>
       )}
     </div>
