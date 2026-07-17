@@ -2,8 +2,8 @@
 """账号侧车标签（NSFW 等），供 SSO 号池 / Auth 列表展示。
 
 落盘优先级（写用第一可写路径；读合并候选）:
-  1) $DATA_DIR/account_tags.json   ← Docker 持久卷，重启不丢
-  2) register/data/account_tags.json
+  1) $DATA_DIR/account_tags.json   ← Docker 持久卷 ./data:/data，重建镜像不丢
+  2) register/data/account_tags.json  ← 兼容旧数据（entrypoint 须 exclude data/）
   {
     "by_email": { "a@b.com": { "nsfw_enabled": true, "nsfw_at": "..." } },
     "by_sso_hash": { "sha256...": { ... } }
@@ -15,21 +15,29 @@ import hashlib
 import json
 import os
 import threading
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
 _LOCK = threading.Lock()
 
+# 与 Node settingsStore / docker-compose DATA_DIR 默认一致
+_DEFAULT_DATA_DIR = "/data"
+
+
+def _data_dir() -> Path:
+    raw = (os.environ.get("DATA_DIR") or "").strip()
+    if raw:
+        return Path(raw).expanduser()
+    # Docker/生产默认；本地开发也可设 DATA_DIR
+    return Path(_DEFAULT_DATA_DIR)
+
 
 def _path_candidates() -> list[Path]:
     """读/写候选路径。DATA_DIR 优先，避免 hot-sync 覆盖 register/data。"""
     out: list[Path] = []
-    data_dir = (os.environ.get("DATA_DIR") or "").strip()
-    if data_dir:
-        out.append(Path(data_dir) / "account_tags.json")
-    # 兼容旧路径
+    out.append(_data_dir() / "account_tags.json")
+    # 兼容旧路径（可能已被 rsync 清过）
     reg = Path(__file__).resolve().parent
     out.append(reg / "data" / "account_tags.json")
     out.append(reg / "account_tags.json")
@@ -37,7 +45,10 @@ def _path_candidates() -> list[Path]:
     seen: set[str] = set()
     uniq: list[Path] = []
     for p in out:
-        k = str(p)
+        try:
+            k = str(p.resolve())
+        except Exception:
+            k = str(p)
         if k not in seen:
             seen.add(k)
             uniq.append(p)
@@ -45,9 +56,13 @@ def _path_candidates() -> list[Path]:
 
 
 def _primary_path() -> Path:
-    """写路径：优先 DATA_DIR。"""
-    cands = _path_candidates()
-    return cands[0] if cands else Path(__file__).resolve().parent / "data" / "account_tags.json"
+    """写路径：始终 DATA_DIR（持久卷），不写会随镜像重建被清掉的路径。"""
+    return _data_dir() / "account_tags.json"
+
+
+def primary_tags_path() -> str:
+    """供日志/诊断。"""
+    return str(_primary_path())
 
 
 def _now_iso() -> str:
@@ -104,22 +119,23 @@ def _load() -> dict[str, Any]:
     return merged
 
 
-def _save(data: dict[str, Any]) -> None:
+def _save(data: dict[str, Any]) -> Path:
+    """只写 DATA_DIR 持久路径；返回写入路径。"""
     path = _primary_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    payload = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+    tmp.write_text(payload, encoding="utf-8")
     tmp.replace(path)
-    # 兼容：若主路径是 DATA_DIR，仍尝试镜像一份到 register/data（失败忽略）
+    # 可选：再镜像到 register/data（仅备份；失败忽略）。主源始终是 DATA_DIR。
     try:
         legacy = Path(__file__).resolve().parent / "data" / "account_tags.json"
         if path.resolve() != legacy.resolve():
             legacy.parent.mkdir(parents=True, exist_ok=True)
-            legacy.write_text(
-                json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-            )
+            legacy.write_text(payload, encoding="utf-8")
     except Exception:
         pass
+    return path
 
 
 def set_nsfw_tag(
@@ -130,7 +146,7 @@ def set_nsfw_tag(
     error: str = "",
     steps: Any = None,
 ) -> dict[str, Any]:
-    """写入 NSFW 开启结果（成功/失败都记）。"""
+    """写入 NSFW 开启结果（成功/失败都记）。始终落盘到 DATA_DIR。"""
     tag = {
         "nsfw_enabled": bool(enabled),
         "nsfw_attempted": True,
@@ -154,7 +170,11 @@ def set_nsfw_tag(
             prev = dict(data["by_sso_hash"].get(h) or {})
             prev.update(tag)
             data["by_sso_hash"][h] = prev
-        _save(data)
+        if not email_k and not h:
+            # 无键无法索引：仍写入空操作避免静默丢
+            raise ValueError("set_nsfw_tag requires email or sso")
+        written = _save(data)
+        tag["_written_to"] = str(written)
     return tag
 
 
@@ -173,6 +193,35 @@ def get_tag(*, email: str = "", sso: str = "") -> dict[str, Any]:
 def dump_all() -> dict[str, Any]:
     with _LOCK:
         return _load()
+
+
+# auth 文件上应保留的 NSFW 字段（重 mint / 探针回写时不得抹掉）
+NSFW_AUTH_KEYS = (
+    "nsfw_enabled",
+    "nsfw_attempted",
+    "nsfw_at",
+    "nsfw_error",
+    "nsfw_steps",
+)
+
+
+def preserve_nsfw_fields(
+    new_doc: dict[str, Any],
+    old_doc: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """把旧 auth JSON 的 nsfw_* 合并进新文档（仅当新文档尚未标记 attempted）。"""
+    if not isinstance(new_doc, dict):
+        return new_doc
+    if new_doc.get("nsfw_attempted") is True:
+        return new_doc
+    if not isinstance(old_doc, dict):
+        return new_doc
+    if old_doc.get("nsfw_attempted") is not True:
+        return new_doc
+    for k in NSFW_AUTH_KEYS:
+        if k in old_doc:
+            new_doc[k] = old_doc[k]
+    return new_doc
 
 
 def patch_auth_file_nsfw(path: str | Path, *, enabled: bool, error: str = "") -> bool:

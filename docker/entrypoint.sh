@@ -9,7 +9,10 @@ REGISTER_SEED="${REGISTER_SEED:-/opt/register-seed}"
 
 mkdir -p /data
 mkdir -p "${SSO_DIR:-/data/sso}"
-mkdir -p "${REGISTER_DIR}/sso" "${REGISTER_DIR}/logs"
+mkdir -p /data/auth
+# NSFW 等侧车标签必须在 DATA_DIR 持久卷（重建镜像不丢）
+touch /data/account_tags.json 2>/dev/null || true
+mkdir -p "${REGISTER_DIR}/sso" "${REGISTER_DIR}/logs" "${REGISTER_DIR}/data"
 mkdir -p /app/register/sso /app/register/logs
 
 register_is_complete() {
@@ -38,7 +41,9 @@ sync_register_from() {
     rsync -a --delete \
       --exclude 'logs/' \
       --exclude 'sso/' \
+      --exclude 'data/' \
       --exclude 'config.json' \
+      --exclude 'account_tags.json' \
       --exclude '__pycache__/' \
       --exclude '*.pyc' \
       --exclude '.pytest_cache/' \
@@ -58,13 +63,15 @@ sync_register_from() {
     done
     # 清空目标中除 logs/sso/config.json 外的旧脚本，再拷入新文件
     find "$dst" -mindepth 1 -maxdepth 1 \
-      ! -name 'logs' ! -name 'sso' ! -name 'config.json' \
+      ! -name 'logs' ! -name 'sso' ! -name 'data' ! -name 'config.json' ! -name 'account_tags.json' \
       -exec rm -rf {} + 2>/dev/null || true
     # shellcheck disable=SC2035
     tar -C "$src" \
       --exclude='logs' \
       --exclude='sso' \
+      --exclude='data' \
       --exclude='config.json' \
+      --exclude='account_tags.json' \
       --exclude='__pycache__' \
       --exclude='*.pyc' \
       -cf - . | tar -C "$dst" -xf -

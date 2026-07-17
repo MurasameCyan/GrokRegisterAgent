@@ -1,6 +1,7 @@
 /**
- * 读取 register/data/account_tags.json（NSFW 等侧车标签）
+ * 读取 account_tags.json（NSFW 等侧车标签）
  * 与 Python account_tags.py 格式一致。
+ * 主路径：DATA_DIR/account_tags.json（Docker ./data 卷，重建镜像不丢）
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -23,9 +24,16 @@ export interface AccountTagsFile {
   by_sso_hash: Record<string, AccountTagEntry>;
 }
 
+/** 主持久路径（与 Python _primary_path 一致） */
+export function primaryAccountTagsPath(): string {
+  const dataDir = String(process.env.DATA_DIR || '/data').trim() || '/data';
+  return join(dataDir, 'account_tags.json');
+}
+
 function tagsPathCandidates(): string[] {
   // 同步解析；DATA_DIR 优先（与 Python 持久落盘一致）
   const out: string[] = [];
+  out.push(primaryAccountTagsPath());
   const dataDir = String(process.env.DATA_DIR || '/data').trim();
   if (dataDir) {
     out.push(join(dataDir, 'account_tags.json'));

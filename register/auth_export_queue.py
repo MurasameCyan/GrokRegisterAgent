@@ -503,23 +503,32 @@ def _maybe_nsfw_and_sub2api(
                 log("[auth-queue] NSFW 跳过：无 SSO cookie（tag=fail）")
             # 侧车 tag（SSO/邮箱）
             try:
-                set_nsfw_tag(
+                from account_tags import primary_tags_path
+
+                written = set_nsfw_tag(
                     enabled=nsfw_ok,
                     email=email_val,
                     sso=sso_val,
                     error=nsfw_err,
                     steps=nsfw_steps,
                 )
+                log(
+                    f"[auth-queue] nsfw tag saved -> "
+                    f"{written.get('_written_to') or primary_tags_path()} "
+                    f"email={email_val or '-'} enabled={nsfw_ok}"
+                )
             except Exception as te:
                 log(f"[auth-queue] nsfw tag write skip: {te}")
-            # 写回每个 auth 文件
+            # 写回每个 auth 文件（侧车为主；auth 内字段便于单文件导出）
             for p in paths:
                 if not p:
                     continue
                 try:
-                    patch_auth_file_nsfw(p, enabled=nsfw_ok, error=nsfw_err)
-                except Exception:
-                    pass
+                    ok_patch = patch_auth_file_nsfw(p, enabled=nsfw_ok, error=nsfw_err)
+                    if not ok_patch:
+                        log(f"[auth-queue] nsfw patch auth file fail: {p}")
+                except Exception as pe:
+                    log(f"[auth-queue] nsfw patch auth file err: {pe}")
             mint_result["nsfw_enabled"] = nsfw_ok
             mint_result["nsfw_attempted"] = True
             mint_result["nsfw_error"] = nsfw_err if not nsfw_ok else ""

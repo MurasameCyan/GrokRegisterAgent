@@ -1781,14 +1781,26 @@ def cpa_auth_filename(record: dict, *, channel: str = "") -> str:
 
 
 def write_cpa_auth(auth_dir: Path, record: dict, *, channel: str = "") -> Path:
-    """写出 CPA 可热加载的 xai-<email>[-channel].json（原子替换）。"""
+    """写出 CPA 可热加载的 xai-<email>[-channel].json（原子替换）。
+
+    重 mint 覆盖同名文件时保留已有 nsfw_*（避免 UI 标签丢失）。
+    """
     auth_dir.mkdir(parents=True, exist_ok=True)
     path = auth_dir / cpa_auth_filename(record, channel=channel)
+    out = dict(record) if isinstance(record, dict) else record
+    if isinstance(out, dict) and path.is_file():
+        try:
+            old_doc = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(old_doc, dict):
+                from account_tags import preserve_nsfw_fields
+
+                out = preserve_nsfw_fields(out, old_doc)
+        except Exception:
+            pass
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp.write_text(json.dumps(out, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.replace(tmp, path)
     return path
-
 
 def upload_cpa_auth_remote(
     base_url: str,

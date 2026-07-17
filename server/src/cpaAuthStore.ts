@@ -399,27 +399,28 @@ export async function listCpaAuth(): Promise<{ dir: string; items: CpaAuthItem[]
       const poolHasPassword = emailStr
         ? Boolean(poolPw.get(emailStr.trim().toLowerCase()))
         : false;
-      // NSFW：auth JSON 字段优先，否则侧车 account_tags
+      // NSFW：侧车 account_tags（DATA_DIR 持久）优先；auth JSON 作回退
+      // 重 mint 可能冲掉 auth 内字段，侧车才是真相源
       let nsfwEnabled: boolean | null = null;
       let nsfwAttempted = false;
       let nsfwAt: string | null = null;
       let nsfwError: string | null = null;
-      if (data.nsfw_attempted === true || data.nsfwAttempted === true) {
+      const sideNsfw = nsfwStatusFromTag(
+        lookupNsfwTag(accountTags, {
+          email: emailStr,
+          ssoHash: ssoHash || undefined
+        })
+      );
+      if (sideNsfw.nsfwAttempted) {
+        nsfwEnabled = sideNsfw.nsfwEnabled;
+        nsfwAttempted = true;
+        nsfwAt = sideNsfw.nsfwAt || null;
+        nsfwError = sideNsfw.nsfwError || null;
+      } else if (data.nsfw_attempted === true || data.nsfwAttempted === true) {
         nsfwAttempted = true;
         nsfwEnabled = data.nsfw_enabled === true || data.nsfwEnabled === true;
         nsfwAt = String(data.nsfw_at || data.nsfwAt || '').trim() || null;
         nsfwError = String(data.nsfw_error || data.nsfwError || '').trim() || null;
-      } else {
-        const side = nsfwStatusFromTag(
-          lookupNsfwTag(accountTags, {
-            email: emailStr,
-            ssoHash: ssoHash || undefined
-          })
-        );
-        nsfwEnabled = side.nsfwEnabled;
-        nsfwAttempted = side.nsfwAttempted;
-        nsfwAt = side.nsfwAt || null;
-        nsfwError = side.nsfwError || null;
       }
       const nsfwStatus: 'ok' | 'fail' | 'none' = !nsfwAttempted
         ? 'none'
