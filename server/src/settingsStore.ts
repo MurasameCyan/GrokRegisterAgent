@@ -75,7 +75,7 @@ function applyEnvOverrides(s: AppSettings, source: Partial<AppSettings>): AppSet
     source.runCount === undefined &&
     Number.isInteger(envRunCount) &&
     (envRunCount as number) >= 1 &&
-    (envRunCount as number) <= 50;
+    (envRunCount as number) <= 233;
 
   const pick = (saved: string, envVal?: string, fallback = ''): string => {
     const v = (saved || '').trim();

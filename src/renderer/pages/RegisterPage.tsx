@@ -4,7 +4,9 @@ import {
   Play,
   Save,
   StopCircle,
-  TriangleAlert
+  TriangleAlert,
+  ChevronDown,
+  ChevronRight
 } from 'lucide-react';
 import { Button } from '@renderer/components/ui/Button';
 import { LiveProgressBar, liveProgressPercent } from '@renderer/components/ui/LiveProgressBar';
@@ -197,6 +199,8 @@ function RuntimeSettingsInline() {
   const push = useToastStore((s) => s.push);
   const [draft, setDraft] = useState<AppSettings | null>(null);
   const [saving, setSaving] = useState(false);
+  /** 默认折叠：点标题展开 */
+  const [open, setOpen] = useState(false);
 
   useEffect(() => {
     if (data) setDraft(data);
@@ -294,26 +298,48 @@ function RuntimeSettingsInline() {
   const segOff =
     'bg-transparent text-muted-foreground hover:bg-card/70 hover:text-foreground';
 
+  const planSummary =
+    [planA ? 'A' : '', planB ? 'B' : '', planC ? 'C' : ''].filter(Boolean).join('/') || '—';
+  const mintSummary =
+    mintMode === 'device' ? 'Mint B' : mintMode === 'double' ? 'Mint C' : 'Mint A';
+
   return (
-    <div className="space-y-3 rounded-xl border border-border bg-card/80 p-3.5 shadow-[var(--ios-shadow)]">
+    <div className="rounded-xl border border-border bg-card/80 p-3.5 shadow-[var(--ios-shadow)]">
       <div className="flex items-center justify-between gap-2">
-        <div>
-          <div className="text-[13px] font-semibold tracking-[-0.02em]">运行设置</div>
-          <p className="mt-0.5 text-[11px] text-muted-foreground">
-            保存后下次启动生效 · Plan 可多选 · Mint 三选一
-          </p>
-        </div>
-        <Button
-          size="sm"
-          onClick={() => void save()}
-          disabled={!dirty || saving}
-          className="shrink-0"
+        <button
+          type="button"
+          className="flex min-w-0 flex-1 items-start gap-2 text-left"
+          onClick={() => setOpen((v) => !v)}
+          title={open ? '折叠运行设置' : '展开运行设置'}
         >
-          <Save className="h-3.5 w-3.5" />
-          {saving ? '保存中…' : '保存'}
-        </Button>
+          {open ? (
+            <ChevronDown className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+          ) : (
+            <ChevronRight className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+          )}
+          <div className="min-w-0">
+            <div className="text-[13px] font-semibold tracking-[-0.02em]">运行设置</div>
+            <p className="mt-0.5 text-[11px] text-muted-foreground">
+              {open
+                ? '保存后下次启动生效 · Plan 可多选 · Mint 三选一'
+                : `轮数 ${draft.runCount} · 并行 ${draft.maxParallelWorkers ?? 3} · Plan ${planSummary} · ${mintSummary}`}
+            </p>
+          </div>
+        </button>
+        {open ? (
+          <Button
+            size="sm"
+            onClick={() => void save()}
+            disabled={!dirty || saving}
+            className="shrink-0"
+          >
+            <Save className="h-3.5 w-3.5" />
+            {saving ? '保存中…' : '保存'}
+          </Button>
+        ) : null}
       </div>
-      <div className="grid gap-3 sm:grid-cols-2">
+      {open ? (
+      <div className="mt-3 grid gap-3 sm:grid-cols-2">
         <div className="rounded-xl border border-border/60 bg-muted/50 p-3">
           <div className="flex items-center justify-between gap-2">
             <div className="field-label">轮数（每路）</div>
@@ -322,7 +348,7 @@ function RuntimeSettingsInline() {
           <div className="mt-2">
             <Slider
               min={1}
-              max={50}
+              max={233}
               value={draft.runCount}
               onValueChange={(v) => update('runCount', v)}
             />
@@ -415,6 +441,7 @@ function RuntimeSettingsInline() {
           </p>
         </div>
       </div>
+      ) : null}
     </div>
   );
 }
