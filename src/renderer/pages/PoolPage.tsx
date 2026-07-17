@@ -140,7 +140,7 @@ export function PoolPage() {
   const [openId, setOpenId] = useState<string | null>(null);
   const [mintProg, setMintProg] = useState<MintProgress | null>(null);
   const [emailMasked, setEmailMasked] = useState(() => loadEmailPrivacyMask());
-  /** 补 Auth 时跳过 bot_flag_source=1（默认开，localStorage 记忆） */
+  /** 补签 Auth 时跳过 bot_flag_source=1（默认开，localStorage 记忆） */
   const [skipBotFlag1, setSkipBotFlag1] = useState(() => {
     try {
       const v = localStorage.getItem('gra-skip-bot-flag1');
@@ -779,13 +779,13 @@ export function PoolPage() {
             : ok > 0
               ? 'ok'
               : 'warn',
-        title: 'SSO 补 Auth 完成',
+        title: 'SSO 补签 Auth 完成',
         description: parts.join(' · ')
       });
     } catch (err) {
       push({
         tone: 'danger',
-        title: '补 Auth 失败',
+        title: '补签 Auth 失败',
         description: err instanceof Error ? err.message : String(err)
       });
     } finally {
@@ -837,7 +837,7 @@ export function PoolPage() {
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="min-w-0">
               <p className="text-[13px] font-semibold tracking-tight">
-                {mintProg.running ? '补 Auth 进行中' : '补 Auth 已完成'}
+                {mintProg.running ? '补签 Auth 进行中' : '补签 Auth 已完成'}
               </p>
               <p className="mt-0.5 truncate text-[12px] text-muted-foreground">
                 {mintProg.done}/{mintProg.total}
@@ -922,7 +922,7 @@ export function PoolPage() {
                     tab.id === 'no_sso'
                       ? '无 SSO 的账号（分页与列表按此筛选）'
                       : tab.id === 'has_sso'
-                        ? '含 SSO，可验活/补 Auth'
+                        ? '含 SSO，可验活/补签 Auth'
                         : '不限制是否有 SSO'
                   }
                 >
@@ -1054,10 +1054,10 @@ export function PoolPage() {
                 {minting
                   ? `Mint ${mintProg?.done ?? 0}/${mintProg?.total ?? 0}`
                   : selected.size > 0
-                    ? `补 Auth(${picked.filter((a) => a.sso).length})`
+                    ? `补签 Auth(${picked.filter((a) => a.sso).length})`
                     : hasActiveFilter
-                      ? `补 Auth(${filteredAccounts.filter((a) => a.sso).length})`
-                      : '补 Auth'}
+                      ? `补签 Auth(${filteredAccounts.filter((a) => a.sso).length})`
+                      : '补签 Auth'}
               </Button>
               <Button
                 variant="secondary"
@@ -1075,8 +1075,8 @@ export function PoolPage() {
                 }}
                 title={
                   skipBotFlag1
-                    ? '补 Auth 跳过 bot_flag=1（点击关闭）'
-                    : '补 Auth 不跳过 flag1（点击开启）'
+                    ? '补签 Auth 跳过 bot_flag=1（点击关闭）'
+                    : '补签 Auth 不跳过 flag1（点击开启）'
                 }
               >
                 {skipBotFlag1 ? '跳过flag1:开' : '跳过flag1:关'}

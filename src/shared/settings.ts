@@ -277,7 +277,7 @@ export interface AppSettings {
    */
   proxyIpIntervalSec: number;
   /**
-   * 补 Auth / mint 时跳过 SSO JWT 中 bot_flag_source=1 的账号。
+   * 补签 Auth / mint 时跳过 SSO JWT 中 bot_flag_source=1 的账号。
    * 默认 true。无法抹掉已签发 claim，仅过滤。
    */
   skipBotFlag1OnMint: boolean;

@@ -2671,7 +2671,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
         </div>
       ) : items.length === 0 ? (
         <div className="rounded-[16px] border border-dashed border-border bg-card p-12 text-center text-[13px] text-muted-foreground">
-          Auth 目录为空。注册成功自动导出，或在 SSO 页点「补 Auth」。
+          Auth 目录为空。注册成功自动导出，或在 SSO 页点「补签 Auth」。
         </div>
       ) : filteredItems.length === 0 ? (
         <div className="rounded-[16px] border border-dashed border-border bg-card p-12 text-center text-[13px] text-muted-foreground">
