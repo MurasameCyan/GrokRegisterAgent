@@ -947,7 +947,7 @@ export function SettingsForm() {
           />
           <ToggleRow
             label="Plan C · Hybrid 协议"
-            hint="短浏览器采 token + 协议注册（约 1～2 分钟；失败不影响已开的 A/B）"
+            hint="短浏览器采 token + 协议注册（约 1～2 分钟）"
             checked={
               draft.registerPlanCEnabled === true ||
               draft.registerMode === 'hybrid'
@@ -1168,7 +1168,7 @@ export function SettingsForm() {
                     />
                   </Field>
                   <Field
-                    label="队列上限（背压）"
+                    label="队列上限"
                     hint="0=2×Worker；满则入队等待，防堆积崩"
                   >
                     <Input
