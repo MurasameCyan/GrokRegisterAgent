@@ -141,14 +141,14 @@ export function PoolPage() {
   const [openId, setOpenId] = useState<string | null>(null);
   const [mintProg, setMintProg] = useState<MintProgress | null>(null);
   const [emailMasked, setEmailMasked] = useState(() => loadEmailPrivacyMask());
-  /** 补签 Auth 时跳过 bot_flag_source=1（默认开，localStorage 记忆） */
+  /** 补签 Auth 时跳过 bot_flag_source=1（默认关，localStorage 记忆；开=蓝） */
   const [skipBotFlag1, setSkipBotFlag1] = useState(() => {
     try {
       const v = localStorage.getItem('gra-skip-bot-flag1');
-      if (v === null) return true;
+      if (v === null) return false;
       return v === '1' || v === 'true';
     } catch {
-      return true;
+      return false;
     }
   });
   /** CPA auth 目录中已存在的邮箱（小写），用于「已转换」标签 */
@@ -999,7 +999,7 @@ export function PoolPage() {
                       : '补签 Auth'}
               </Button>
               <Button
-                variant="secondary"
+                variant={skipBotFlag1 ? 'primary' : 'secondary'}
                 size="sm"
                 onClick={() => {
                   setSkipBotFlag1((v) => {
@@ -1014,11 +1014,11 @@ export function PoolPage() {
                 }}
                 title={
                   skipBotFlag1
-                    ? '补签 Auth 跳过 Bot（bot_flag=1，点击关闭）'
-                    : '补签 Auth 不跳过 Bot（点击开启）'
+                    ? '已开启：补签 Auth 跳过 Bot（bot_flag=1）· 点击关闭'
+                    : '已关闭：补签 Auth 不跳过 Bot · 点击开启（开启为蓝色）'
                 }
               >
-                {skipBotFlag1 ? '跳过Bot:开' : '跳过Bot:关'}
+                跳过 Bot
               </Button>
             </div>
             <div className="flex flex-wrap items-center gap-1.5">
