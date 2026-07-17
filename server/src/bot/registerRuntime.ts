@@ -277,6 +277,27 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
   } else {
     config.sub2api_export_enabled = false;
   }
+  // Auth → sub2api 远程推送（Bearer Token）
+  const allowSub2 =
+    (settings as { pushAuthToSub2api?: boolean }).pushAuthToSub2api === true ||
+    (settings as { autoPushAuthToSub2api?: boolean }).autoPushAuthToSub2api === true;
+  const autoSub2 =
+    (settings as { autoPushAuthToSub2api?: boolean }).autoPushAuthToSub2api === true ||
+    ((settings as { autoPushAuthToSub2api?: boolean }).autoPushAuthToSub2api ===
+      undefined &&
+      (settings as { pushAuthToSub2api?: boolean }).pushAuthToSub2api === true);
+  config.push_auth_to_sub2api = autoSub2;
+  config.allow_push_auth_to_sub2api = allowSub2;
+  const sub2Url = allowSub2
+    ? String((settings as { sub2apiRemoteUrl?: string }).sub2apiRemoteUrl || '').trim()
+    : '';
+  const sub2Token = allowSub2
+    ? String((settings as { sub2apiAdminToken?: string }).sub2apiAdminToken || '').trim()
+    : '';
+  if (sub2Url) config.sub2api_remote_url = sub2Url;
+  else delete config.sub2api_remote_url;
+  if (sub2Token) config.sub2api_admin_token = sub2Token;
+  else delete config.sub2api_admin_token;
   {
     const re = Number(
       (settings as { browserRecycleEvery?: number }).browserRecycleEvery ?? 5

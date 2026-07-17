@@ -330,6 +330,11 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
   const remoteReady = Boolean(
     String(settings?.cpaRemoteUrl || '').trim() && String(settings?.cpaManagementKey || '').trim()
   );
+  const sub2RemoteReady = Boolean(
+    String(settings?.sub2apiRemoteUrl || '').trim() &&
+      String(settings?.sub2apiAdminToken || '').trim() &&
+      (settings?.pushAuthToSub2api === true || settings?.autoPushAuthToSub2api === true)
+  );
 
   const toggleEmailPrivacy = () => {
     setEmailMasked((prev) => {
@@ -1335,6 +1340,102 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
     }
   };
 
+  const pushSub2apiBatch = async () => {
+    const filenames = targetNames();
+    if (filenames.length === 0) {
+      push({ tone: 'warn', title: '没有可推送的文件' });
+      return;
+    }
+    if (!sub2RemoteReady) {
+      push({
+        tone: 'warn',
+        title: '未配置 sub2api 推送',
+        description: '请在设置「推送设置」开启 Auth→sub2api 并填写地址与 Admin Token'
+      });
+      return;
+    }
+    const signal = beginBatch('push');
+    setProg({
+      kind: 'push',
+      total: filenames.length,
+      done: 0,
+      ok: 0,
+      failed: 0,
+      remoteOk: 0,
+      remoteFailed: 0,
+      running: true
+    });
+    try {
+      const CHUNK = 12;
+      let ok = 0;
+      let failed = 0;
+      let remoteUrl = '';
+      let cancelled = false;
+      for (let i = 0; i < filenames.length; i += CHUNK) {
+        throwIfAborted(signal);
+        const chunk = filenames.slice(i, i + CHUNK);
+        setProg((p) => (p ? { ...p, current: chunk[0], running: true } : p));
+        try {
+          const r = await window.api.pushSub2apiAuthRemote({
+            filenames: chunk,
+            concurrency: Math.min(4, chunk.length)
+          });
+          ok += r.ok || 0;
+          failed += r.failed || 0;
+          if (r.remoteUrl) remoteUrl = r.remoteUrl;
+        } catch (err) {
+          if (isAbortError(err) || signal.aborted) {
+            cancelled = true;
+            break;
+          }
+          throw err;
+        }
+        if (signal.aborted) {
+          cancelled = true;
+          break;
+        }
+        setProg({
+          kind: 'push',
+          total: filenames.length,
+          done: Math.min(i + chunk.length, filenames.length),
+          ok,
+          failed,
+          remoteOk: ok,
+          remoteFailed: failed,
+          running: i + chunk.length < filenames.length,
+          current: chunk[chunk.length - 1]
+        });
+      }
+      if (cancelled || signal.aborted) {
+        push({
+          tone: 'warn',
+          title: 'sub2api 推送已取消',
+          description: `已处理 ${ok + failed}/${filenames.length} · 成功 ${ok} · 失败 ${failed}`
+        });
+      } else {
+        push({
+          tone: failed > 0 ? 'warn' : 'ok',
+          title: 'sub2api 推送完成',
+          description: `成功 ${ok} · 失败 ${failed}${remoteUrl ? ` · ${remoteUrl}` : ''}（已转 grok 格式）`
+        });
+      }
+    } catch (err) {
+      if (isAbortError(err) || signal.aborted) {
+        push({ tone: 'warn', title: 'sub2api 推送已取消' });
+      } else {
+        push({
+          tone: 'danger',
+          title: 'sub2api 推送失败',
+          description: err instanceof Error ? err.message : String(err)
+        });
+      }
+    } finally {
+      endBatch('push');
+      window.setTimeout(() => setProg(null), 3000);
+    }
+  };
+
+
   const probeBatch = async () => {
     const filenames = targetNames();
     if (filenames.length === 0) {
@@ -2315,6 +2416,38 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                   <CloudUpload className="h-3.5 w-3.5" />
                 )}
                 {batchBusy === 'push' ? '取消' : '推送'}
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                className="min-w-[5.5rem] justify-center tabular-nums"
+                disabled={
+                  (Boolean(busy) && batchBusy !== 'push') ||
+                  (batchBusy !== 'push' && filteredItems.length === 0) ||
+                  !sub2RemoteReady
+                }
+                onClick={() => {
+                  if (batchBusy === 'push') cancelBatch('push');
+                  else void pushSub2apiBatch();
+                }}
+                title={
+                  batchBusy === 'push'
+                    ? '取消推送批量任务'
+                    : sub2RemoteReady
+                      ? selected.size > 0
+                        ? `转格式后推 sub2api（已选 ${selected.size}）`
+                        : hasActiveFilter
+                          ? `转格式后推 sub2api（筛选 ${filteredItems.length}）`
+                          : 'CPA auth → 转 grok 格式 → sub2api'
+                      : '请在设置开启 Auth→sub2api 并填写地址与 Token'
+                }
+              >
+                {batchBusy === 'push' ? (
+                  <Ban className="h-3.5 w-3.5" />
+                ) : (
+                  <CloudUpload className="h-3.5 w-3.5" />
+                )}
+                {batchBusy === 'push' ? '取消' : '推送 sub2'}
               </Button>
               <Button
                 variant={batchBusy === 'backfill' ? 'danger' : 'secondary'}

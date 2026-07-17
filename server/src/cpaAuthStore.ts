@@ -1033,6 +1033,330 @@ export async function pushCpaAuthRemoteBatch(input: {
   };
 }
 
+
+/**
+ * 批量把已有 CPA auth 转为 sub2api 官方账号形态后推送（不重新 mint）。
+ * 1) cpa_xai_to_sub2api_account  2) POST {sub2apiRemoteUrl}/api/v1/admin/accounts
+ */
+export async function pushSub2apiAuthRemoteBatch(input: {
+  filenames?: string[];
+  paths?: string[];
+  concurrency?: number;
+}): Promise<{
+  total: number;
+  ok: number;
+  failed: number;
+  remoteConfigured: boolean;
+  remoteUrl?: string;
+  results: CpaAuthBatchResultItem[];
+}> {
+  const settings = await loadSettings();
+  const base = String(
+    (settings as { sub2apiRemoteUrl?: string }).sub2apiRemoteUrl || ''
+  )
+    .trim()
+    .replace(/\/+$/, '');
+  const token = String(
+    (settings as { sub2apiAdminToken?: string }).sub2apiAdminToken || ''
+  ).trim();
+
+  if (!base || !token) {
+    throw new Error(
+      '未配置 sub2api：请在设置中填写「sub2api 地址」与「Admin Token」'
+    );
+  }
+
+  const dir = resolveAuthDir(settings.authDir);
+  const names = Array.isArray(input.filenames) ? input.filenames : [];
+  const paths = Array.isArray(input.paths) ? input.paths : [];
+  const jobs: { filename: string; path: string }[] = [];
+
+  for (const f of names) {
+    const name = String(f || '').trim();
+    if (!name) continue;
+    const full = join(dir, name);
+    assertInsideAuthDir(full, dir);
+    jobs.push({ filename: name, path: full });
+  }
+  for (const p of paths) {
+    const full = resolve(String(p || '').trim());
+    if (!full) continue;
+    assertInsideAuthDir(full, dir);
+    jobs.push({ filename: basename(full), path: full });
+  }
+  const seen = new Set<string>();
+  const unique = jobs.filter((j) => {
+    const k = j.path.toLowerCase();
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+  if (unique.length === 0) throw new Error('缺少 filenames 或 paths');
+  if (unique.length > 200) throw new Error('单次远程推送最多 200 个');
+
+  const concurrency = Math.min(6, Math.max(1, Number(input.concurrency) || 3));
+  const results: CpaAuthBatchResultItem[] = [];
+  let idx = 0;
+
+  function normalizeExpiresAt(raw: unknown): string {
+    if (raw == null || raw === '') return '';
+    if (typeof raw === 'number' && Number.isFinite(raw)) {
+      const ts = raw > 1e12 ? raw / 1000 : raw;
+      try {
+        return new Date(ts * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+      } catch {
+        return String(raw);
+      }
+    }
+    const s = String(raw).trim();
+    if (/^\d+(\.\d+)?$/.test(s)) return normalizeExpiresAt(Number(s));
+    if (s.endsWith('+00:00')) return s.slice(0, -6) + 'Z';
+    return s;
+  }
+
+  function cpaToSub2CreateBody(data: Record<string, unknown>): Record<string, unknown> {
+    const email = String(data.email || '').trim();
+    const name = email || String(data.name || data.sub || 'grok-oauth');
+    const access = String(data.access_token || '').trim();
+    const refresh = String(data.refresh_token || '').trim();
+    if (!access) throw new Error('missing access_token');
+    if (!refresh) throw new Error('missing refresh_token');
+    const clientId =
+      String(data.client_id || '').trim() ||
+      'b1a00492-073a-47ea-816f-4c329264a828';
+    let baseUrl =
+      String(data.base_url || '').trim() || 'https://cli-chat-proxy.grok.com/v1';
+    if (baseUrl.endsWith('cli-chat-proxy.grok.com')) baseUrl = baseUrl + '/v1';
+    const expiresAt = normalizeExpiresAt(data.expires_at ?? data.expired);
+    const credentials: Record<string, unknown> = {
+      access_token: access,
+      refresh_token: refresh,
+      token_type: String(data.token_type || 'Bearer'),
+      client_id: clientId,
+      base_url: baseUrl
+    };
+    if (expiresAt) credentials.expires_at = expiresAt;
+    if (data.id_token) credentials.id_token = String(data.id_token);
+    if (email) credentials.email = email;
+    if (data.sub) credentials.sub = String(data.sub);
+    const body: Record<string, unknown> = {
+      name,
+      platform: 'grok',
+      type: 'oauth',
+      credentials,
+      concurrency: 1,
+      priority: 0,
+      extra: {
+        auth_provider: 'xai',
+        provider: 'xai',
+        source: 'cpa_xai',
+        email,
+        mint_channel: data.mint_channel,
+        has_grok_45: data.has_grok_45
+      }
+    };
+    return body;
+  }
+
+  async function worker() {
+    while (idx < unique.length) {
+      const i = idx++;
+      const job = unique[i];
+      try {
+        if (!existsSync(job.path)) {
+          results.push({
+            filename: job.filename,
+            ok: false,
+            remoteOk: false,
+            error: '文件不存在',
+            remoteError: '文件不存在'
+          });
+          continue;
+        }
+        const raw = await fsp.readFile(job.path, 'utf-8');
+        let data: Record<string, unknown>;
+        try {
+          data = JSON.parse(raw) as Record<string, unknown>;
+        } catch {
+          results.push({
+            filename: job.filename,
+            ok: false,
+            remoteOk: false,
+            error: 'JSON 解析失败',
+            remoteError: 'JSON 解析失败'
+          });
+          continue;
+        }
+        let body: Record<string, unknown>;
+        try {
+          body = cpaToSub2CreateBody(data);
+        } catch (convErr) {
+          const msg = convErr instanceof Error ? convErr.message : String(convErr);
+          results.push({
+            filename: job.filename,
+            email: String(data.email || ''),
+            ok: false,
+            remoteOk: false,
+            error: `格式转换失败: ${msg}`,
+            remoteError: `格式转换失败: ${msg}`
+          });
+          continue;
+        }
+        const url = `${base}/api/v1/admin/accounts`;
+        const res = await proxiedRequest(url, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          },
+          body,
+          timeoutMs: 30000
+        });
+        const email = String(data.email || body.name || '');
+        if (res.status >= 400) {
+          const respBody =
+            typeof res.data === 'string'
+              ? res.data
+              : res.data != null
+                ? JSON.stringify(res.data)
+                : '';
+          const msg = `HTTP ${res.status}${respBody ? `: ${respBody.slice(0, 200)}` : ''}`;
+          results.push({
+            filename: job.filename,
+            email,
+            ok: false,
+            remoteOk: false,
+            remoteError: msg,
+            error: msg
+          });
+        } else {
+          results.push({
+            filename: job.filename,
+            email,
+            ok: true,
+            remoteOk: true,
+            remoteName: String(body.name || '')
+          });
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        results.push({
+          filename: job.filename,
+          ok: false,
+          remoteOk: false,
+          error: msg,
+          remoteError: msg
+        });
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  const ok = results.filter((r) => r.ok).length;
+  return {
+    total: results.length,
+    ok,
+    failed: results.length - ok,
+    remoteConfigured: true,
+    remoteUrl: base,
+    results
+  };
+}
+
+/**
+ * 检测远程 sub2api Admin API 连通性（不上传账号）。
+ * GET {base}/api/v1/admin/accounts?page=1&page_size=1
+ */
+export async function testSub2apiRemoteConnectivity(input?: {
+  url?: string;
+  token?: string;
+}): Promise<{
+  ok: boolean;
+  message: string;
+  ms?: number;
+  status?: number;
+  remoteUrl?: string;
+}> {
+  const settings = await loadSettings();
+  const base = String(
+    input?.url ?? (settings as { sub2apiRemoteUrl?: string }).sub2apiRemoteUrl ?? ''
+  )
+    .trim()
+    .replace(/\/+$/, '');
+  const token = String(
+    input?.token ??
+      (settings as { sub2apiAdminToken?: string }).sub2apiAdminToken ??
+      ''
+  ).trim();
+  if (!base) {
+    return { ok: false, message: '请先填写 sub2api 地址' };
+  }
+  if (!token) {
+    return { ok: false, message: '请先填写 sub2api Admin Token' };
+  }
+
+  const started = Date.now();
+  const url = `${base}/api/v1/admin/accounts?page=1&page_size=1`;
+  try {
+    const res = await proxiedRequest(url, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/json'
+      },
+      timeoutMs: 12000
+    });
+    const ms = Date.now() - started;
+    if (res.status >= 200 && res.status < 300) {
+      return {
+        ok: true,
+        message: '远程 sub2api 连通（Admin API 可用）',
+        ms,
+        status: res.status,
+        remoteUrl: base
+      };
+    }
+    if (res.status === 401 || res.status === 403) {
+      return {
+        ok: false,
+        message: `已连上 ${base}，但 Token 被拒（HTTP ${res.status}）`,
+        ms,
+        status: res.status,
+        remoteUrl: base
+      };
+    }
+    if (res.status === 404) {
+      return {
+        ok: false,
+        message: 'HTTP 404：请确认地址为 sub2api 根（不要带多余路径）',
+        ms,
+        status: 404,
+        remoteUrl: base
+      };
+    }
+    const body =
+      typeof res.data === 'string'
+        ? res.data
+        : res.data != null
+          ? JSON.stringify(res.data)
+          : '';
+    return {
+      ok: false,
+      message: `HTTP ${res.status}${body ? `: ${body.slice(0, 120)}` : ''}`,
+      ms,
+      status: res.status,
+      remoteUrl: base
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      message: err instanceof Error ? err.message : String(err),
+      ms: Date.now() - started,
+      remoteUrl: base
+    };
+  }
+}
+
 /**
  * 检测远程 CPA Management API 连通性（不上传文件）。
  * GET {base}/v0/management/auth-files 或 HEAD；401/403 也算「密钥到达了服务」。

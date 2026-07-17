@@ -182,6 +182,7 @@ export function SettingsForm() {
   /** 推送设置：连接设定默认折叠 */
   const [cpaConnOpen, setCpaConnOpen] = useState(false);
   const [g2ConnOpen, setG2ConnOpen] = useState(false);
+  const [s2ConnOpen, setS2ConnOpen] = useState(false);
   /** 外置 Turnstile Solver：默认折叠 */
   const [solverOpen, setSolverOpen] = useState(false);
   /** sing-box 运行状态 / 日志 / 解析节点 */
@@ -1335,12 +1336,16 @@ export function SettingsForm() {
             const autoAuthCpa = draft.autoPushAuthToCpa === true;
             const allowAuthG2 = draft.pushAuthToGrok2api === true;
             const autoAuthG2 = draft.autoPushAuthToGrok2api === true;
+            const allowSub2 = draft.pushAuthToSub2api === true;
+            const autoSub2 = draft.autoPushAuthToSub2api === true;
             if (autoSsoG2) bits.push('SSO→g2 自动');
             else if (allowSsoG2) bits.push('SSO→g2 允许');
             if (autoAuthCpa) bits.push('Auth→CPA 自动');
             else if (allowAuthCpa) bits.push('Auth→CPA 允许');
             if (autoAuthG2) bits.push('Auth→g2 自动');
             else if (allowAuthG2) bits.push('Auth→g2 允许');
+            if (autoSub2) bits.push('Auth→sub2api 自动');
+            else if (allowSub2) bits.push('Auth→sub2api 允许');
             return bits.length ? bits.join(' · ') : '未开启推送';
           })()}
           right={<PushConnectivityIcon draft={draft} />}
@@ -1355,8 +1360,11 @@ export function SettingsForm() {
             const autoAuthCpa = draft.autoPushAuthToCpa === true;
             const allowAuthG2 = draft.pushAuthToGrok2api === true;
             const autoAuthG2 = draft.autoPushAuthToGrok2api === true;
+            const allowSub2 = draft.pushAuthToSub2api === true;
+            const autoSub2 = draft.autoPushAuthToSub2api === true;
             const needG2Config = allowSsoG2 || allowAuthG2 || autoSsoG2 || autoAuthG2;
             const needCpaConfig = allowAuthCpa || autoAuthCpa;
+            const needS2Config = allowSub2 || autoSub2;
             const syncLegacyG2 = (ssoAllow: boolean, authAllow: boolean) =>
               ssoAllow || authAllow;
 
@@ -1414,6 +1422,18 @@ export function SettingsForm() {
                   draft.pushSsoToGrok2api === true || draft.autoPushSsoToGrok2api === true,
                   on || draft.pushAuthToGrok2api === true
                 )
+              });
+            };
+            const setAllowSub2 = (on: boolean) => {
+              patch({
+                pushAuthToSub2api: on,
+                autoPushAuthToSub2api: on ? draft.autoPushAuthToSub2api === true : false
+              });
+            };
+            const setAutoSub2 = (on: boolean) => {
+              patch({
+                autoPushAuthToSub2api: on,
+                pushAuthToSub2api: on ? true : draft.pushAuthToSub2api === true
               });
             };
             const targetBtn = (
@@ -1493,6 +1513,10 @@ export function SettingsForm() {
                   <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/50 pt-2">
                     <span className="text-[12px] font-medium text-foreground">grok2api</span>
                     {pair(allowAuthG2, autoAuthG2, setAllowAuthG2, setAutoAuthG2, 'Auth→g2')}
+                  </div>
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/50 pt-2">
+                    <span className="text-[12px] font-medium text-foreground">sub2api</span>
+                    {pair(allowSub2, autoSub2, setAllowSub2, setAutoSub2, 'Auth→sub2api')}
                   </div>
                 </div>
 
@@ -1639,6 +1663,74 @@ export function SettingsForm() {
                     )}
                   </div>
                 )}
+
+                {/* sub2api 连接 */}
+                {needS2Config && (
+                  <div className="space-y-3 rounded-xl border border-border/70 bg-muted/30 p-3">
+                    <button
+                      type="button"
+                      className="flex w-full items-start gap-2 text-left"
+                      onClick={() => setS2ConnOpen((v) => !v)}
+                      aria-expanded={s2ConnOpen}
+                    >
+                      {s2ConnOpen ? (
+                        <ChevronDown className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                      ) : (
+                        <ChevronRight className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[14px] font-medium text-foreground">
+                          sub2api 连接设定
+                        </div>
+                        <div className="mt-0.5 text-[11px] text-muted-foreground">
+                          Admin Bearer · mint/手动推送前会转 platform=grok
+                        </div>
+                      </div>
+                    </button>
+                    {s2ConnOpen && (
+                    <div className="space-y-3 border-t border-border/50 pt-3">
+                      <Field
+                        label="sub2api 地址"
+                        hint="服务根地址，如 https://sub2api.example.com"
+                      >
+                        <Input
+                          value={draft.sub2apiRemoteUrl || ''}
+                          onChange={(e) => update('sub2apiRemoteUrl', e.target.value)}
+                          placeholder="https://sub2api.example.com"
+                        />
+                      </Field>
+                      <Field
+                        label="Admin Token"
+                        hint="管理端登录后复制 Bearer Token"
+                      >
+                        <Input
+                          type="password"
+                          value={draft.sub2apiAdminToken || ''}
+                          onChange={(e) => update('sub2apiAdminToken', e.target.value)}
+                          placeholder="JWT / Admin Token"
+                          autoComplete="off"
+                        />
+                      </Field>
+                      <div className="flex flex-wrap items-center gap-3">
+                        <ConnectionTestButton
+                          label="检测远程连通性"
+                          disabled={
+                            !String(draft.sub2apiRemoteUrl || '').trim() ||
+                            !String(draft.sub2apiAdminToken || '').trim()
+                          }
+                          onTest={() =>
+                            window.api.testSub2apiRemote({
+                              url: draft.sub2apiRemoteUrl,
+                              token: draft.sub2apiAdminToken
+                            })
+                          }
+                        />
+                      </div>
+                    </div>
+                    )}
+                  </div>
+                )}
+
               </>
             );
           })()}

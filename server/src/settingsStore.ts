@@ -301,6 +301,19 @@ function merge(partial: unknown): AppSettings {
       ((p as AppSettings).autoPushAuthToCpa === undefined &&
         ((p as AppSettings).pushAuthToCpa === true ||
           (p as AppSettings).cpaRemotePushEnabled === true)),
+    pushAuthToSub2api: (p as AppSettings).pushAuthToSub2api === true,
+    autoPushAuthToSub2api:
+      (p as AppSettings).autoPushAuthToSub2api === true ||
+      ((p as AppSettings).autoPushAuthToSub2api === undefined &&
+        (p as AppSettings).pushAuthToSub2api === true),
+    sub2apiRemoteUrl:
+      typeof (p as AppSettings).sub2apiRemoteUrl === 'string'
+        ? (p as AppSettings).sub2apiRemoteUrl
+        : DEFAULT_SETTINGS.sub2apiRemoteUrl,
+    sub2apiAdminToken:
+      typeof (p as AppSettings).sub2apiAdminToken === 'string'
+        ? (p as AppSettings).sub2apiAdminToken
+        : DEFAULT_SETTINGS.sub2apiAdminToken,
     cpaRemoteUrl:
       typeof (p as AppSettings).cpaRemoteUrl === 'string'
         ? (p as AppSettings).cpaRemoteUrl

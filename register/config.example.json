@@ -38,6 +38,10 @@
     "max_mail_retry": 3,
     "sub2api_export_enabled": false,
     "sub2api_export_dir": "data/sub2api",
+    "push_auth_to_sub2api": false,
+    "allow_push_auth_to_sub2api": false,
+    "sub2api_remote_url": "",
+    "sub2api_admin_token": "",
     "proxy": "",
     "browser_proxy": "",
     "api": {

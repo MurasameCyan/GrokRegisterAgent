@@ -197,8 +197,22 @@ export interface AppSettings {
   enableNsfw: boolean;
   /** 注册后关 ZDR（已断开主流程，默认 false；模块保留） */
   enableDisableZdr: boolean;
-  /** mint 成功后导出 sub2api accounts（可选） */
+  /** mint 成功后导出 sub2api accounts 到本地 data/sub2api/（可选） */
   sub2apiExportEnabled: boolean;
+  /** Auth → sub2api：允许手动/导出推送（先转官方格式再 POST） */
+  pushAuthToSub2api: boolean;
+  /** Auth → sub2api：mint 成功后自动推送（隐含允许） */
+  autoPushAuthToSub2api: boolean;
+  /**
+   * sub2api 根地址，如 https://sub2api.example.com
+   * 写入 Python：sub2api_remote_url
+   */
+  sub2apiRemoteUrl: string;
+  /**
+   * sub2api Admin Bearer Token（管理端登录后复制）
+   * 写入 Python：sub2api_admin_token
+   */
+  sub2apiAdminToken: string;
   /** 每成功 N 次重启浏览器（0=仅失败/首轮）；默认 5 */
   browserRecycleEvery: number;
   /** 收码失败换邮箱最大次数（1～10，默认 3） */
@@ -378,6 +392,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   enableNsfw: false,
   enableDisableZdr: false,
   sub2apiExportEnabled: false,
+  pushAuthToSub2api: false,
+  autoPushAuthToSub2api: false,
+  sub2apiRemoteUrl: '',
+  sub2apiAdminToken: '',
   browserRecycleEvery: 5,
   maxMailRetry: 3,
   authDir: '',

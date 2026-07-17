@@ -59,11 +59,13 @@ import {
   mintCpaAuthFromSso,
   probeCpaAuthBatch,
   pushCpaAuthRemoteBatch,
+  pushSub2apiAuthRemoteBatch,
   readCpaAuthFiles,
   reloginCpaAuth,
   resignCpaAuth,
   resignCpaAuthBatch,
-  testCpaRemoteConnectivity
+  testCpaRemoteConnectivity,
+  testSub2apiRemoteConnectivity
 } from './cpaAuthStore.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -562,6 +564,21 @@ app.post('/api/cpa-auth/push-remote', async (req: Request, res: Response) => {
   }
 });
 
+/** 批量推送已有 auth 到 sub2api（先转 grok oauth 格式再 POST） */
+app.post('/api/cpa-auth/push-sub2api', async (req: Request, res: Response) => {
+  try {
+    const body = (req.body ?? {}) as {
+      filenames?: string[];
+      paths?: string[];
+      concurrency?: number;
+    };
+    res.json(await pushSub2apiAuthRemoteBatch(body));
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(400).json({ error: message });
+  }
+});
+
 /** 号池 SSO → CPA auth 补 mint */
 app.post('/api/cpa-auth/mint', async (req: Request, res: Response) => {
   try {
@@ -844,6 +861,17 @@ app.post('/api/test/cpa-remote', async (req, res) => {
   try {
     const body = (req.body ?? {}) as { url?: string; key?: string };
     const result = await testCpaRemoteConnectivity(body);
+    return res.json(result);
+  } catch (e: any) {
+    return res.json({ ok: false, message: `检测异常: ${e?.message || e}` });
+  }
+});
+
+/** 远程 sub2api Admin API 连通性检测（不上传账号） */
+app.post('/api/test/sub2api-remote', async (req, res) => {
+  try {
+    const body = (req.body ?? {}) as { url?: string; token?: string };
+    const result = await testSub2apiRemoteConnectivity(body);
     return res.json(result);
   } catch (e: any) {
     return res.json({ ok: false, message: `检测异常: ${e?.message || e}` });

@@ -381,6 +381,12 @@ export interface RendererApi {
     paths?: string[];
     concurrency?: number;
   }): Promise<CpaAuthBatchResult & { remoteConfigured?: boolean; remoteUrl?: string }>;
+  /** 批量推送已有 auth 到 sub2api（先转官方格式再 POST） */
+  pushSub2apiAuthRemote(input: {
+    filenames?: string[];
+    paths?: string[];
+    concurrency?: number;
+  }): Promise<CpaAuthBatchResult & { remoteConfigured?: boolean; remoteUrl?: string }>;
   /** 批量删除 CPA auth 文件 */
   deleteCpaAuth(input: {
     filenames?: string[];
@@ -445,6 +451,10 @@ export interface RendererApi {
   >;
   /** 远程 CPA Management API 连通性（地址+密钥；不上传文件） */
   testCpaRemote(input?: { url?: string; key?: string }): Promise<
+    TestResult & { status?: number; remoteUrl?: string }
+  >;
+  /** 远程 sub2api Admin API 连通性（地址+Token；不上传账号） */
+  testSub2apiRemote(input?: { url?: string; token?: string }): Promise<
     TestResult & { status?: number; remoteUrl?: string }
   >;
   /** 远程 grok2api 管理登录连通性（不上传账号） */

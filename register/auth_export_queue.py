@@ -536,13 +536,29 @@ def _maybe_nsfw_and_sub2api(
                 )
             except Exception:
                 pass
-    # sub2api 导出
+    # sub2api 本地导出 + 可选远程推送（失败不挡主流程）
     try:
         from cpa_to_sub2api import export_after_cpa_result
 
         export_after_cpa_result(mint_result, config=conf, log=log)
     except Exception as e:
-        log(f"[auth-queue] sub2api skip: {e}")
+        log(f"[auth-queue] sub2api export skip: {e}")
+    try:
+        from sub2api_push import push_after_cpa_result
+
+        pr = push_after_cpa_result(mint_result, config=conf, log=log)
+        if pr and pr.get("ok"):
+            log(
+                f"[auth-queue] ✔ Auth→sub2api 推送 OK "
+                f"ok={pr.get('ok_count')} fail={pr.get('failed')}"
+            )
+        elif pr and not pr.get("skipped") and not pr.get("ok"):
+            log(
+                f"[auth-queue] ✘ Auth→sub2api 推送失败 "
+                f"ok={pr.get('ok_count')} fail={pr.get('failed')}"
+            )
+    except Exception as e:
+        log(f"[auth-queue] sub2api push skip: {e}")
 
 
 def _run_mint_and_auth_push(

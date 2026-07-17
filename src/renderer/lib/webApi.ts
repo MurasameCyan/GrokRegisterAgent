@@ -204,6 +204,7 @@ const webApi: RendererApi = {
   probeCpaAuthBatch: (input) => http('POST', '/api/cpa-auth/probe-batch', input),
   reloginCpaAuth: (input) => http('POST', '/api/cpa-auth/relogin', input),
   pushCpaAuthRemote: (input) => http('POST', '/api/cpa-auth/push-remote', input),
+  pushSub2apiAuthRemote: (input) => http('POST', '/api/cpa-auth/push-sub2api', input),
   deleteCpaAuth: (input) => http('POST', '/api/cpa-auth/delete', input),
   exportCpaAuth: (input) => http('POST', '/api/cpa-auth/export', input),
   backfillCpaAuthSso: (input) =>
@@ -249,6 +250,11 @@ const webApi: RendererApi = {
     http<TestResult & { status?: number; remoteUrl?: string }>('POST', '/api/test/cpa-remote', {
       url: input?.url,
       key: input?.key
+    }),
+  testSub2apiRemote: (input) =>
+    http<TestResult & { status?: number; remoteUrl?: string }>('POST', '/api/test/sub2api-remote', {
+      url: input?.url,
+      token: input?.token
     }),
   testGrok2apiRemote: (input) =>
     http<TestResult & { status?: number; remoteUrl?: string; latencyMs?: number }>(

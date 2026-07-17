@@ -6,7 +6,7 @@ import type { AppSettings } from '@shared/settings';
 
 type Tone = 'idle' | 'loading' | 'ok' | 'bad';
 
-type Target = 'cpa' | 'g2';
+type Target = 'cpa' | 'g2' | 'sub2';
 
 /**
  * 推送卡片右侧：仅图标的远程连通检测。
@@ -26,20 +26,26 @@ export function PushConnectivityIcon({ draft }: { draft: AppSettings }) {
     draft.pushAuthToGrok2api === true ||
     draft.autoPushAuthToGrok2api === true ||
     draft.grok2apiAutoUpload === true;
+  const allowSub2 =
+    draft.pushAuthToSub2api === true || draft.autoPushAuthToSub2api === true;
 
   const cpaUrl = String(draft.cpaRemoteUrl || '').trim();
   const cpaKey = String(draft.cpaManagementKey || '').trim();
   const g2Url = String(draft.grok2apiUrl || '').trim();
   const g2User = String(draft.grok2apiUsername || '').trim();
   const g2Pass = String(draft.grok2apiPassword || '').trim();
+  const s2Url = String(draft.sub2apiRemoteUrl || '').trim();
+  const s2Token = String(draft.sub2apiAdminToken || '').trim();
 
   const cpaReady = allowCpa && Boolean(cpaUrl && cpaKey);
   const g2Ready = allowG2 && Boolean(g2Url && g2User && g2Pass);
+  const s2Ready = allowSub2 && Boolean(s2Url && s2Token);
 
   /** 没有任何允许推送 → 不请求，黄 */
-  const anyAllow = allowCpa || allowG2;
+  const anyAllow = allowCpa || allowG2 || allowSub2;
   /** 有允许但配置不全 → 不请求，黄 */
-  const needProbe = (allowCpa && cpaReady) || (allowG2 && g2Ready);
+  const needProbe =
+    (allowCpa && cpaReady) || (allowG2 && g2Ready) || (allowSub2 && s2Ready);
   const incomplete = anyAllow && !needProbe;
 
   const [tone, setTone] = useState<Tone>('idle');
@@ -51,13 +57,16 @@ export function PushConnectivityIcon({ draft }: { draft: AppSettings }) {
       [
         allowCpa,
         allowG2,
+        allowSub2,
         cpaUrl,
         cpaKey,
         g2Url,
         g2User,
-        g2Pass
+        g2Pass,
+        s2Url,
+        s2Token
       ].join('|'),
-    [allowCpa, allowG2, cpaUrl, cpaKey, g2Url, g2User, g2Pass]
+    [allowCpa, allowG2, allowSub2, cpaUrl, cpaKey, g2Url, g2User, g2Pass, s2Url, s2Token]
   );
 
   const run = useCallback(async () => {
@@ -71,6 +80,7 @@ export function PushConnectivityIcon({ draft }: { draft: AppSettings }) {
       const miss: string[] = [];
       if (allowCpa && !cpaReady) miss.push('CPA 地址/密钥');
       if (allowG2 && !g2Ready) miss.push('grok2api URL/账号');
+      if (allowSub2 && !s2Ready) miss.push('sub2api 地址/Token');
       setMessage(`已允许推送但未填全：${miss.join('、') || '配置'}`);
       return;
     }
@@ -84,6 +94,7 @@ export function PushConnectivityIcon({ draft }: { draft: AppSettings }) {
     const targets: Target[] = [];
     if (allowCpa && cpaReady) targets.push('cpa');
     if (allowG2 && g2Ready) targets.push('g2');
+    if (allowSub2 && s2Ready) targets.push('sub2');
 
     try {
       for (const t of targets) {
@@ -95,7 +106,7 @@ export function PushConnectivityIcon({ draft }: { draft: AppSettings }) {
             allOk = false;
             parts.push('CPA FAIL ' + (r?.message || 'fail'));
           }
-        } else {
+        } else if (t === 'g2') {
           const r = await window.api.testGrok2apiRemote({
             url: g2Url,
             username: g2User,
@@ -105,6 +116,16 @@ export function PushConnectivityIcon({ draft }: { draft: AppSettings }) {
           else {
             allOk = false;
             parts.push('g2 FAIL ' + (r?.message || 'fail'));
+          }
+        } else {
+          const r = await window.api.testSub2apiRemote({
+            url: s2Url,
+            token: s2Token
+          });
+          if (r?.ok) parts.push('sub2 OK');
+          else {
+            allOk = false;
+            parts.push('sub2 FAIL ' + (r?.message || 'fail'));
           }
         }
       }
@@ -121,13 +142,17 @@ export function PushConnectivityIcon({ draft }: { draft: AppSettings }) {
     needProbe,
     allowCpa,
     allowG2,
+    allowSub2,
     cpaReady,
     g2Ready,
+    s2Ready,
     cpaUrl,
     cpaKey,
     g2Url,
     g2User,
-    g2Pass
+    g2Pass,
+    s2Url,
+    s2Token
   ]);
 
   useEffect(() => {
@@ -141,6 +166,7 @@ export function PushConnectivityIcon({ draft }: { draft: AppSettings }) {
       const miss: string[] = [];
       if (allowCpa && !cpaReady) miss.push('CPA');
       if (allowG2 && !g2Ready) miss.push('grok2api');
+      if (allowSub2 && !s2Ready) miss.push('sub2api');
       setMessage(`配置未填全：${miss.join('+') || '?'}`);
       return;
     }
@@ -148,7 +174,7 @@ export function PushConnectivityIcon({ draft }: { draft: AppSettings }) {
       void run();
     }, 700);
     return () => window.clearTimeout(t);
-  }, [depsKey, anyAllow, needProbe, allowCpa, allowG2, cpaReady, g2Ready, run]);
+  }, [depsKey, anyAllow, needProbe, allowCpa, allowG2, allowSub2, cpaReady, g2Ready, s2Ready, run]);
 
   const shell =
     tone === 'ok'
