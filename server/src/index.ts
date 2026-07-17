@@ -42,7 +42,7 @@ import {
   stopSingBox,
   syncSingBoxFromSettings
 } from './singboxManager.js';
-import { proxiedRequest } from './httpClient.js';
+import { proxiedRequest, requestWithProxyFallback, errorMessage, isTransportError } from './httpClient.js';
 import { checkSso } from './ssoCheck.js';
 import {
   authBootstrapInfo,
@@ -865,7 +865,6 @@ app.post('/api/test/mail', async (req, res) => {
       domain?: string;
       provider?: string;
     };
-    // 兼容：前端可能只传 MailSettings，provider 在外层
     const provider = String(
       body.provider ||
         (req.body as { mailProvider?: string })?.mailProvider ||
@@ -889,7 +888,7 @@ app.post('/api/test/mail', async (req, res) => {
     const settings = await loadSettings();
     const proxy = resolveHttpProxy(settings);
 
-    // ---- YYDS Mail：X-API-Key + /v1/accounts 探活（不对无效 key 真创建）----
+    // ---- YYDS Mail：X-API-Key + /v1/accounts ----
     if (provider === 'yyds' || provider === 'yydsmail') {
       if (!adminAuth) {
         return res.json({ ok: false, message: '请先填写 YYDS API Key（X-API-Key）' });
@@ -906,121 +905,195 @@ app.post('/api/test/mail', async (req, res) => {
       }
       base = base.replace(/\/+$/, '');
       const url = `${base}/accounts`;
-      const resp = await proxiedRequest(url, {
-        method: 'POST',
-        headers: {
-          'X-API-Key': adminAuth,
-          'Content-Type': 'application/json',
-          Accept: 'application/json'
-        },
-        body: { localPart: `probe${Date.now().toString(36).slice(-6)}` },
-        proxy,
-        timeoutMs: 15000
-      });
-      const ms = Date.now() - started;
-      const raw =
-        typeof resp.data === 'string'
-          ? resp.data
-          : resp.data != null
-            ? JSON.stringify(resp.data)
-            : '';
-      // 成功创建也算通；鉴权失败 401；缺 key 时 403 temp_inbox_web_app_only
-      if (resp.status >= 200 && resp.status < 300) {
-        return res.json({
-          ok: true,
-          message: `YYDS Mail 连通（API Key 可用）`,
-          ms,
-          status: resp.status
+      try {
+        const resp = await requestWithProxyFallback(url, {
+          method: 'POST',
+          headers: {
+            'X-API-Key': adminAuth,
+            'Content-Type': 'application/json',
+            Accept: 'application/json'
+          },
+          body: { localPart: `probe${Date.now().toString(36).slice(-6)}` },
+          proxy,
+          timeoutMs: 15000
         });
-      }
-      if (resp.status === 401 || resp.status === 403) {
-        const hint = raw.includes('web_app_only')
-          ? '未识别 API Key（请确认填的是 X-API-Key，不是 Bearer）'
-          : 'API Key 被拒';
+        const ms = Date.now() - started;
+        const raw =
+          typeof resp.data === 'string'
+            ? resp.data
+            : resp.data != null
+              ? JSON.stringify(resp.data)
+              : '';
+        if (resp.status >= 200 && resp.status < 300) {
+          return res.json({
+            ok: true,
+            message: `YYDS Mail 连通（API Key 可用${resp.via === 'direct' && proxy ? ' · 直连' : ''}）`,
+            ms,
+            status: resp.status
+          });
+        }
+        if (resp.status === 401 || resp.status === 403) {
+          const hint = raw.includes('web_app_only')
+            ? '未识别 API Key（请确认填的是 X-API-Key，不是 Bearer）'
+            : 'API Key 被拒';
+          return res.json({
+            ok: false,
+            message: `已连上 ${base}，但 ${hint}（HTTP ${resp.status}）`,
+            ms,
+            status: resp.status
+          });
+        }
         return res.json({
           ok: false,
-          message: `已连上 ${base}，但 ${hint}（HTTP ${resp.status}）`,
+          message: `HTTP ${resp.status}${raw ? `: ${raw.slice(0, 120)}` : ''}`,
           ms,
           status: resp.status
         });
+      } catch (e: any) {
+        return res.json({
+          ok: false,
+          message: `连接失败: ${errorMessage(e)}`,
+          ms: Date.now() - started
+        });
       }
-      return res.json({
-        ok: false,
-        message: `HTTP ${resp.status}${raw ? `: ${raw.slice(0, 120)}` : ''}`,
-        ms,
-        status: resp.status
-      });
     }
 
-    // ---- DuckMail（mail.tm）：GET /domains 即可探活 ----
+    // ---- DuckMail（mail.tm）：GET /domains ----
     if (provider === 'duckmail' || provider === 'duck') {
       const url = `${apiBase}/domains`;
-      const resp = await proxiedRequest(url, {
+      try {
+        const resp = await requestWithProxyFallback(url, {
+          method: 'GET',
+          headers: {
+            Accept: 'application/json',
+            ...(adminAuth ? { Authorization: `Bearer ${adminAuth}` } : {})
+          },
+          proxy,
+          timeoutMs: 12000
+        });
+        const ms = Date.now() - started;
+        if (resp.status >= 200 && resp.status < 300) {
+          return res.json({
+            ok: true,
+            message: `DuckMail 连通（/domains 可用${resp.via === 'direct' && proxy ? ' · 直连' : ''}）`,
+            ms,
+            status: resp.status
+          });
+        }
+        return res.json({
+          ok: false,
+          message: `HTTP ${resp.status}：请确认地址为 API 根（如 https://api.duckmail.sbs）`,
+          ms,
+          status: resp.status
+        });
+      } catch (e: any) {
+        return res.json({
+          ok: false,
+          message: `连接失败: ${errorMessage(e)}`,
+          ms: Date.now() - started
+        });
+      }
+    }
+
+    // ---- Cloudflare Temp Email ----
+    // 旧版：直连 GET /api/mails，200/401 即通。
+    // 管理模式优先探 /admin/new_address（x-admin-auth），避免误用 Bearer 导致假失败。
+    const authMode = String(
+      (settings as { cloudflareAuthMode?: string }).cloudflareAuthMode || 'x-admin-auth'
+    )
+      .trim()
+      .toLowerCase();
+    const isNone = authMode === 'none' || authMode === 'anonymous' || authMode === 'anon';
+
+    try {
+      // 1) 轻量探活：GET /api/mails（与历史版本一致；不强制代理）
+      const mailsUrl = `${apiBase}/api/mails?limit=1`;
+      const mailHeaders: Record<string, string> = { Accept: 'application/json' };
+      if (adminAuth && (authMode === 'bearer' || authMode === 'authorization')) {
+        mailHeaders.Authorization = `Bearer ${adminAuth}`;
+      }
+      if (adminAuth && (authMode === 'x-api-key' || authMode === 'apikey' || authMode === 'api-key')) {
+        mailHeaders['X-API-Key'] = adminAuth;
+      }
+      const resp = await requestWithProxyFallback(mailsUrl, {
         method: 'GET',
-        headers: {
-          Accept: 'application/json',
-          ...(adminAuth ? { Authorization: `Bearer ${adminAuth}` } : {})
-        },
+        headers: mailHeaders,
         proxy,
         timeoutMs: 12000
       });
       const ms = Date.now() - started;
-      if (resp.status >= 200 && resp.status < 300) {
+      if (resp.status === 401 || resp.status === 200 || resp.status === 403) {
         return res.json({
           ok: true,
-          message: 'DuckMail 连通（/domains 可用）',
+          message: `邮箱服务器连接成功${resp.via === 'direct' && proxy ? '（代理失败已直连）' : ''}`,
           ms,
           status: resp.status
         });
       }
-      return res.json({
-        ok: false,
-        message: `HTTP ${resp.status}：请确认地址为 API 根（如 https://api.duckmail.sbs）`,
-        ms,
-        status: resp.status
-      });
-    }
+      if (resp.status === 404 || resp.status === 405) {
+        return res.json({
+          ok: false,
+          message: `HTTP ${resp.status}：请填 Worker API 根地址（勿填前端 Pages）`,
+          ms,
+          status: resp.status
+        });
+      }
 
-    // ---- Cloudflare Temp Email：GET /api/mails?limit=1 ----
-    // 匿名可 401；有管理密码时 200/401 均表示服务在线
-    if (!adminAuth && String((settings as { cloudflareAuthMode?: string }).cloudflareAuthMode || '') !== 'none') {
-      // 仍尝试探测：很多部署未登录读邮件会 401，也算通
-    }
-    const url = `${apiBase}/api/mails?limit=1`;
-    const resp = await proxiedRequest(url, {
-      method: 'GET',
-      headers: {
-        Accept: 'application/json',
-        ...(adminAuth ? { Authorization: `Bearer ${adminAuth}` } : {})
-      },
-      proxy,
-      timeoutMs: 12000
-    });
-    const ms = Date.now() - started;
-    if (resp.status === 401 || resp.status === 200 || resp.status === 403) {
-      return res.json({
-        ok: true,
-        message: '邮箱服务器连接成功',
-        ms,
-        status: resp.status
-      });
-    }
-    if (resp.status === 404 || resp.status === 405) {
+      // 2) 管理模式补探 admin 路径（部分部署 /api/mails 未开放）
+      if (!isNone && adminAuth) {
+        const adminUrl = `${apiBase}/admin/new_address`;
+        const adminResp = await requestWithProxyFallback(adminUrl, {
+          method: 'POST',
+          headers: {
+            Accept: 'application/json',
+            'Content-Type': 'application/json',
+            'x-admin-auth': adminAuth
+          },
+          body: {
+            name: `probe${Date.now().toString(36).slice(-6)}`,
+            enablePrefix: false
+          },
+          proxy,
+          timeoutMs: 12000
+        });
+        const ms2 = Date.now() - started;
+        // 401/403=鉴权到达服务；400/409=参数/冲突也说明路由可用
+        if (
+          adminResp.status === 200 ||
+          adminResp.status === 201 ||
+          adminResp.status === 400 ||
+          adminResp.status === 401 ||
+          adminResp.status === 403 ||
+          adminResp.status === 409
+        ) {
+          return res.json({
+            ok: true,
+            message: `邮箱 Admin API 可达（HTTP ${adminResp.status}${
+              adminResp.via === 'direct' && proxy ? ' · 直连' : ''
+            }）`,
+            ms: ms2,
+            status: adminResp.status
+          });
+        }
+      }
+
       return res.json({
         ok: false,
-        message: `HTTP ${resp.status}：请填 Worker API 根地址（勿填前端 Pages）`,
+        message: `服务器返回了异常状态码: ${resp.status}`,
         ms,
         status: resp.status
       });
+    } catch (e: any) {
+      return res.json({
+        ok: false,
+        message: `连接失败: ${errorMessage(e)}${
+          proxy ? '（若开了 Sing-Box，可先关代理再测 CF Worker）' : ''
+        }`,
+        ms: Date.now() - started
+      });
     }
-    return res.json({
-      ok: false,
-      message: `服务器返回了异常状态码: ${resp.status}`,
-      ms,
-      status: resp.status
-    });
   } catch (e: any) {
-    return res.json({ ok: false, message: `连接失败: ${e?.message || e}` });
+    return res.json({ ok: false, message: `连接失败: ${errorMessage(e)}` });
   }
 });
 
@@ -1066,88 +1139,115 @@ app.post('/api/test/grok2api-remote', async (req, res) => {
     if (!username || !password) {
       return res.json({ ok: false, message: '请先填写 grok2api 用户名和密码' });
     }
+    // 规范化：去掉误粘贴的管理路径
+    for (const suffix of [
+      '/api/admin/v1/auth/login',
+      '/api/admin/v1',
+      '/api/admin',
+      '/admin'
+    ]) {
+      if (base.toLowerCase().endsWith(suffix)) {
+        base = base.slice(0, -suffix.length).replace(/\/+$/, '');
+      }
+    }
     const loginUrl = `${base}/api/admin/v1/auth/login`;
     const started = Date.now();
     const proxy = resolveHttpProxy(settings);
-    const resp = await proxiedRequest(loginUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json'
-      },
-      body: { username, password },
-      proxy: proxy || undefined,
-      timeoutMs: 15000
-    });
-    const ms = Date.now() - started;
-    if (resp.status >= 200 && resp.status < 300) {
-      const data = resp.data as Record<string, unknown> | null;
-      const nested =
-        data && typeof data === 'object'
-          ? ((data.data as Record<string, unknown> | undefined) ?? data)
-          : null;
-      const tokens =
-        nested && typeof nested === 'object'
-          ? (nested.tokens as Record<string, unknown> | undefined)
-          : undefined;
-      const token =
-        (tokens && (tokens.accessToken || tokens.access_token)) ||
-        (nested && (nested.accessToken || nested.access_token || nested.token));
-      if (token) {
+    try {
+      // 自建 grok2api 常在内网：代理失败（ECONNRESET）时自动直连
+      const resp = await requestWithProxyFallback(loginUrl, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json'
+        },
+        body: { username, password },
+        proxy,
+        timeoutMs: 15000
+      });
+      const ms = Date.now() - started;
+      const viaHint =
+        resp.via === 'direct' && proxy ? '（Sing-Box 代理失败，已改直连）' : '';
+      if (resp.status >= 200 && resp.status < 300) {
+        const data = resp.data as Record<string, unknown> | null;
+        const nested =
+          data && typeof data === 'object'
+            ? ((data.data as Record<string, unknown> | undefined) ?? data)
+            : null;
+        const tokens =
+          nested && typeof nested === 'object'
+            ? (nested.tokens as Record<string, unknown> | undefined)
+            : undefined;
+        const token =
+          (tokens && (tokens.accessToken || tokens.access_token)) ||
+          (nested && (nested.accessToken || nested.access_token || nested.token));
+        if (token) {
+          return res.json({
+            ok: true,
+            message: `grok2api 管理登录成功${viaHint}`,
+            ms,
+            latencyMs: ms,
+            status: resp.status,
+            remoteUrl: base
+          });
+        }
         return res.json({
           ok: true,
-          message: 'grok2api 管理登录成功',
+          message: `已连通（HTTP ${resp.status}，响应无 accessToken 字段，请确认管理 API 版本）${viaHint}`,
           ms,
           latencyMs: ms,
           status: resp.status,
           remoteUrl: base
         });
       }
+      if (resp.status === 401 || resp.status === 403) {
+        return res.json({
+          ok: false,
+          message: `已连上 ${base}，但账号密码被拒（HTTP ${resp.status}）${viaHint}`,
+          ms,
+          latencyMs: ms,
+          status: resp.status,
+          remoteUrl: base
+        });
+      }
+      if (resp.status === 404) {
+        return res.json({
+          ok: false,
+          message: 'HTTP 404：请确认地址为 grok2api 根路径（不要带 /api/admin 等多余 path）',
+          ms,
+          latencyMs: ms,
+          status: 404,
+          remoteUrl: base
+        });
+      }
+      const bodyText =
+        typeof resp.data === 'string'
+          ? resp.data
+          : resp.data != null
+            ? JSON.stringify(resp.data)
+            : '';
       return res.json({
-        ok: true,
-        message: `已连通（HTTP ${resp.status}，响应无 accessToken 字段，请确认管理 API 版本）`,
+        ok: false,
+        message: `HTTP ${resp.status}${bodyText ? `: ${bodyText.slice(0, 120)}` : ''}${viaHint}`,
         ms,
         latencyMs: ms,
         status: resp.status,
         remoteUrl: base
       });
-    }
-    if (resp.status === 401 || resp.status === 403) {
+    } catch (e: any) {
+      const msg = errorMessage(e);
+      const hint = /ECONNRESET|ECONNREFUSED|socket hang up/i.test(msg)
+        ? '。常见原因：地址不可达、TLS 中断、或 Sing-Box 代理干扰（可先关代理直连自建地址）'
+        : '';
       return res.json({
         ok: false,
-        message: `已连上 ${base}，但账号密码被拒（HTTP ${resp.status}）`,
-        ms,
-        latencyMs: ms,
-        status: resp.status,
+        message: `检测异常: ${msg}${hint}`,
+        ms: Date.now() - started,
         remoteUrl: base
       });
     }
-    if (resp.status === 404) {
-      return res.json({
-        ok: false,
-        message: 'HTTP 404：请确认地址为 grok2api 根路径（不要带多余 path）',
-        ms,
-        latencyMs: ms,
-        status: 404,
-        remoteUrl: base
-      });
-    }
-    const bodyText =
-      typeof resp.data === 'string'
-        ? resp.data
-        : resp.data != null
-          ? JSON.stringify(resp.data)
-          : '';
-    return res.json({
-      ok: false,
-      message: `HTTP ${resp.status}${bodyText ? `: ${bodyText.slice(0, 120)}` : ''}`,
-      ms,
-      latencyMs: ms,
-      status: resp.status,
-      remoteUrl: base
-    });
   } catch (e: any) {
-    return res.json({ ok: false, message: `检测异常: ${e?.message || e}` });
+    return res.json({ ok: false, message: `检测异常: ${errorMessage(e)}` });
   }
 });
 

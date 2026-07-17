@@ -10,7 +10,7 @@ import { loadSettings, dataDir } from './settingsStore.js';
 import { resolveHttpProxy } from './resolveHttpProxy.js';
 import { resolveRegisterRuntime } from './bot/registerRuntime.js';
 import { readBotFlagFromAuthRecord, readBotFlagFromToken } from './jwtBotFlag.js';
-import { proxiedRequest } from './httpClient.js';
+import { proxiedRequest, requestWithProxyFallback, errorMessage } from './httpClient.js';
 import { broadcastAppEvent } from './appEvents.js';
 import type { ReloginStage } from '@shared/runEvents.js';
 import {
@@ -1370,7 +1370,7 @@ export async function testSub2apiRemoteConnectivity(input?: {
   const authMethod = token.split('.').length === 3 ? 'jwt' : 'x-api-key';
   try {
     const proxy = resolveHttpProxy(settings);
-    const res = await proxiedRequest(url, {
+    const res = await requestWithProxyFallback(url, {
       method: 'GET',
       headers: sub2apiAdminAuthHeaders(token),
       proxy,
@@ -1396,7 +1396,7 @@ export async function testSub2apiRemoteConnectivity(input?: {
       }
       return {
         ok: true,
-        message: `远程 sub2api 连通（Admin API 可用 · ${authMethod}）`,
+        message: `远程 sub2api 连通（Admin API 可用 · ${authMethod}${res.via === 'direct' && proxy ? ' · 直连' : ''}）`,
         ms,
         status: res.status,
         remoteUrl: base
@@ -1440,7 +1440,7 @@ export async function testSub2apiRemoteConnectivity(input?: {
   } catch (err) {
     return {
       ok: false,
-      message: err instanceof Error ? err.message : String(err),
+      message: errorMessage(err),
       ms: Date.now() - started,
       remoteUrl: base
     };
