@@ -1739,7 +1739,7 @@ export function SettingsForm() {
                     <div className="space-y-3 border-t border-border/50 pt-3">
                       <Field
                         label="sub2api 地址"
-                        hint="服务根地址，如 https://sub2api.example.com"
+                        hint="服务根地址，如 https://sub2api.example.com（不要带 /api/v1）"
                       >
                         <Input
                           value={draft.sub2apiRemoteUrl || ''}

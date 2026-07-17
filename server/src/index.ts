@@ -42,7 +42,7 @@ import {
   stopSingBox,
   syncSingBoxFromSettings
 } from './singboxManager.js';
-import { proxiedRequest, requestWithProxyFallback, errorMessage, isTransportError } from './httpClient.js';
+import { proxiedRequest, requestWithProxyFallback, errorMessage, isTransportError, looksLikeCloudflareChallenge } from './httpClient.js';
 import { checkSso } from './ssoCheck.js';
 import {
   authBootstrapInfo,
@@ -890,7 +890,12 @@ app.post('/api/test/mail', async (req, res) => {
 
     // ---- YYDS Mail：X-API-Key + /v1/accounts ----
     if (provider === 'yyds' || provider === 'yydsmail') {
-      if (!adminAuth) {
+      // 去掉误粘贴的 Bearer 前缀（YYDS 只认 X-API-Key）
+      let yydsKey = adminAuth;
+      if (yydsKey.length >= 7 && yydsKey.slice(0, 7).toLowerCase() === 'bearer ') {
+        yydsKey = yydsKey.slice(7).trim();
+      }
+      if (!yydsKey) {
         return res.json({ ok: false, message: '请先填写 YYDS API Key（X-API-Key）' });
       }
       let base = apiBase;
@@ -909,7 +914,7 @@ app.post('/api/test/mail', async (req, res) => {
         const resp = await requestWithProxyFallback(url, {
           method: 'POST',
           headers: {
-            'X-API-Key': adminAuth,
+            'X-API-Key': yydsKey,
             'Content-Type': 'application/json',
             Accept: 'application/json'
           },
@@ -924,6 +929,25 @@ app.post('/api/test/mail', async (req, res) => {
             : resp.data != null
               ? JSON.stringify(resp.data)
               : '';
+        // 业务信封 success:false（即使 HTTP 2xx）
+        const biz =
+          resp.data && typeof resp.data === 'object'
+            ? (resp.data as { success?: unknown; error?: unknown; errorCode?: unknown })
+            : null;
+        if (biz && biz.success === false) {
+          const code = String(biz.errorCode || '');
+          const err = String(biz.error || '').slice(0, 120);
+          const hint =
+            code.includes('web_app_only') || raw.includes('web_app_only')
+              ? '未识别 API Key（请填控制台 X-API-Key，不要带 Bearer 前缀）'
+              : err || '业务拒绝';
+          return res.json({
+            ok: false,
+            message: `已连上 ${base}，但 ${hint}（HTTP ${resp.status}${resp.via === 'proxy' ? ' · 经代理' : ''}）`,
+            ms,
+            status: resp.status
+          });
+        }
         if (resp.status >= 200 && resp.status < 300) {
           return res.json({
             ok: true,
@@ -932,13 +956,25 @@ app.post('/api/test/mail', async (req, res) => {
             status: resp.status
           });
         }
-        if (resp.status === 401 || resp.status === 403) {
-          const hint = raw.includes('web_app_only')
-            ? '未识别 API Key（请确认填的是 X-API-Key，不是 Bearer）'
-            : 'API Key 被拒';
+        if (looksLikeCloudflareChallenge(resp.status, resp.data)) {
           return res.json({
             ok: false,
-            message: `已连上 ${base}，但 ${hint}（HTTP ${resp.status}）`,
+            message:
+              `已到 ${base}，但被 Cloudflare 挑战拦截（HTTP ${resp.status}）。` +
+              (proxy
+                ? ' 直连与代理均未绕过，请检查 Sing-Box 节点是否可用。'
+                : ' 请开启代理模式（Sing-Box）后重试，机房 IP 常被拦。'),
+            ms,
+            status: resp.status
+          });
+        }
+        if (resp.status === 401 || resp.status === 403) {
+          const hint = raw.includes('web_app_only')
+            ? '未识别 API Key（请填控制台 X-API-Key，不要带 Bearer 前缀）'
+            : 'API Key 被拒或无权创建临时邮箱';
+          return res.json({
+            ok: false,
+            message: `已连上 ${base}，但 ${hint}（HTTP ${resp.status}${resp.via === 'proxy' ? ' · 经代理' : ''}）`,
             ms,
             status: resp.status
           });

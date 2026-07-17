@@ -52,6 +52,22 @@ def _normalize_admin_secret(raw: str) -> str:
     return s
 
 
+def _normalize_sub2api_base_url(raw: str) -> str:
+    """服务根地址：去尾斜杠，剥掉误粘贴的 /api/v1 等路径（避免双写）。"""
+    base = (raw or "").strip().rstrip("/")
+    if not base:
+        return ""
+    for suffix in (
+        "/api/v1/admin/accounts",
+        "/api/v1/admin",
+        "/api/v1",
+        "/api",
+    ):
+        if base.lower().endswith(suffix):
+            base = base[: -len(suffix)].rstrip("/")
+    return base
+
+
 def _looks_like_jwt(secret: str) -> bool:
     """JWT = three base64url segments separated by dots."""
     parts = secret.split(".")
@@ -80,11 +96,11 @@ def read_sub2api_remote_config(
 ) -> tuple[str, str]:
     """Return (base_url, admin_token). Env overrides config."""
     cfg = config if config is not None else _load_conf()
-    url = (
+    url = _normalize_sub2api_base_url(
         os.environ.get("SUB2API_REMOTE_URL")
         or os.environ.get("sub2api_remote_url")
         or str(cfg.get("sub2api_remote_url") or cfg.get("sub2apiRemoteUrl") or "")
-    ).strip().rstrip("/")
+    )
     token = _normalize_admin_secret(
         os.environ.get("SUB2API_ADMIN_TOKEN")
         or os.environ.get("sub2api_admin_token")
@@ -180,7 +196,7 @@ def push_account_body(
     token: str,
     timeout: float = 30.0,
 ) -> dict[str, Any]:
-    base = (base_url or "").strip().rstrip("/")
+    base = _normalize_sub2api_base_url(base_url or "")
     if not base:
         return {"ok": False, "error": "missing sub2api_remote_url"}
     if not (token or "").strip():
@@ -219,9 +235,9 @@ def push_cpa_file(
     cfg = config if config is not None else _load_conf()
     url, tok = read_sub2api_remote_config(cfg)
     if base_url:
-        url = base_url.strip().rstrip("/")
+        url = _normalize_sub2api_base_url(base_url)
     if token:
-        tok = token.strip()
+        tok = _normalize_admin_secret(token)
     try:
         body = cpa_path_to_create_body(cpa_path)
     except Exception as e:
@@ -289,9 +305,9 @@ def test_connectivity(
     cfg = config if config is not None else _load_conf()
     url, tok = read_sub2api_remote_config(cfg)
     if base_url:
-        url = base_url.strip().rstrip("/")
+        url = _normalize_sub2api_base_url(base_url)
     if token:
-        tok = token.strip()
+        tok = _normalize_admin_secret(token)
     if not url:
         return {"ok": False, "error": "missing url"}
     if not tok:
@@ -308,10 +324,14 @@ def test_connectivity(
             }
         return {"ok": True, "status": status, "url": url}
     if status in (401, 403):
+        method = "jwt" if _looks_like_jwt(tok) else "x-api-key"
         return {
             "ok": False,
             "status": status,
-            "error": f"鉴权失败 HTTP {status}（请用管理端 Admin JWT，不是 API Key）",
+            "error": (
+                f"鉴权失败 HTTP {status}（以 {method} 发送）。"
+                " 推荐 Admin API Key（admin-...）；JWT 须为管理员且未过期。"
+            ),
             "url": url,
         }
     err = ""

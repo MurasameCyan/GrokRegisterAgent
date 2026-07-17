@@ -288,12 +288,23 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
       (settings as { pushAuthToSub2api?: boolean }).pushAuthToSub2api === true);
   config.push_auth_to_sub2api = autoSub2;
   config.allow_push_auth_to_sub2api = allowSub2;
-  const sub2Url = allowSub2
-    ? String((settings as { sub2apiRemoteUrl?: string }).sub2apiRemoteUrl || '').trim()
+  // 写入 config 前剥掉 /api/v1（Python 侧也会再剥一次）
+  let sub2Url = allowSub2
+    ? String((settings as { sub2apiRemoteUrl?: string }).sub2apiRemoteUrl || '').trim().replace(/\/+$/, '')
     : '';
-  const sub2Token = allowSub2
+  if (sub2Url) {
+    for (const suffix of ['/api/v1/admin/accounts', '/api/v1/admin', '/api/v1', '/api']) {
+      if (sub2Url.toLowerCase().endsWith(suffix)) {
+        sub2Url = sub2Url.slice(0, -suffix.length).replace(/\/+$/, '');
+      }
+    }
+  }
+  let sub2Token = allowSub2
     ? String((settings as { sub2apiAdminToken?: string }).sub2apiAdminToken || '').trim()
     : '';
+  if (sub2Token.length >= 7 && sub2Token.slice(0, 7).toLowerCase() === 'bearer ') {
+    sub2Token = sub2Token.slice(7).trim();
+  }
   if (sub2Url) config.sub2api_remote_url = sub2Url;
   else delete config.sub2api_remote_url;
   if (sub2Token) config.sub2api_admin_token = sub2Token;

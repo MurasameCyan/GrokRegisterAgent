@@ -249,6 +249,9 @@ def _create_yyds() -> Tuple[Optional[str], Optional[str]]:
     _reload_mail_conf()
     base = _normalize_yyds_base(MAIL_API_BASE or "https://maliapi.215.im/v1")
     api_key = MAIL_ADMIN_AUTH.strip()
+    # 去掉误粘贴的 Bearer 前缀（YYDS 只认 X-API-Key）
+    if len(api_key) >= 7 and api_key[:7].lower() == "bearer ":
+        api_key = api_key[7:].strip()
     if not base:
         raise Exception("yyds: mail_api_base 未设置（如 https://maliapi.215.im/v1）")
     if not api_key:
