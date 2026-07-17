@@ -49,11 +49,6 @@ docker compose --profile solver up -d
 - Solver 镜像：`ghcr.io/murasamecyan/grok-turnstile-solver:beta`  
 - ARM 可运行；Turnstile 成功率通常仍低于 x86  
 
-### GHCR 私有包
-
-```bash
-echo $GITHUB_TOKEN | docker login ghcr.io -u YOUR_GITHUB_USER --password-stdin
-```
 
 ### 访问
 
