@@ -46,4 +46,8 @@ BUILD_ID
 
 # local superpowers plans/specs — do not push
 docs/superpowers/
+.superpowers/
+
+# local test cache
+.pytest_cache/
 
