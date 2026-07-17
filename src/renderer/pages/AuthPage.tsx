@@ -541,7 +541,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
       : filteredItems.map((i) => i.filename);
 
   const resign = async (item: CpaAuthItem, baseUrlTarget: 'cli' | 'api' = 'cli') => {
-    const label = baseUrlTarget === 'api' ? '重签api' : '重签cli';
+    const label = baseUrlTarget === 'api' ? '重签 api' : '重签 cli';
     setRowBusy(`resign:${item.filename}`);
     try {
       const r = await window.api.resignCpaAuth({
@@ -1001,7 +1001,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
   };
 
   const resignBatch = async (baseUrlTarget: 'cli' | 'api' = 'cli') => {
-    const label = baseUrlTarget === 'api' ? '重签api' : '重签cli';
+    const label = baseUrlTarget === 'api' ? '重签 api' : '重签 cli';
     const filenames = targetNames();
     if (filenames.length === 0) {
       push({ tone: 'warn', title: `没有可${label}的文件` });
@@ -2296,10 +2296,10 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                   batchBusy === 'resign'
                     ? '取消重签批量任务'
                     : (selected.size > 0
-                        ? `重签cli 已选 ${selected.size} 条`
+                        ? `重签 cli 已选 ${selected.size} 条`
                         : hasActiveFilter
-                          ? `重签cli 筛选 ${filteredItems.length} 条`
-                          : '批量重签cli') +
+                          ? `重签 cli 筛选 ${filteredItems.length} 条`
+                          : '批量重签 cli') +
                       ' · base=cli-chat-proxy 满额' +
                       (resignPushRemote ? ' · 成功后推远程' : ' · 仅本地')
                 }
@@ -2309,7 +2309,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                 ) : (
                   <RotateCcw className="h-3.5 w-3.5" />
                 )}
-                {batchBusy === 'resign' ? '取消' : '重签cli'}
+                {batchBusy === 'resign' ? '取消' : '重签 cli'}
               </Button>
               <Button
                 size="sm"
@@ -2327,10 +2327,10 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                   batchBusy === 'resign'
                     ? '取消重签批量任务'
                     : (selected.size > 0
-                        ? `重签api 已选 ${selected.size} 条`
+                        ? `重签 api 已选 ${selected.size} 条`
                         : hasActiveFilter
-                          ? `重签api 筛选 ${filteredItems.length} 条`
-                          : '批量重签api') +
+                          ? `重签 api 筛选 ${filteredItems.length} 条`
+                          : '批量重签 api') +
                       ' · base=api.x.ai 防风控·约50%额度' +
                       (resignPushRemote ? ' · 成功后推远程' : ' · 仅本地')
                 }
@@ -2340,7 +2340,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                 ) : (
                   <RotateCcw className="h-3.5 w-3.5" />
                 )}
-                {batchBusy === 'resign' ? '取消' : '重签api'}
+                {batchBusy === 'resign' ? '取消' : '重签 api'}
               </Button>
               <Button
                 size="sm"
@@ -2891,26 +2891,26 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                           size="sm"
                           className="h-7 shrink-0"
                           disabled={busy}
-                          title="重签cli · base=cli-chat-proxy 满额"
+                          title="重签 cli · base=cli-chat-proxy 满额"
                           onClick={() => void resign(item, 'cli')}
                         >
                           <RotateCcw
                             className={cn('h-3.5 w-3.5', rowResign && 'animate-spin')}
                           />
-                          {rowResign ? '…' : '重签cli'}
+                          {rowResign ? '…' : '重签 cli'}
                         </Button>
                         <Button
                           variant="secondary"
                           size="sm"
                           className="h-7 shrink-0"
                           disabled={busy}
-                          title="重签api · base=api.x.ai 防风控·约50%额度"
+                          title="重签 api · base=api.x.ai 防风控·约50%额度"
                           onClick={() => void resign(item, 'api')}
                         >
                           <RotateCcw
                             className={cn('h-3.5 w-3.5', rowResign && 'animate-spin')}
                           />
-                          {rowResign ? '…' : '重签api'}
+                          {rowResign ? '…' : '重签 api'}
                         </Button>
                       </div>
                     </td>

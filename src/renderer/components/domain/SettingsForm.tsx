@@ -1209,7 +1209,7 @@ export function SettingsForm() {
               />
               <ToggleRow
                 label="重签后推远程"
-                hint="默认关。Auth 页「重签cli/api」成功后自动推到已配置的远程 CPA；401 自动重签不推"
+                hint="默认关。Auth 页「重签 cli/api」成功后自动推到已配置的远程 CPA；401 自动重签不推"
                 checked={draft.resignPushRemote === true}
                 onChange={(v) => update('resignPushRemote', v)}
               />

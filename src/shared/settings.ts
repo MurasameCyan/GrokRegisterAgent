@@ -271,7 +271,7 @@ export interface AppSettings {
    */
   cpaResignConcurrency: number;
   /**
-   * 手动「重签cli/api」成功后是否再推远程 CPA。
+   * 手动「重签 cli/api」成功后是否再推远程 CPA。
    * 默认 false（仅本地写文件）。401 自动重签不读此开关。
    */
   resignPushRemote: boolean;
