@@ -204,8 +204,10 @@ export default function App() {
                 className={cn('nav-link shrink-0', tab === id && 'nav-link-active')}
                 aria-current={tab === id ? 'page' : undefined}
               >
-                <Icon className="h-4 w-4 shrink-0" strokeWidth={2} aria-hidden />
-                <span className="leading-none">{label}</span>
+                <span className="nav-link-inner">
+                  <Icon className="h-4 w-4 shrink-0" strokeWidth={2} aria-hidden />
+                  <span className="leading-none">{label}</span>
+                </span>
               </button>
             ))}
           </nav>

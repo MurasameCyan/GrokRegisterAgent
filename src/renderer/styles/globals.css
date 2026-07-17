@@ -370,13 +370,31 @@
     @apply text-[12px] font-medium text-muted-foreground;
   }
 
+  /*
+   * 侧栏导航：行内 justify-center 整组居中；
+   * 内层固定宽度 + 图标列对齐，避免「注册/号池」字长不同导致图标参差。
+   */
   .nav-link {
-    @apply flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2.5 text-left text-[14px] font-medium leading-none text-muted-foreground transition-colors duration-100 active:opacity-70 lg:gap-2.5 lg:px-3 lg:text-[14px];
+    @apply flex w-full items-center justify-center rounded-xl px-2 py-2.5 text-[14px] font-medium leading-none text-muted-foreground transition-colors duration-100 active:opacity-70 lg:text-[14px];
+  }
+
+  .nav-link-inner {
+    @apply grid w-[5.75rem] shrink-0 grid-cols-[1rem_1fr] items-center gap-x-2.5;
+  }
+
+  .nav-link-inner > svg {
+    @apply h-4 w-4 justify-self-center;
+    width: 1rem;
+    height: 1rem;
+  }
+
+  .nav-link-inner > span {
+    @apply min-w-0 text-left leading-none;
   }
 
   /* 移动端横向导航：避免挤成一团 */
   .app-nav-links {
-    @apply flex gap-1 overflow-x-auto px-3 py-2.5 [-ms-overflow-style:none] [scrollbar-width:none] lg:flex-1 lg:flex-col lg:gap-0.5 lg:overflow-y-auto lg:overflow-x-visible lg:px-2.5 lg:py-3;
+    @apply flex gap-1 overflow-x-auto px-3 py-2.5 [-ms-overflow-style:none] [scrollbar-width:none] lg:flex-1 lg:flex-col lg:items-stretch lg:gap-0.5 lg:overflow-y-auto lg:overflow-x-visible lg:px-2 lg:py-3;
   }
 
   .app-nav-links::-webkit-scrollbar {
