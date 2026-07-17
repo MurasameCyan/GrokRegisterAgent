@@ -1433,6 +1433,7 @@ export function SettingsForm() {
                 pushAuthToSub2api: on ? true : draft.pushAuthToSub2api === true
               });
             };
+            /** 推送「允许/自动」：统一高度、圆角、最小宽度，通道间视觉对齐 */
             const targetBtn = (
               active: boolean,
               label: string,
@@ -1449,8 +1450,8 @@ export function SettingsForm() {
                 }}
                 className={
                   active
-                    ? 'inline-flex h-8 items-center rounded-lg border border-emerald-500/40 bg-emerald-500/15 px-3 text-[12px] font-semibold text-emerald-700 dark:text-emerald-400'
-                    : 'inline-flex h-8 items-center rounded-lg border border-border bg-background px-3 text-[12px] font-medium text-muted-foreground hover:bg-muted hover:text-foreground'
+                    ? 'inline-flex h-8 min-w-[9.5rem] items-center justify-center rounded-xl border border-emerald-500/40 bg-emerald-500/15 px-3 text-[12px] font-semibold leading-none text-emerald-700 dark:text-emerald-400'
+                    : 'inline-flex h-8 min-w-[9.5rem] items-center justify-center rounded-xl border border-border bg-background px-3 text-[12px] font-medium leading-none text-muted-foreground hover:bg-muted hover:text-foreground'
                 }
               >
                 {label}
@@ -1463,7 +1464,7 @@ export function SettingsForm() {
               onAuto: (v: boolean) => void,
               name: string
             ) => (
-              <div className="flex flex-wrap items-center gap-1.5">
+              <div className="flex flex-wrap items-center justify-end gap-1.5">
                 {targetBtn(
                   allow,
                   `${name} 允许`,
