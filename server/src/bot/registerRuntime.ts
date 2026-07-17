@@ -380,23 +380,20 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
   const autoSsoG2 =
     settings.autoPushSsoToGrok2api === true ||
     (settings.autoPushSsoToGrok2api === undefined && allowSsoG2);
-  const allowAuthG2 = settings.pushAuthToGrok2api === true;
-  const autoAuthG2 =
-    settings.autoPushAuthToGrok2api === true ||
-    (settings.autoPushAuthToGrok2api === undefined && allowAuthG2);
   const allowAuthCpa =
     settings.pushAuthToCpa === true || settings.cpaRemotePushEnabled === true;
   const autoAuthCpa =
     settings.autoPushAuthToCpa === true ||
     (settings.autoPushAuthToCpa === undefined && allowAuthCpa);
   // Python 侧 push_* = 自动推送（注册成功触发）；允许仅影响 UI 手动推
+  // grok2api 仅保留 SSO 通道（已移除 Auth→grok2api）
   config.push_sso_to_grok2api = autoSsoG2;
-  config.push_auth_to_grok2api = autoAuthG2;
+  config.push_auth_to_grok2api = false;
   config.push_auth_to_cpa = autoAuthCpa;
   config.allow_push_sso_to_grok2api = allowSsoG2;
-  config.allow_push_auth_to_grok2api = allowAuthG2;
+  config.allow_push_auth_to_grok2api = false;
   config.allow_push_auth_to_cpa = allowAuthCpa;
-  config.grok2api_auto_upload = autoSsoG2 || autoAuthG2;
+  config.grok2api_auto_upload = autoSsoG2;
   const g2url = String(settings.grok2apiUrl || '').trim();
   const g2user = String(settings.grok2apiUsername || '').trim();
   const g2pass = String(settings.grok2apiPassword || '');

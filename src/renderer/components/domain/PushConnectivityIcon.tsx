@@ -13,7 +13,7 @@ type Target = 'cpa' | 'g2' | 'sub2';
  * - 黄：未点「允许推送」/ 未测 / 目标已开但地址未填全
  * - 绿：所有「已允许」目标均连通
  * - 红：至少一个已允许目标失败
- * grok2api：SSO→g2 与 Auth→g2 任一允许/自动 即检测一次 g2 接口。
+ * grok2api：SSO→g2 允许/自动 即检测一次 g2 接口。
  */
 export function PushConnectivityIcon({ draft }: { draft: AppSettings }) {
   const allowCpa =
@@ -23,8 +23,6 @@ export function PushConnectivityIcon({ draft }: { draft: AppSettings }) {
   const allowG2 =
     draft.pushSsoToGrok2api === true ||
     draft.autoPushSsoToGrok2api === true ||
-    draft.pushAuthToGrok2api === true ||
-    draft.autoPushAuthToGrok2api === true ||
     draft.grok2apiAutoUpload === true;
   const allowSub2 =
     draft.pushAuthToSub2api === true || draft.autoPushAuthToSub2api === true;

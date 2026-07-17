@@ -234,10 +234,6 @@ export interface AppSettings {
   pushSsoToGrok2api: boolean;
   /** SSO → grok2api：注册成功后自动推送（隐含允许） */
   autoPushSsoToGrok2api: boolean;
-  /** Auth → grok2api：允许推送 */
-  pushAuthToGrok2api: boolean;
-  /** Auth → grok2api：注册成功后自动推送 */
-  autoPushAuthToGrok2api: boolean;
   /** Auth → CPA：注册成功后自动推送（允许见 pushAuthToCpa） */
   autoPushAuthToCpa: boolean;
   /**
@@ -331,7 +327,7 @@ export interface AppSettings {
    */
   cpaMintMode: CpaMintMode;
   /**
-   * @deprecated 使用 pushSsoToGrok2api / pushAuthToGrok2api。
+   * @deprecated 使用 pushSsoToGrok2api / autoPushSsoToGrok2api。
    * 兼容旧配置：为 true 时视为 pushSsoToGrok2api。
    */
   grok2apiAutoUpload: boolean;
@@ -409,8 +405,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoPushAuthToCpa: false,
   pushSsoToGrok2api: false,
   autoPushSsoToGrok2api: false,
-  pushAuthToGrok2api: false,
-  autoPushAuthToGrok2api: false,
   cpaRemoteUrl: '',
   cpaManagementKey: '',
   cpaProbeDeleteOnDead: false,

@@ -1354,16 +1354,12 @@ export function SettingsForm() {
             const allowAuthCpa =
               draft.pushAuthToCpa === true || draft.cpaRemotePushEnabled === true;
             const autoAuthCpa = draft.autoPushAuthToCpa === true;
-            const allowAuthG2 = draft.pushAuthToGrok2api === true;
-            const autoAuthG2 = draft.autoPushAuthToGrok2api === true;
             const allowSub2 = draft.pushAuthToSub2api === true;
             const autoSub2 = draft.autoPushAuthToSub2api === true;
             if (autoSsoG2) bits.push('SSO→grok2api 自动');
             else if (allowSsoG2) bits.push('SSO→grok2api 允许');
             if (autoAuthCpa) bits.push('Auth→CPA 自动');
             else if (allowAuthCpa) bits.push('Auth→CPA 允许');
-            if (autoAuthG2) bits.push('Auth→grok2api 自动');
-            else if (allowAuthG2) bits.push('Auth→grok2api 允许');
             if (autoSub2) bits.push('Auth→sub2api 自动');
             else if (allowSub2) bits.push('Auth→sub2api 允许');
             return bits.length ? bits.join(' · ') : '未开启推送';
@@ -1372,40 +1368,30 @@ export function SettingsForm() {
         />
         <CardBody className="space-y-4">
           {(() => {
-            // 允许 / 自动 分离；SSO 与 Auth 的 g2 互不联动
+            // 允许 / 自动 分离；grok2api 仅 SSO 通道
             const allowSsoG2 = draft.pushSsoToGrok2api === true;
             const autoSsoG2 = draft.autoPushSsoToGrok2api === true;
             const allowAuthCpa =
               draft.pushAuthToCpa === true || draft.cpaRemotePushEnabled === true;
             const autoAuthCpa = draft.autoPushAuthToCpa === true;
-            const allowAuthG2 = draft.pushAuthToGrok2api === true;
-            const autoAuthG2 = draft.autoPushAuthToGrok2api === true;
             const allowSub2 = draft.pushAuthToSub2api === true;
             const autoSub2 = draft.autoPushAuthToSub2api === true;
-            const needG2Config = allowSsoG2 || allowAuthG2 || autoSsoG2 || autoAuthG2;
+            const needG2Config = allowSsoG2 || autoSsoG2;
             const needCpaConfig = allowAuthCpa || autoAuthCpa;
             const needS2Config = allowSub2 || autoSub2;
-            const syncLegacyG2 = (ssoAllow: boolean, authAllow: boolean) =>
-              ssoAllow || authAllow;
 
             const setAllowSsoG2 = (on: boolean) => {
               patch({
                 pushSsoToGrok2api: on,
                 autoPushSsoToGrok2api: on ? draft.autoPushSsoToGrok2api === true : false,
-                grok2apiAutoUpload: syncLegacyG2(
-                  on,
-                  draft.pushAuthToGrok2api === true || draft.autoPushAuthToGrok2api === true
-                )
+                grok2apiAutoUpload: on
               });
             };
             const setAutoSsoG2 = (on: boolean) => {
               patch({
                 autoPushSsoToGrok2api: on,
                 pushSsoToGrok2api: on ? true : draft.pushSsoToGrok2api === true,
-                grok2apiAutoUpload: syncLegacyG2(
-                  on || draft.pushSsoToGrok2api === true,
-                  draft.pushAuthToGrok2api === true || draft.autoPushAuthToGrok2api === true
-                )
+                grok2apiAutoUpload: on || draft.pushSsoToGrok2api === true
               });
             };
             const setAllowAuthCpa = (on: boolean) => {
@@ -1422,26 +1408,6 @@ export function SettingsForm() {
                 cpaRemotePushEnabled: on
                   ? true
                   : draft.pushAuthToCpa === true || draft.cpaRemotePushEnabled === true
-              });
-            };
-            const setAllowAuthG2 = (on: boolean) => {
-              patch({
-                pushAuthToGrok2api: on,
-                autoPushAuthToGrok2api: on ? draft.autoPushAuthToGrok2api === true : false,
-                grok2apiAutoUpload: syncLegacyG2(
-                  draft.pushSsoToGrok2api === true || draft.autoPushSsoToGrok2api === true,
-                  on
-                )
-              });
-            };
-            const setAutoAuthG2 = (on: boolean) => {
-              patch({
-                autoPushAuthToGrok2api: on,
-                pushAuthToGrok2api: on ? true : draft.pushAuthToGrok2api === true,
-                grok2apiAutoUpload: syncLegacyG2(
-                  draft.pushSsoToGrok2api === true || draft.autoPushSsoToGrok2api === true,
-                  on || draft.pushAuthToGrok2api === true
-                )
               });
             };
             const setAllowSub2 = (on: boolean) => {
@@ -1526,15 +1492,11 @@ export function SettingsForm() {
                 <div className="space-y-2 rounded-xl border border-border/70 bg-muted/30 p-3">
                   <div className="text-[14px] font-medium text-foreground">Auth</div>
                   <div className="text-[11px] text-muted-foreground">
-                    本地 xai-*.json — CPA 与 grok2api 可同时配置
+                    本地 xai-*.json — CPA / sub2api（grok2api 仅走上方 SSO）
                   </div>
                   <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/50 pt-2">
                     <span className="text-[12px] font-medium text-foreground">CPA</span>
                     {pair(allowAuthCpa, autoAuthCpa, setAllowAuthCpa, setAutoAuthCpa, 'Auth→CPA')}
-                  </div>
-                  <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/50 pt-2">
-                    <span className="text-[12px] font-medium text-foreground">grok2api</span>
-                    {pair(allowAuthG2, autoAuthG2, setAllowAuthG2, setAutoAuthG2, 'Auth→grok2api')}
                   </div>
                   <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/50 pt-2">
                     <span className="text-[12px] font-medium text-foreground">sub2api</span>

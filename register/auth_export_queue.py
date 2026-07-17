@@ -258,7 +258,6 @@ def _run_sso_push_g2(
         for k in (
             "grok2api_auto_upload",
             "push_sso_to_grok2api",
-            "push_auth_to_grok2api",
             "grok2api_url",
             "grok2api_username",
             "grok2api_password",

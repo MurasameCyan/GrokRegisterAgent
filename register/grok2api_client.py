@@ -385,19 +385,14 @@ def upload_registered_sso(
     push_sso = settings.get("push_sso_to_grok2api")
     if push_sso is None:
         push_sso = settings.get("pushSsoToGrok2api")
-    push_auth = settings.get("push_auth_to_grok2api")
-    if push_auth is None:
-        push_auth = settings.get("pushAuthToGrok2api")
     auto = settings.get("grok2api_auto_upload")
     if auto is None:
         auto = settings.get("grok2apiAutoUpload")
-    # 本函数只推 SSO Cookie：仅 push_sso 开才上传。
-    # 勿因 push_auth / auto_upload 误推 SSO（Auth 与 SSO 的 g2 开关独立）。
-    # 旧配置：两路 push_* 都未写入时，才回退 auto_upload。
+    # 仅 SSO→g2；旧配置仅有 auto_upload 时兼容
     if _truthy(push_sso):
-        pass  # 明确开启 SSO→g2
-    elif push_sso is None and push_auth is None and _truthy(auto):
-        pass  # 纯旧配置兼容
+        pass
+    elif push_sso is None and _truthy(auto):
+        pass
     else:
         return None
 
