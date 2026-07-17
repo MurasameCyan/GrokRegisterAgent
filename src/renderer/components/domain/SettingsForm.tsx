@@ -1358,12 +1358,12 @@ export function SettingsForm() {
             const autoAuthG2 = draft.autoPushAuthToGrok2api === true;
             const allowSub2 = draft.pushAuthToSub2api === true;
             const autoSub2 = draft.autoPushAuthToSub2api === true;
-            if (autoSsoG2) bits.push('SSO→g2 自动');
-            else if (allowSsoG2) bits.push('SSO→g2 允许');
+            if (autoSsoG2) bits.push('SSO→grok2api 自动');
+            else if (allowSsoG2) bits.push('SSO→grok2api 允许');
             if (autoAuthCpa) bits.push('Auth→CPA 自动');
             else if (allowAuthCpa) bits.push('Auth→CPA 允许');
-            if (autoAuthG2) bits.push('Auth→g2 自动');
-            else if (allowAuthG2) bits.push('Auth→g2 允许');
+            if (autoAuthG2) bits.push('Auth→grok2api 自动');
+            else if (allowAuthG2) bits.push('Auth→grok2api 允许');
             if (autoSub2) bits.push('Auth→sub2api 自动');
             else if (allowSub2) bits.push('Auth→sub2api 允许');
             return bits.length ? bits.join(' · ') : '未开启推送';
@@ -1516,7 +1516,7 @@ export function SettingsForm() {
                         Cookie / 号池 sso — 仅 grok2api
                       </div>
                     </div>
-                    {pair(allowSsoG2, autoSsoG2, setAllowSsoG2, setAutoSsoG2, 'SSO→g2')}
+                    {pair(allowSsoG2, autoSsoG2, setAllowSsoG2, setAutoSsoG2, 'SSO→grok2api')}
                   </div>
                 </div>
 
@@ -1532,7 +1532,7 @@ export function SettingsForm() {
                   </div>
                   <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/50 pt-2">
                     <span className="text-[12px] font-medium text-foreground">grok2api</span>
-                    {pair(allowAuthG2, autoAuthG2, setAllowAuthG2, setAutoAuthG2, 'Auth→g2')}
+                    {pair(allowAuthG2, autoAuthG2, setAllowAuthG2, setAutoAuthG2, 'Auth→grok2api')}
                   </div>
                   <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/50 pt-2">
                     <span className="text-[12px] font-medium text-foreground">sub2api</span>
