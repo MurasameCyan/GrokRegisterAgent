@@ -227,7 +227,6 @@ function RuntimeSettingsInline() {
   const dirty =
     !!data &&
     (data.runCount !== draft.runCount ||
-      data.maxParallelWorkers !== draft.maxParallelWorkers ||
       (data.registerPlanAEnabled !== false) !== planA ||
       (data.registerPlanBEnabled !== false) !== planB ||
       (data.registerPlanCEnabled === true || data.registerMode === 'hybrid') !== planC ||
@@ -271,7 +270,8 @@ function RuntimeSettingsInline() {
       const next = {
         ...data!,
         runCount: draft.runCount,
-        maxParallelWorkers: draft.maxParallelWorkers,
+        // 并行上限固定 3，首页不再开放修改
+        maxParallelWorkers: 3,
         registerPlanAEnabled: draft.registerPlanAEnabled !== false,
         registerPlanBEnabled: draft.registerPlanBEnabled !== false,
         registerPlanCEnabled: planC,
@@ -322,7 +322,7 @@ function RuntimeSettingsInline() {
             <p className="mt-0.5 text-[11px] text-muted-foreground">
               {open
                 ? '保存后下次启动生效 · Plan 可多选 · Mint 三选一'
-                : `轮数 ${draft.runCount} · 并行 ${draft.maxParallelWorkers ?? 3} · Plan ${planSummary} · ${mintSummary}`}
+                : `轮数 ${draft.runCount} · 并行 3 · Plan ${planSummary} · ${mintSummary}`}
             </p>
           </div>
         </button>
@@ -340,7 +340,7 @@ function RuntimeSettingsInline() {
       </div>
       {open ? (
       <div className="mt-3 grid gap-3 sm:grid-cols-2">
-        <div className="rounded-xl border border-border/60 bg-muted/50 p-3">
+        <div className="rounded-xl border border-border/60 bg-muted/50 p-3 sm:col-span-2">
           <div className="flex items-center justify-between gap-2">
             <div className="field-label">轮数（每路）</div>
             <span className="chip tabular-nums">{draft.runCount}</span>
@@ -348,23 +348,9 @@ function RuntimeSettingsInline() {
           <div className="mt-2">
             <Slider
               min={1}
-              max={233}
+              max={2333}
               value={draft.runCount}
               onValueChange={(v) => update('runCount', v)}
-            />
-          </div>
-        </div>
-        <div className="rounded-xl border border-border/60 bg-muted/50 p-3">
-          <div className="flex items-center justify-between gap-2">
-            <div className="field-label">并行上限</div>
-            <span className="chip tabular-nums">{draft.maxParallelWorkers ?? 3}</span>
-          </div>
-          <div className="mt-2">
-            <Slider
-              min={1}
-              max={8}
-              value={draft.maxParallelWorkers ?? 3}
-              onValueChange={(v) => update('maxParallelWorkers', v)}
             />
           </div>
         </div>
