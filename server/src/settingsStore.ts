@@ -75,7 +75,7 @@ function applyEnvOverrides(s: AppSettings, source: Partial<AppSettings>): AppSet
     source.runCount === undefined &&
     Number.isInteger(envRunCount) &&
     (envRunCount as number) >= 1 &&
-    (envRunCount as number) <= 2333;
+    (envRunCount as number) <= 721;
 
   const pick = (saved: string, envVal?: string, fallback = ''): string => {
     const v = (saved || '').trim();
@@ -343,7 +343,7 @@ function merge(partial: unknown): AppSettings {
     runCount: (() => {
       const n = Number((p as AppSettings).runCount);
       if (!Number.isFinite(n) || n < 1) return DEFAULT_SETTINGS.runCount;
-      return Math.min(Math.floor(n), 2333);
+      return Math.min(Math.floor(n), 721);
     })(),
     skipBotFlag1OnMint: asBool(
       (p as AppSettings).skipBotFlag1OnMint,
