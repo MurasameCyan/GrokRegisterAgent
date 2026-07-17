@@ -28,12 +28,30 @@ export function RegisterPage({ onOpenSettings }: { onOpenSettings(): void }) {
   const running = status.phase === 'starting' || status.phase === 'running';
   const maxParallel = settings?.maxParallelWorkers ?? 3;
   const canStartMore = jobsActive < maxParallel;
-  const progress = liveProgressPercent({
+  const planTotal = status.total || settings?.runCount || 0;
+  let progress = liveProgressPercent({
     success: status.success,
     failed: status.failed,
     current: status.current,
-    total: status.total || settings?.runCount || 0
+    total: planTotal
   });
+  // 终态：静态终值（done 满条；error/killed 按已完成轮），避免刷新后 mid-step 半格「再跑一截」
+  if (status.phase === 'done') {
+    progress = 100;
+  } else if (status.phase === 'error' || status.phase === 'killed') {
+    const finished = Math.max(0, status.success) + Math.max(0, status.failed);
+    if (planTotal > 0) {
+      progress = Math.min(100, Math.round((finished / planTotal) * 100));
+    }
+  }
+  const progressTone =
+    status.phase === 'done'
+      ? 'ok'
+      : status.phase === 'error'
+        ? 'danger'
+        : status.phase === 'killed'
+          ? 'warn'
+          : 'primary';
 
   const ready = useMemo(
     () =>
@@ -150,6 +168,7 @@ export function RegisterPage({ onOpenSettings }: { onOpenSettings(): void }) {
                   value={progress}
                   active={running}
                   height="md"
+                  tone={progressTone}
                 />
               </div>
             </div>

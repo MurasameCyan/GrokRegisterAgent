@@ -33,6 +33,22 @@ let seq = 0;
 const LOG_DEDUP_MS = 2500;
 const lastLogKeyByRun = new Map<string, { key: string; ts: number }>();
 
+/**
+ * 已终态 runId 永久锁（进程内）。
+ * 解决：WS 回放/刷新时 jobs 尚未 hydrate，或任务已从列表 prune 但仍有 exit/日志，
+ * progress/started 不得把条从 0 推回 running。
+ */
+const terminalRunIds = new Set<string>();
+
+function markTerminalRun(runId: string | null | undefined) {
+  const id = String(runId || '').trim();
+  if (id) terminalRunIds.add(id);
+}
+
+function isLockedTerminal(runId: string): boolean {
+  return terminalRunIds.has(runId);
+}
+
 function normalizeLogText(text: string): string {
   return String(text || '')
     .replace(/\s+/g, ' ')
@@ -77,19 +93,25 @@ export const useRunStore = create<RunState>((set) => ({
   jobs: [],
   jobsActive: 0,
 
-  setStatus: (status) =>
+  setStatus: (status) => {
+    if (status?.runId && !isActive(status.phase)) markTerminalRun(status.runId);
     set((s) => ({
       status,
       focusRunId: status.runId || s.focusRunId
-    })),
+    }));
+  },
 
   setFocusRunId: (runId) => set({ focusRunId: runId }),
 
-  setJobs: (jobs, active) =>
+  setJobs: (jobs, active) => {
+    for (const j of jobs) {
+      if (j?.runId && !isActive(j.phase)) markTerminalRun(j.runId);
+    }
     set({
       jobs,
       jobsActive: active !== undefined ? active : jobs.filter((j) => isActive(j.phase)).length
-    }),
+    });
+  },
 
   clearLogs: () => set({ logs: [] }),
 
@@ -114,6 +136,7 @@ export const useRunStore = create<RunState>((set) => ({
       /** 已结束任务：WS 重放不得回退 phase / 清零进度（刷新时会先 listJobs 再重放） */
       const existingJob = (runId: string) => jobs.find((j) => j.runId === runId);
       const isTerminalJob = (runId: string) => {
+        if (isLockedTerminal(runId)) return true;
         const j = existingJob(runId);
         return !!j && !isActive(j.phase);
       };
@@ -248,6 +271,7 @@ export const useRunStore = create<RunState>((set) => ({
           break;
         case 'exit': {
           const phase = event.killed ? 'killed' : event.code === 0 ? 'done' : 'error';
+          markTerminalRun(event.runId);
           if (!focus || event.runId === focus || event.runId === status.runId) {
             status = {
               ...status,

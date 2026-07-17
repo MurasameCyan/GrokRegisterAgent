@@ -58,7 +58,11 @@ export function LiveProgressBar({
           active && pct > 0 && pct < 100 && 'live-progress-breathe',
           barClassName
         )}
-        style={{ width: `${pct}%` }}
+        style={{
+          width: `${pct}%`,
+          // 终态/非 active：禁止任何 width transition（含全局 CSS 误伤）
+          transition: active ? undefined : 'none'
+        }}
       >
         {/* 运行中：条内流光 */}
         {active && pct > 0 && pct < 100 && (
