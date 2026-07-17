@@ -226,12 +226,28 @@ export function JobListPanel({
           {jobs.map((job) => {
             const focused = job.runId === focusRunId || job.focused;
             const active = job.phase === 'running' || job.phase === 'starting';
-            const pct = liveProgressPercent({
+            const terminal = !active;
+            // 运行中：跟手百分比；正常完成：满条；中止/失败：按已完成轮真实比例
+            let pct = liveProgressPercent({
               success: job.success,
               failed: job.failed,
               current: job.current,
               total: job.total
             });
+            if (job.phase === 'done') {
+              pct = 100;
+            } else if (terminal && job.total > 0) {
+              const finished = Math.max(0, job.success) + Math.max(0, job.failed);
+              pct = Math.min(100, Math.round((finished / job.total) * 100));
+            }
+            const barTone =
+              job.phase === 'done'
+                ? 'ok'
+                : job.phase === 'error'
+                  ? 'danger'
+                  : job.phase === 'killed'
+                    ? 'warn'
+                    : 'primary';
             return (
               <button
                 key={job.runId}
@@ -244,8 +260,8 @@ export function JobListPanel({
                     : 'border-border/70 bg-card hover:border-primary/30'
                 )}
               >
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
+                <div className="flex w-full items-start justify-between gap-2">
+                  <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-1.5">
                       <span className="font-mono text-[12px] font-semibold">
                         #{shortId(job.runId)}
@@ -270,11 +286,13 @@ export function JobListPanel({
                       {` · ${fmtTime(job.startedAt)}`}
                       {job.pid ? ` · pid ${job.pid}` : ''}
                     </p>
-                    <div className="mt-1.5">
+                    {/* 轨道始终拉满卡片内容区宽度，避免随文案变短 */}
+                    <div className="mt-1.5 w-full min-w-0">
                       <LiveProgressBar
                         value={pct}
                         active={active}
                         height="sm"
+                        tone={barTone}
                       />
                     </div>
                   </div>
