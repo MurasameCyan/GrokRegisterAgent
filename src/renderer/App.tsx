@@ -225,7 +225,7 @@ export default function App() {
                 href="https://github.com/MurasameCyan/GrokRegisterAgent"
                 target="_blank"
                 rel="noreferrer"
-                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-border/70 bg-muted/40 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-muted text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                 title="GitHub"
               >
                 <Github className="h-4 w-4" strokeWidth={2} aria-hidden />
@@ -246,7 +246,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={logout}
-                className="inline-flex h-7 shrink-0 items-center justify-center gap-1 rounded-lg px-2 text-[12px] font-medium leading-none text-primary transition-colors hover:bg-background active:opacity-70"
+                className="inline-flex h-8 shrink-0 items-center justify-center gap-1 rounded-xl px-2.5 text-[11px] font-medium leading-none text-primary transition-colors hover:bg-background active:opacity-70"
                 title="退出登录"
               >
                 <LogOut className="h-3.5 w-3.5 shrink-0" strokeWidth={2} aria-hidden />
@@ -337,18 +337,21 @@ function SidebarUpdateBar({
       ? `本地 BUILD_ID=${buildId ?? '?'} · 远端 beta=${update?.latest ?? '?'}`
       : `BUILD_ID ${buildId ?? '…'}（与注册机启动 Build 一致；更新需手动点检查）`;
 
-  // 默认中性灰；仅「点击检查后发现有新版本」才绿色强调
+  // 侧栏底部控件统一：h-8 + rounded-xl + bg-muted；有更新时 ok 强调
+  const shell =
+    'inline-flex h-8 items-center justify-center gap-1 rounded-xl px-2.5 text-[11px] font-medium leading-none transition-colors';
   const mutedBtnCls =
-    'inline-flex h-8 shrink-0 items-center justify-center gap-1 rounded-xl bg-muted px-2.5 text-[11px] font-medium leading-none text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-60';
+    shell +
+    ' shrink-0 bg-muted text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-60';
   const okBtnCls =
-    'inline-flex h-8 shrink-0 items-center justify-center gap-1 rounded-xl bg-ok/15 px-2.5 text-[11px] font-medium leading-none text-ok transition-colors hover:bg-ok/25';
+    shell + ' shrink-0 bg-ok/15 text-ok hover:bg-ok/25';
+  const chipCls =
+    shell +
+    ' min-w-0 flex-1 truncate bg-muted font-mono tabular-nums text-muted-foreground';
 
   return (
     <div className="flex min-w-0 items-center gap-1.5">
-      <span
-        className="inline-flex h-8 min-w-0 flex-1 items-center justify-center truncate rounded-xl bg-muted px-2.5 font-mono text-[11px] font-medium leading-none tabular-nums text-muted-foreground"
-        title={chipTitle}
-      >
+      <span className={chipCls} title={chipTitle}>
         {buildId ?? '…'}
       </span>
       {checkedOk && hasUpdate ? (
