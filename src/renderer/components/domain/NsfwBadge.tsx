@@ -20,38 +20,38 @@ export function NsfwBadge({
   if (s === 'ok') {
     return (
       <span
-        title="NSFW 已开启 (always_show_nsfw_content)"
+        title="Nsfw 已开启 (always_show_nsfw_content)"
         className={cn(
           'inline-flex h-5 items-center rounded-full bg-emerald-500/15 px-2 text-[10px] font-medium leading-none text-emerald-600 dark:text-emerald-400',
           className
         )}
       >
-        NSFW
+        Nsfw
       </span>
     );
   }
   if (s === 'fail') {
     return (
       <span
-        title={error ? `NSFW 未开启: ${error}` : 'NSFW 尝试开启失败（不影响授权）'}
+        title={error ? `Nsfw 未开启: ${error}` : 'Nsfw 尝试开启失败（不影响授权）'}
         className={cn(
           'inline-flex h-5 items-center rounded-full bg-amber-500/15 px-2 text-[10px] font-medium leading-none text-amber-700 dark:text-amber-400',
           className
         )}
       >
-        NSFW×
+        Nsfw×
       </span>
     );
   }
   return (
     <span
-      title="未尝试开启 NSFW（设置开启 NSFW 并完成 Auth 后会写 tag）"
+      title="未尝试开启 Nsfw（设置开启 Nsfw 并完成 Auth 后会写 tag）"
       className={cn(
         'inline-flex h-5 items-center rounded-full bg-muted px-2 text-[10px] font-medium leading-none text-muted-foreground',
         className
       )}
     >
-      NSFW—
+      Nsfw—
     </span>
   );
 }
