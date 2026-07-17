@@ -1433,7 +1433,13 @@ export function SettingsForm() {
                 pushAuthToSub2api: on ? true : draft.pushAuthToSub2api === true
               });
             };
-            /** 推送「允许/自动」：统一高度、圆角、最小宽度，通道间视觉对齐 */
+            /**
+             * 推送「允许/自动」：
+             * - 固定宽高（非 min-w），三条通道同一尺寸
+             * - pair 右对齐固定总宽，行布局统一 justify-between
+             */
+            const PUSH_BTN =
+              'inline-flex h-8 w-[10.75rem] shrink-0 items-center justify-center rounded-xl border px-2 text-[12px] leading-none tabular-nums transition-colors';
             const targetBtn = (
               active: boolean,
               label: string,
@@ -1450,11 +1456,11 @@ export function SettingsForm() {
                 }}
                 className={
                   active
-                    ? 'inline-flex h-8 min-w-[9.5rem] items-center justify-center rounded-xl border border-emerald-500/40 bg-emerald-500/15 px-3 text-[12px] font-semibold leading-none text-emerald-700 dark:text-emerald-400'
-                    : 'inline-flex h-8 min-w-[9.5rem] items-center justify-center rounded-xl border border-border bg-background px-3 text-[12px] font-medium leading-none text-muted-foreground hover:bg-muted hover:text-foreground'
+                    ? `${PUSH_BTN} border-emerald-500/40 bg-emerald-500/15 font-semibold text-emerald-700 dark:text-emerald-400`
+                    : `${PUSH_BTN} border-border bg-background font-medium text-muted-foreground hover:bg-muted hover:text-foreground`
                 }
               >
-                {label}
+                <span className="truncate">{label}</span>
               </button>
             );
             const pair = (
@@ -1464,7 +1470,7 @@ export function SettingsForm() {
               onAuto: (v: boolean) => void,
               name: string
             ) => (
-              <div className="flex flex-wrap items-center justify-end gap-1.5">
+              <div className="grid w-[22rem] shrink-0 grid-cols-2 gap-1.5">
                 {targetBtn(
                   allow,
                   `${name} 允许`,
@@ -1483,37 +1489,64 @@ export function SettingsForm() {
                 )}
               </div>
             );
+            /** 左文案 + 右按钮对：三行同一骨架，按钮列竖线对齐 */
+            const channelRow = (
+              title: string,
+              hint: string | null,
+              pairNode: ReactNode,
+              opts?: { borderTop?: boolean }
+            ) => (
+              <div
+                className={
+                  opts?.borderTop
+                    ? 'flex items-center justify-between gap-3 border-t border-border/50 pt-2.5'
+                    : 'flex items-center justify-between gap-3'
+                }
+              >
+                <div className="min-w-0 flex-1 pr-2">
+                  <div className="truncate text-[13px] font-medium leading-tight text-foreground">
+                    {title}
+                  </div>
+                  {hint ? (
+                    <div className="mt-0.5 truncate text-[11px] leading-tight text-muted-foreground">
+                      {hint}
+                    </div>
+                  ) : null}
+                </div>
+                {pairNode}
+              </div>
+            );
             return (
               <>
                 {/* SSO 推送 */}
                 <div className="rounded-xl border border-border/70 bg-muted/30 p-3">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <div className="min-w-0 flex-1">
-                      <div className="text-[14px] font-medium text-foreground">
-                        SSO · grok2api
-                      </div>
-                      <div className="text-[11px] text-muted-foreground">
-                        Cookie / 号池 sso — 仅 grok2api
-                      </div>
-                    </div>
-                    {pair(allowSsoG2, autoSsoG2, setAllowSsoG2, setAutoSsoG2, 'SSO→grok2api')}
-                  </div>
+                  {channelRow(
+                    'SSO · grok2api',
+                    'Cookie / 号池 sso — 仅 grok2api',
+                    pair(allowSsoG2, autoSsoG2, setAllowSsoG2, setAutoSsoG2, 'SSO→grok2api')
+                  )}
                 </div>
 
-                {/* Auth 推送 */}
-                <div className="space-y-2 rounded-xl border border-border/70 bg-muted/30 p-3">
-                  <div className="text-[14px] font-medium text-foreground">Auth</div>
-                  <div className="text-[11px] text-muted-foreground">
-                    本地 xai-*.json — CPA / sub2api（grok2api 仅走上方 SSO）
+                {/* Auth 推送：行骨架与 SSO 一致，按钮右缘对齐 */}
+                <div className="space-y-2.5 rounded-xl border border-border/70 bg-muted/30 p-3">
+                  <div>
+                    <div className="text-[13px] font-medium text-foreground">Auth</div>
+                    <div className="mt-0.5 text-[11px] text-muted-foreground">
+                      本地 xai-*.json — CPA / sub2api（grok2api 仅走上方 SSO）
+                    </div>
                   </div>
-                  <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/50 pt-2">
-                    <span className="text-[12px] font-medium text-foreground">CPA</span>
-                    {pair(allowAuthCpa, autoAuthCpa, setAllowAuthCpa, setAutoAuthCpa, 'Auth→CPA')}
-                  </div>
-                  <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/50 pt-2">
-                    <span className="text-[12px] font-medium text-foreground">sub2api</span>
-                    {pair(allowSub2, autoSub2, setAllowSub2, setAutoSub2, 'Auth→sub2api')}
-                  </div>
+                  {channelRow(
+                    'CPA',
+                    null,
+                    pair(allowAuthCpa, autoAuthCpa, setAllowAuthCpa, setAutoAuthCpa, 'Auth→CPA'),
+                    { borderTop: true }
+                  )}
+                  {channelRow(
+                    'sub2api',
+                    null,
+                    pair(allowSub2, autoSub2, setAllowSub2, setAutoSub2, 'Auth→sub2api'),
+                    { borderTop: true }
+                  )}
                 </div>
 
                 {/* CPA 连接（Auth→CPA 启用时展开）— 与上方 Auth 推送块同壳 */}
