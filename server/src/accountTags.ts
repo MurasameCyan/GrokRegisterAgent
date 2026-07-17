@@ -24,25 +24,52 @@ export interface AccountTagsFile {
 }
 
 function tagsPathCandidates(): string[] {
-  // loadSettings() 是 async；此处仅需同步解析 register 目录。
-  // resolveRegisterRuntime 会走 env REGISTER_DIR / 内置候选路径。
-  const rt = resolveRegisterRuntime({});
+  // 同步解析；DATA_DIR 优先（与 Python 持久落盘一致）
   const out: string[] = [];
+  const dataDir = String(process.env.DATA_DIR || '/data').trim();
+  if (dataDir) {
+    out.push(join(dataDir, 'account_tags.json'));
+  }
+  const rt = resolveRegisterRuntime({});
   if (rt?.registerDir) {
     out.push(join(rt.registerDir, 'data', 'account_tags.json'));
     out.push(join(rt.registerDir, 'account_tags.json'));
   }
   out.push(join(process.cwd(), 'register', 'data', 'account_tags.json'));
   out.push(join(process.cwd(), 'data', 'account_tags.json'));
-  return out;
+  out.push('/data/account_tags.json');
+  out.push('/app/register/data/account_tags.json');
+  // 去重保序
+  const seen = new Set<string>();
+  return out.filter((p) => {
+    if (!p || seen.has(p)) return false;
+    seen.add(p);
+    return true;
+  });
+}
+
+function mergeTagFiles(a: AccountTagsFile, b: AccountTagsFile): AccountTagsFile {
+  const by_email: Record<string, AccountTagEntry> = { ...a.by_email };
+  const by_sso_hash: Record<string, AccountTagEntry> = { ...a.by_sso_hash };
+  for (const [k, v] of Object.entries(b.by_email || {})) {
+    by_email[k] = { ...(by_email[k] || {}), ...v };
+  }
+  for (const [k, v] of Object.entries(b.by_sso_hash || {})) {
+    by_sso_hash[k] = { ...(by_sso_hash[k] || {}), ...v };
+  }
+  return { by_email, by_sso_hash };
 }
 
 export function loadAccountTags(): AccountTagsFile {
-  for (const p of tagsPathCandidates()) {
+  // 低优先级路径先读，高优先级后覆盖（与 tagsPathCandidates 顺序一致）
+  let merged: AccountTagsFile = { by_email: {}, by_sso_hash: {} };
+  // 倒序：候选列表前面是高优先级（DATA_DIR），最后写入覆盖
+  const paths = tagsPathCandidates().slice().reverse();
+  for (const p of paths) {
     try {
       if (!existsSync(p)) continue;
       const raw = JSON.parse(readFileSync(p, 'utf-8')) as Partial<AccountTagsFile>;
-      return {
+      const one: AccountTagsFile = {
         by_email: (
           raw.by_email && typeof raw.by_email === 'object' ? raw.by_email : {}
         ) as Record<string, AccountTagEntry>,
@@ -50,11 +77,12 @@ export function loadAccountTags(): AccountTagsFile {
           raw.by_sso_hash && typeof raw.by_sso_hash === 'object' ? raw.by_sso_hash : {}
         ) as Record<string, AccountTagEntry>
       };
+      merged = mergeTagFiles(merged, one);
     } catch {
       /* try next */
     }
   }
-  return { by_email: {}, by_sso_hash: {} };
+  return merged;
 }
 
 export function ssoHashHex(sso: string): string {

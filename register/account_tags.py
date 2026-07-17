@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 """账号侧车标签（NSFW 等），供 SSO 号池 / Auth 列表展示。
 
-落盘: register/data/account_tags.json
+落盘优先级（写用第一可写路径；读合并候选）:
+  1) $DATA_DIR/account_tags.json   ← Docker 持久卷，重启不丢
+  2) register/data/account_tags.json
   {
     "by_email": { "a@b.com": { "nsfw_enabled": true, "nsfw_at": "..." } },
     "by_sso_hash": { "sha256...": { ... } }
@@ -11,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import threading
 import time
 from datetime import datetime, timezone
@@ -18,7 +21,33 @@ from pathlib import Path
 from typing import Any, Optional
 
 _LOCK = threading.Lock()
-_PATH = Path(__file__).resolve().parent / "data" / "account_tags.json"
+
+
+def _path_candidates() -> list[Path]:
+    """读/写候选路径。DATA_DIR 优先，避免 hot-sync 覆盖 register/data。"""
+    out: list[Path] = []
+    data_dir = (os.environ.get("DATA_DIR") or "").strip()
+    if data_dir:
+        out.append(Path(data_dir) / "account_tags.json")
+    # 兼容旧路径
+    reg = Path(__file__).resolve().parent
+    out.append(reg / "data" / "account_tags.json")
+    out.append(reg / "account_tags.json")
+    # 去重保序
+    seen: set[str] = set()
+    uniq: list[Path] = []
+    for p in out:
+        k = str(p)
+        if k not in seen:
+            seen.add(k)
+            uniq.append(p)
+    return uniq
+
+
+def _primary_path() -> Path:
+    """写路径：优先 DATA_DIR。"""
+    cands = _path_candidates()
+    return cands[0] if cands else Path(__file__).resolve().parent / "data" / "account_tags.json"
 
 
 def _now_iso() -> str:
@@ -39,24 +68,58 @@ def sso_hash(sso: str) -> str:
     return hashlib.sha256(t.encode("utf-8")).hexdigest()
 
 
+def _merge_tag_maps(base: dict[str, Any], extra: dict[str, Any]) -> dict[str, Any]:
+    """合并 by_email / by_sso_hash；extra 覆盖同 key。"""
+    out = {
+        "by_email": dict(base.get("by_email") or {}),
+        "by_sso_hash": dict(base.get("by_sso_hash") or {}),
+    }
+    for k, v in (extra.get("by_email") or {}).items():
+        if isinstance(v, dict):
+            prev = dict(out["by_email"].get(k) or {})
+            prev.update(v)
+            out["by_email"][k] = prev
+    for k, v in (extra.get("by_sso_hash") or {}).items():
+        if isinstance(v, dict):
+            prev = dict(out["by_sso_hash"].get(k) or {})
+            prev.update(v)
+            out["by_sso_hash"][k] = prev
+    return out
+
+
 def _load() -> dict[str, Any]:
-    try:
-        if _PATH.is_file():
-            data = json.loads(_PATH.read_text(encoding="utf-8"))
+    """从所有候选路径合并读取（DATA_DIR 最后写入优先）。"""
+    merged: dict[str, Any] = {"by_email": {}, "by_sso_hash": {}}
+    for path in reversed(_path_candidates()):  # 低优先级先，高优先级后覆盖
+        try:
+            if not path.is_file():
+                continue
+            data = json.loads(path.read_text(encoding="utf-8"))
             if isinstance(data, dict):
                 data.setdefault("by_email", {})
                 data.setdefault("by_sso_hash", {})
-                return data
-    except Exception:
-        pass
-    return {"by_email": {}, "by_sso_hash": {}}
+                merged = _merge_tag_maps(merged, data)
+        except Exception:
+            continue
+    return merged
 
 
 def _save(data: dict[str, Any]) -> None:
-    _PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = _PATH.with_suffix(".json.tmp")
+    path = _primary_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    tmp.replace(_PATH)
+    tmp.replace(path)
+    # 兼容：若主路径是 DATA_DIR，仍尝试镜像一份到 register/data（失败忽略）
+    try:
+        legacy = Path(__file__).resolve().parent / "data" / "account_tags.json"
+        if path.resolve() != legacy.resolve():
+            legacy.parent.mkdir(parents=True, exist_ok=True)
+            legacy.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+            )
+    except Exception:
+        pass
 
 
 def set_nsfw_tag(
