@@ -1404,47 +1404,36 @@ function AccountCard({
           </div>
           <div className="mt-1 text-[11px] text-muted-foreground">{fmtBeijing(account.createdAt)}</div>
         </div>
-        <div className="flex shrink-0 flex-col items-end gap-1">
-          <AuthConvertedBadge converted={authConverted} channel={authChannel} />
-          <SsoBadge result={ssoResult} />
-          <NsfwBadge
-            status={
-              account.nsfwStatus ??
-              (account.nsfwAttempted
-                ? account.nsfwEnabled
-                  ? 'ok'
-                  : 'fail'
-                : 'none')
-            }
-            error={account.nsfwError}
-          />
-          {/* ZDR 徽章已隐藏（流程已断开）
-          <ZdrBadge
-            status={
-              account.zdrStatus ??
-              (account.zdrAttempted
-                ? account.zdrClosed
-                  ? 'closed'
-                  : 'open'
-                : 'none')
-            }
-            error={account.zdrError}
-          />
-          */}
-          <span
-            title={
-              flagFrom === 'auth'
-                ? 'bot_flag 来自匹配的 Auth 文件（SSO JWT 无 claim）'
-                : flagFrom === 'probe'
-                  ? 'bot_flag 来自验活结果'
-                  : flagFrom === 'sso'
-                    ? 'bot_flag 来自 SSO JWT'
-                    : undefined
-            }
-          >
-            <BotFlagBadge flag={flagSource} is1={flagIs1} missing="muted" />
-          </span>
-        </div>
+      </div>
+
+      {/* tags：横向排列，位于密码上方 */}
+      <div className="flex flex-wrap items-center gap-1.5" onClick={stop}>
+        <AuthConvertedBadge converted={authConverted} channel={authChannel} />
+        <SsoBadge result={ssoResult} />
+        <NsfwBadge
+          status={
+            account.nsfwStatus ??
+            (account.nsfwAttempted
+              ? account.nsfwEnabled
+                ? 'ok'
+                : 'fail'
+              : 'none')
+          }
+          error={account.nsfwError}
+        />
+        <span
+          title={
+            flagFrom === 'auth'
+              ? 'bot_flag 来自匹配的 Auth 文件（SSO JWT 无 claim）'
+              : flagFrom === 'probe'
+                ? 'bot_flag 来自验活结果'
+                : flagFrom === 'sso'
+                  ? 'bot_flag 来自 SSO JWT'
+                  : undefined
+          }
+        >
+          <BotFlagBadge flag={flagSource} is1={flagIs1} missing="muted" />
+        </span>
       </div>
 
       <SecretRow
@@ -1565,13 +1554,14 @@ function AuthConvertedBadge({
 }
 
 function SsoBadge({ result }: { result?: SsoCheckResult }) {
+  // 测活 tag：4 字英文首字母大写 Live / Dead / None
   if (!result) {
     return (
       <span
-        className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground"
+        className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground"
         title="尚未对本账号执行 SSO 验活；验活后会本地保存，切换页面不丢失"
       >
-        未验
+        None
       </span>
     );
   }
@@ -1580,18 +1570,18 @@ function SsoBadge({ result }: { result?: SsoCheckResult }) {
     return (
       <span
         className="shrink-0 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400"
-        title={`存活${when}`}
+        title={`Live · 存活${when}`}
       >
-        存活
+        Live
       </span>
     );
   }
   return (
     <span
       className="shrink-0 rounded-full bg-destructive/15 px-2 py-0.5 text-[10px] font-medium text-destructive"
-      title={(result.error || '失效') + when}
+      title={(result.error || 'Dead · 失效') + when}
     >
-      失效
+      Dead
     </span>
   );
 }
