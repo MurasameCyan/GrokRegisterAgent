@@ -210,8 +210,7 @@ export default function App() {
             ))}
           </nav>
 
-          <div className="mt-auto hidden space-y-2 border-t border-border p-3 lg:block">
-            {/* 版本 + 检查更新（窄侧栏：一行紧凑） */}
+          <div className="mt-auto hidden space-y-2.5 border-t border-border/70 p-3 lg:block">
             <SidebarUpdateBar
               localBuildId={localBuildId}
               update={update}
@@ -226,25 +225,28 @@ export default function App() {
                 href="https://github.com/MurasameCyan/GrokRegisterAgent"
                 target="_blank"
                 rel="noreferrer"
-                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-border/70 bg-muted/40 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                 title="GitHub"
               >
                 <Github className="h-4 w-4" strokeWidth={2} aria-hidden />
               </a>
             </div>
-            <div className="flex h-10 items-center justify-between gap-2 rounded-xl bg-muted px-2.5">
+            <div className="flex items-center justify-between gap-2 rounded-xl border border-border/60 bg-muted/50 px-2.5 py-2">
               <div className="flex min-w-0 items-center gap-2">
-                <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-ok/15 text-ok">
+                <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-ok/15 text-ok">
                   <ShieldCheck className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />
                 </span>
-                <span className="truncate text-[13px] font-medium leading-none">
-                  {auth.username}
-                </span>
+                <div className="min-w-0">
+                  <p className="truncate text-[13px] font-semibold leading-tight tracking-tight">
+                    {auth.username}
+                  </p>
+                  <p className="text-[10px] leading-none text-muted-foreground">已登录</p>
+                </div>
               </div>
               <button
                 type="button"
                 onClick={logout}
-                className="inline-flex h-7 shrink-0 items-center justify-center gap-1 rounded-lg px-2 text-[12px] font-medium leading-none text-primary active:opacity-70"
+                className="inline-flex h-7 shrink-0 items-center justify-center gap-1 rounded-lg px-2 text-[12px] font-medium leading-none text-primary transition-colors hover:bg-background active:opacity-70"
                 title="退出登录"
               >
                 <LogOut className="h-3.5 w-3.5 shrink-0" strokeWidth={2} aria-hidden />
@@ -337,18 +339,20 @@ function SidebarUpdateBar({
 
   // 默认中性灰；仅「点击检查后发现有新版本」才绿色强调
   const mutedBtnCls =
-    'inline-flex min-w-0 flex-1 items-center justify-center gap-1 truncate rounded-full bg-muted px-2 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-60';
+    'inline-flex w-full min-w-0 items-center justify-center gap-1 truncate rounded-xl bg-muted px-2.5 py-1.5 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-60';
   const okBtnCls =
-    'inline-flex min-w-0 flex-1 items-center justify-center gap-1 truncate rounded-full bg-ok/15 px-2 py-1 text-[11px] font-medium text-ok transition-colors hover:bg-ok/25';
+    'inline-flex w-full min-w-0 items-center justify-center gap-1 truncate rounded-xl bg-ok/15 px-2.5 py-1.5 text-[11px] font-medium text-ok transition-colors hover:bg-ok/25';
 
   return (
-    <div className="flex min-w-0 items-center gap-1.5">
-      <span
-        className="chip shrink-0 px-1.5 py-0.5 font-mono text-[11px] tabular-nums"
-        title={chipTitle}
-      >
-        {buildId ?? '…'}
-      </span>
+    <div className="flex min-w-0 flex-col gap-1.5">
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span
+          className="chip min-w-0 flex-1 truncate px-2 py-1 font-mono text-[11px] tabular-nums"
+          title={chipTitle}
+        >
+          {buildId ?? '…'}
+        </span>
+      </div>
       {checkedOk && hasUpdate ? (
         <a
           href={update?.htmlUrl ?? '#'}

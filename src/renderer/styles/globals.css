@@ -182,7 +182,7 @@
   }
 
   .app-nav {
-    @apply sticky top-0 z-30 w-full shrink-0 border-b border-border bg-card/95 backdrop-blur-md lg:top-5 lg:z-20 lg:h-[calc(100vh-2.5rem)] lg:w-[196px] lg:rounded-2xl lg:border lg:border-border lg:bg-card lg:shadow-[var(--ios-shadow)] lg:backdrop-blur-none;
+    @apply sticky top-0 z-30 w-full shrink-0 border-b border-border bg-card/95 backdrop-blur-md lg:top-5 lg:z-20 lg:h-[calc(100vh-2.5rem)] lg:w-[200px] lg:rounded-2xl lg:border lg:border-border lg:bg-card lg:shadow-[var(--ios-shadow)] lg:backdrop-blur-none;
   }
 
   .app-main {
@@ -198,27 +198,27 @@
     @apply min-w-0 flex-1;
   }
 
-  /* 导航：总宽 180 — 图标与三行站名等高对齐 */
+  /* 导航品牌：紧凑横排，logo + 三行站名 */
   .nav-brand {
-    @apply flex items-center gap-2.5 px-2.5 py-3;
+    @apply flex items-center gap-2.5 border-b border-border/60 px-3 py-3;
   }
 
-  /* 侧边栏品牌：64×64 图标；站名字号/行距铺满同高（仅 .nav-brand） */
+  /* 侧边栏品牌：48×48 图标，站名自然行高（不再硬拉到同高） */
   .nav-brand .nav-logo {
-    @apply h-16 w-16 shrink-0 text-[17px];
+    @apply h-12 w-12 shrink-0 text-[14px];
   }
 
   .nav-brand .site-name {
     flex: 1;
     min-width: 0;
-    height: 4rem; /* 与 h-16 图标同高 */
-    justify-content: space-between;
+    height: auto;
+    justify-content: center;
     align-items: flex-start;
     text-align: left;
-    font-size: 15px;
-    line-height: 1.05;
-    letter-spacing: -0.045em;
-    gap: 0;
+    font-size: 13px;
+    line-height: 1.2;
+    letter-spacing: -0.04em;
+    gap: 1px;
   }
 
   .nav-logo {
@@ -371,12 +371,12 @@
   }
 
   .nav-link {
-    @apply flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-[14px] font-medium leading-none text-muted-foreground transition-colors duration-100 active:opacity-70 lg:gap-3 lg:text-[15px];
+    @apply flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2.5 text-left text-[14px] font-medium leading-none text-muted-foreground transition-colors duration-100 active:opacity-70 lg:gap-2.5 lg:px-3 lg:text-[14px];
   }
 
   /* 移动端横向导航：避免挤成一团 */
   .app-nav-links {
-    @apply flex gap-1 overflow-x-auto px-3 pb-2.5 [-ms-overflow-style:none] [scrollbar-width:none] lg:flex-col lg:overflow-visible lg:px-3 lg:pb-3;
+    @apply flex gap-1 overflow-x-auto px-3 py-2.5 [-ms-overflow-style:none] [scrollbar-width:none] lg:flex-1 lg:flex-col lg:gap-0.5 lg:overflow-y-auto lg:overflow-x-visible lg:px-2.5 lg:py-3;
   }
 
   .app-nav-links::-webkit-scrollbar {
