@@ -1,13 +1,23 @@
 # -*- coding: utf-8 -*-
-"""P3: CPA xai auth JSON → sub2api accounts 导出。"""
+"""P3: CPA xai auth JSON → sub2api accounts 导出（官方 ImportData / DataAccount 形态）。"""
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 LogFn = Callable[[str], None]
+
+# sub2api: domain.PlatformGrok + xai.Default*（见 Wei-Shaw/sub2api）
+SUB2API_PLATFORM_GROK = "grok"
+SUB2API_ACCOUNT_TYPE_OAUTH = "oauth"
+SUB2API_DATA_TYPE = "sub2api-data"
+SUB2API_DATA_VERSION = 1
+XAI_DEFAULT_CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828"
+XAI_DEFAULT_CLI_BASE_URL = "https://cli-chat-proxy.grok.com/v1"
+XAI_TOKEN_ENDPOINT = "https://auth.x.ai/oauth2/token"
 
 
 def _now_iso() -> str:
@@ -18,44 +28,120 @@ def _email_key(email: str) -> str:
     return str(email or "").strip().lower().replace("@", "_at_").replace(".", "_")
 
 
+def _normalize_expires_at(raw: Any) -> str:
+    """Normalize expires to RFC3339 UTC (sub2api credentials.expires_at)."""
+    if raw is None or raw == "":
+        return ""
+    if isinstance(raw, (int, float)):
+        ts = float(raw)
+        # ms timestamps
+        if ts > 1e12:
+            ts = ts / 1000.0
+        try:
+            return (
+                datetime.fromtimestamp(ts, tz=timezone.utc)
+                .replace(microsecond=0)
+                .isoformat()
+                .replace("+00:00", "Z")
+            )
+        except (OSError, OverflowError, ValueError):
+            return str(raw)
+    s = str(raw).strip()
+    if not s:
+        return ""
+    # already ISO-ish
+    if re.match(r"^\d{4}-\d{2}-\d{2}T", s):
+        if s.endswith("+00:00"):
+            return s[:-6] + "Z"
+        return s
+    # pure digits
+    if re.fullmatch(r"\d+(\.\d+)?", s):
+        try:
+            return _normalize_expires_at(float(s))
+        except ValueError:
+            return s
+    return s
+
+
 def cpa_xai_to_sub2api_account(
     cpa: dict[str, Any],
     *,
     source: str = "cpa_xai",
 ) -> dict[str, Any]:
+    """CPA/xai auth → sub2api DataAccount（platform=grok, type=oauth, credentials 扁平）。
+
+    sub2api 识别 Grok 账号靠 platform==\"grok\"（非 xai）；xai 标识写入 credentials/extra
+    便于溯源与手工识别。
+    """
     email = str(cpa.get("email") or "").strip()
     name = email or str(cpa.get("name") or cpa.get("sub") or "xai")
+    client_id = str(cpa.get("client_id") or "").strip() or XAI_DEFAULT_CLIENT_ID
+    expires_at = _normalize_expires_at(cpa.get("expires_at") or cpa.get("expired"))
+    base_url = (
+        str(cpa.get("base_url") or "").strip()
+        or XAI_DEFAULT_CLI_BASE_URL
+    )
+
+    credentials: dict[str, Any] = {
+        "access_token": cpa.get("access_token") or "",
+        "refresh_token": cpa.get("refresh_token") or "",
+        "token_type": cpa.get("token_type") or "Bearer",
+        "client_id": client_id,
+        "base_url": base_url,
+        # xai 标签：sub2api Grok/xAI 链路可读
+        "auth_provider": "xai",
+        "token_endpoint": cpa.get("token_endpoint") or XAI_TOKEN_ENDPOINT,
+    }
+    if expires_at:
+        credentials["expires_at"] = expires_at
+    id_token = cpa.get("id_token")
+    if id_token:
+        credentials["id_token"] = id_token
+    if email:
+        credentials["email"] = email
+    sub = str(cpa.get("sub") or "").strip()
+    if sub:
+        credentials["sub"] = sub
+    # 可选：保留 redirect / headers（导入不强制，刷新时可能有用）
+    redirect_uri = cpa.get("redirect_uri")
+    if redirect_uri:
+        credentials["redirect_uri"] = redirect_uri
+    headers = cpa.get("headers")
+    if isinstance(headers, dict) and headers:
+        credentials["headers"] = headers
+
     return {
         "name": name,
-        "provider": "xai",
-        "auth": {
-            "access_token": cpa.get("access_token") or "",
-            "refresh_token": cpa.get("refresh_token") or "",
-            "id_token": cpa.get("id_token"),
-            "expires_at": cpa.get("expires_at") or cpa.get("expired"),
-            "token_type": cpa.get("token_type") or "Bearer",
-            "client_id": cpa.get("client_id") or "",
-            "token_endpoint": cpa.get("token_endpoint")
-            or "https://auth.x.ai/oauth2/token",
-            "redirect_uri": cpa.get("redirect_uri")
-            or "http://127.0.0.1:56121/callback",
-            "headers": cpa.get("headers") or {},
-        },
+        # sub2api domain.PlatformGrok
+        "platform": SUB2API_PLATFORM_GROK,
+        "type": SUB2API_ACCOUNT_TYPE_OAUTH,
+        "credentials": credentials,
         "extra": {
             "email": email,
             "email_key": _email_key(email),
             "name": name,
+            # xai 标签（溯源；平台仍是 grok）
             "auth_provider": "xai",
+            "provider": "xai",
             "source": source,
             "mint_channel": cpa.get("mint_channel"),
             "has_grok_45": cpa.get("has_grok_45"),
             "last_refresh": cpa.get("last_refresh") or _now_iso(),
         },
+        "concurrency": 1,
+        "priority": 0,
     }
 
 
 def build_sub2api_document(accounts: list[dict[str, Any]]) -> dict[str, Any]:
-    return {"exported_at": _now_iso(), "proxies": [], "accounts": accounts}
+    """官方 Export/Import 头：type=sub2api-data, version=1, proxies+accounts。"""
+    return {
+        "type": SUB2API_DATA_TYPE,
+        "version": SUB2API_DATA_VERSION,
+        "exported_at": _now_iso(),
+        "proxies": [],
+        "accounts": accounts,
+    }
 
 
 def convert_cpa_file(
