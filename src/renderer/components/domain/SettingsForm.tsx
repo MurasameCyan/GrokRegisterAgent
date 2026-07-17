@@ -1096,7 +1096,7 @@ export function SettingsForm() {
             }
             if (draft.autoResignOn401 === true) bits.push('401重签');
             if (draft.resignPushRemote === true) bits.push('重签后推');
-            if (draft.enableNsfw) bits.push('NSFW');
+            if (draft.enableNsfw) bits.push('Nsfw');
             return bits.join(' · ');
           })()}
           right={<CardHeaderIcon icon={KeyRound} title="授权管理" />}
@@ -1301,7 +1301,7 @@ export function SettingsForm() {
                 onChange={(v) => update('autoSsoCheckOnRegister', v)}
               />
               <ToggleRow
-                label="开启 NSFW"
+                label="开启 Nsfw"
                 hint="授权队列 mint 后用 SSO 尝试 gRPC always_show_nsfw_content；成败均写 tag，不影响授权流水线"
                 checked={!!draft.enableNsfw}
                 onChange={(v) => update('enableNsfw', v)}
