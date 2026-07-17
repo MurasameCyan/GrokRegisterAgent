@@ -567,28 +567,22 @@ export function PoolPage() {
     });
   };
 
-  const exportSso = (records: AccountRecord[]) => {
-    const lines = records
-      .filter((r) => r.sso)
-      .map((r) => `${r.email || ''} | ${r.password || ''} | ${r.sso}`);
-    if (lines.length === 0) {
-      push({ tone: 'warn', title: '没有可导出的 SSO' });
-      return;
-    }
-    download(`grok-sso-${stamp()}.txt`, lines.join('\n'));
-    push({ tone: 'ok', title: '已导出 SSO', description: `${lines.length} 条` });
-  };
-
+  /** 合并导出：email | password | sso（无 SSO 时第三段为空） */
   const exportAccounts = (records: AccountRecord[]) => {
     if (records.length === 0) {
       push({ tone: 'warn', title: '没有可导出的账号' });
       return;
     }
+    const withSso = records.filter((r) => r.sso).length;
     const text = records
       .map((r) => `${r.email || ''} | ${r.password || ''} | ${r.sso || ''}`)
       .join('\n');
     download(`grok-accounts-${stamp()}.txt`, text);
-    push({ tone: 'ok', title: '已导出账号', description: `${records.length} 条` });
+    push({
+      tone: 'ok',
+      title: '已导出账号',
+      description: `${records.length} 条（含 SSO ${withSso}）`
+    });
   };
 
   const applyResults = (results: SsoCheckResult[]) => {
@@ -1110,24 +1104,19 @@ export function PoolPage() {
               <Button
                 variant="secondary"
                 size="sm"
-                onClick={() => exportSso(picked.length > 0 ? picked : filteredAccounts)}
-                disabled={filteredAccounts.length === 0 || busy}
-                title={picked.length > 0 ? '导出已选 SSO' : '导出当前筛选 SSO'}
-              >
-                <FileDown className="h-3.5 w-3.5" />
-                导出SSO
-                {picked.length > 0 ? `(${picked.filter((a) => a.sso).length})` : ''}
-              </Button>
-              <Button
-                variant="secondary"
-                size="sm"
                 onClick={() => exportAccounts(picked.length > 0 ? picked : filteredAccounts)}
                 disabled={filteredAccounts.length === 0 || busy}
-                title={picked.length > 0 ? '导出已选账号' : '导出当前筛选账号'}
+                title={
+                  picked.length > 0
+                    ? `导出已选账号（email|password|sso，共 ${picked.length}）`
+                    : hasActiveFilter
+                      ? '导出当前筛选账号（含无 SSO 行）'
+                      : '导出账号：email | password | sso（无 SSO 第三段为空）'
+                }
               >
                 <FileDown className="h-3.5 w-3.5" />
                 {picked.length > 0
-                  ? `导出账号(${picked.length})`
+                  ? `导出(${picked.length})`
                   : hasActiveFilter
                     ? '导出筛选'
                     : '导出账号'}

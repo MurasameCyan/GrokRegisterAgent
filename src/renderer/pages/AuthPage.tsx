@@ -1220,13 +1220,13 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
       if (cancelled || signal.aborted) {
         push({
           tone: 'warn',
-          title: '刷新401 已取消',
+          title: '死者苏生 已取消',
           description: `成功 ${ok} · 失败 ${failed}`
         });
       } else {
         push({
           tone: failed > 0 ? 'warn' : 'ok',
-          title: '刷新401 完成',
+          title: '死者苏生 完成',
           description: `成功 ${ok} · 失败 ${failed}${
             modeParts.length ? ` · ${modeParts.join(' ')}` : ''
           }`
@@ -1235,11 +1235,11 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
       await reload();
     } catch (err) {
       if (isAbortError(err) || signal.aborted) {
-        push({ tone: 'warn', title: '刷新401 已取消' });
+        push({ tone: 'warn', title: '死者苏生 已取消' });
       } else {
         push({
           tone: 'danger',
-          title: '刷新401 失败',
+          title: '死者苏生 失败',
           description: err instanceof Error ? err.message : String(err)
         });
       }
@@ -1318,23 +1318,23 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
       if (cancelled || signal.aborted) {
         push({
           tone: 'warn',
-          title: '远程推送已取消',
+          title: '推送 CPA 已取消',
           description: `已处理 ${ok + failed}/${filenames.length} · 成功 ${ok} · 失败 ${failed}`
         });
       } else {
         push({
           tone: failed > 0 ? 'warn' : 'ok',
-          title: '远程推送完成',
+          title: '推送 CPA 完成',
           description: `成功 ${ok} · 失败 ${failed}${remoteUrl ? ` · ${remoteUrl}` : ''}`
         });
       }
     } catch (err) {
       if (isAbortError(err) || signal.aborted) {
-        push({ tone: 'warn', title: '远程推送已取消' });
+        push({ tone: 'warn', title: '推送 CPA 已取消' });
       } else {
         push({
           tone: 'danger',
-          title: '远程推送失败',
+          title: '推送 CPA 失败',
           description: err instanceof Error ? err.message : String(err)
         });
       }
@@ -1353,7 +1353,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
     if (!sub2RemoteReady) {
       push({
         tone: 'warn',
-        title: '未配置 sub2api 推送',
+        title: '未配置 S2A 推送',
         description: '请在设置「推送设置」开启 Auth→sub2api 并填写地址与 Admin Token'
       });
       return;
@@ -1413,23 +1413,23 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
       if (cancelled || signal.aborted) {
         push({
           tone: 'warn',
-          title: 'sub2api 推送已取消',
+          title: '推送 S2A 已取消',
           description: `已处理 ${ok + failed}/${filenames.length} · 成功 ${ok} · 失败 ${failed}`
         });
       } else {
         push({
           tone: failed > 0 ? 'warn' : 'ok',
-          title: 'sub2api 推送完成',
+          title: '推送 S2A 完成',
           description: `成功 ${ok} · 失败 ${failed}${remoteUrl ? ` · ${remoteUrl}` : ''}（已转 grok 格式）`
         });
       }
     } catch (err) {
       if (isAbortError(err) || signal.aborted) {
-        push({ tone: 'warn', title: 'sub2api 推送已取消' });
+        push({ tone: 'warn', title: '推送 S2A 已取消' });
       } else {
         push({
           tone: 'danger',
-          title: 'sub2api 推送失败',
+          title: '推送 S2A 失败',
           description: err instanceof Error ? err.message : String(err)
         });
       }
@@ -1995,16 +1995,16 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
           : '批量重签完成'
         : prog?.kind === 'refresh401'
           ? prog.running
-            ? '刷新401 进行中'
-            : '刷新401 完成'
+            ? '死者苏生 进行中'
+            : '死者苏生 完成'
         : prog?.kind === 'delete'
           ? prog.running
             ? '删除进行中'
             : '删除完成'
           : prog?.kind === 'push'
             ? prog.running
-              ? '远程推送进行中'
-              : '远程推送完成'
+              ? '推送 CPA 进行中'
+              : '推送 CPA 完成'
             : prog?.kind === 'backfill'
               ? prog.running
                 ? '回填 SSO 进行中'
@@ -2411,12 +2411,12 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                 }
                 title={
                   batchBusy === 'refresh401'
-                    ? '取消刷新401'
+                    ? '取消死者苏生'
                     : selected.size > 0
-                      ? `刷新已选中的 401（并发 ${resignConcurrency}）`
+                      ? `死者苏生 · 已选中的 401（并发 ${resignConcurrency}）`
                       : statusFilter === '401'
-                        ? `刷新筛选 401 · ${filteredItems.length} 条`
-                        : `刷新全部 401（mode=refresh|sso · 并发 ${resignConcurrency}）`
+                        ? `死者苏生 · 筛选 401 · ${filteredItems.length} 条`
+                        : `死者苏生 · 全部 401（mode=refresh|sso · 并发 ${resignConcurrency}）`
                 }
               >
                 {batchBusy === 'refresh401' ? (
@@ -2424,7 +2424,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                 ) : (
                   <RefreshCw className="h-3.5 w-3.5" />
                 )}
-                {batchBusy === 'refresh401' ? '取消' : '刷新401'}
+                {batchBusy === 'refresh401' ? '取消' : '死者苏生'}
               </Button>
               <Button
                 size="sm"
@@ -2436,13 +2436,13 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                 }
                 title={
                   batchBusy === 'push'
-                    ? '取消推送批量任务'
+                    ? '取消推送 CPA'
                     : remoteReady
                       ? selected.size > 0
-                        ? `推送已选 ${selected.size} 条`
+                        ? `推送 CPA · 已选 ${selected.size} 条`
                         : hasActiveFilter
-                          ? `推送筛选 ${filteredItems.length} 条`
-                          : '推送远程'
+                          ? `推送 CPA · 筛选 ${filteredItems.length} 条`
+                          : '推送 CPA'
                       : '请先在设置中配置远程 CPA 地址与密钥'
                 }
               >
@@ -2451,7 +2451,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                 ) : (
                   <CloudUpload className="h-3.5 w-3.5" />
                 )}
-                {batchBusy === 'push' ? '取消' : '推送'}
+                {batchBusy === 'push' ? '取消' : '推送 CPA'}
               </Button>
               <Button
                 size="sm"
@@ -2468,13 +2468,13 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                 }}
                 title={
                   batchBusy === 'push'
-                    ? '取消推送批量任务'
+                    ? '取消推送 CPA'
                     : sub2RemoteReady
                       ? selected.size > 0
-                        ? `转格式后推 sub2api（已选 ${selected.size}）`
+                        ? `推送 S2A · 已选 ${selected.size}`
                         : hasActiveFilter
-                          ? `转格式后推 sub2api（筛选 ${filteredItems.length}）`
-                          : 'CPA auth → 转 grok 格式 → sub2api'
+                          ? `推送 S2A · 筛选 ${filteredItems.length}`
+                          : 'CPA auth → 转 grok 格式 → S2A（sub2api）'
                       : '请在设置开启 Auth→sub2api 并填写地址与 Token'
                 }
               >
@@ -2483,7 +2483,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                 ) : (
                   <CloudUpload className="h-3.5 w-3.5" />
                 )}
-                {batchBusy === 'push' ? '取消' : '推送 sub2'}
+                {batchBusy === 'push' ? '取消' : '推送 S2A'}
               </Button>
               <Button
                 variant={batchBusy === 'backfill' ? 'danger' : 'secondary'}

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Copy, Trash2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, Copy, Trash2 } from 'lucide-react';
 import { useRunStore } from '@renderer/store/runStore';
 import { Button } from '@renderer/components/ui/Button';
 import { cn } from '@renderer/lib/cn';
@@ -73,6 +73,8 @@ export function LogPanel() {
   const [autoScroll, setAutoScroll] = useState(true);
   /** all = 全部任务混显；focus = 仅当前聚焦 */
   const [scope, setScope] = useState<'focus' | 'all'>('focus');
+  /** 默认折叠：点标题栏展开 */
+  const [open, setOpen] = useState(false);
 
   const visible = useMemo(() => {
     if (scope === 'all' || !focusRunId) return logs;
@@ -81,9 +83,9 @@ export function LogPanel() {
 
   useEffect(() => {
     const el = ref.current;
-    if (!el || !autoScroll) return;
+    if (!el || !autoScroll || !open) return;
     el.scrollTop = el.scrollHeight;
-  }, [visible, autoScroll]);
+  }, [visible, autoScroll, open]);
 
   const onScroll = () => {
     const el = ref.current;
@@ -107,16 +109,41 @@ export function LogPanel() {
   };
 
   return (
-    <div className="ios-group flex h-[min(520px,60vh)] flex-col overflow-hidden">
-      <div className="flex items-center justify-between border-b border-border/70 px-4 py-3.5">
-        <div>
-          <h2 className="text-[20px] font-bold tracking-[-0.02em]">实时日志</h2>
-          <p className="mt-0.5 text-[11px] text-muted-foreground">
-            {scope === 'focus' && focusRunId
-              ? `仅 #${focusRunId.slice(0, 8)} · ${visible.length} 行`
-              : `全部任务 · ${visible.length} 行`}
-          </p>
-        </div>
+    <div
+      className={cn(
+        'ios-group flex flex-col overflow-hidden',
+        open ? 'h-[min(520px,60vh)]' : 'h-auto'
+      )}
+    >
+      <div
+        className={cn(
+          'flex items-center justify-between px-4 py-3.5',
+          open && 'border-b border-border/70'
+        )}
+      >
+        <button
+          type="button"
+          className="flex min-w-0 flex-1 items-start gap-2 text-left"
+          onClick={() => setOpen((v) => !v)}
+          title={open ? '折叠日志' : '展开日志'}
+        >
+          {open ? (
+            <ChevronDown className="mt-1 h-4 w-4 shrink-0 text-muted-foreground" />
+          ) : (
+            <ChevronRight className="mt-1 h-4 w-4 shrink-0 text-muted-foreground" />
+          )}
+          <div className="min-w-0">
+            <h2 className="text-[20px] font-bold tracking-[-0.02em]">实时日志</h2>
+            <p className="mt-0.5 text-[11px] text-muted-foreground">
+              {open
+                ? scope === 'focus' && focusRunId
+                  ? `仅 #${focusRunId.slice(0, 8)} · ${visible.length} 行`
+                  : `全部任务 · ${visible.length} 行`
+                : `${visible.length} 行 · 点击展开`}
+            </p>
+          </div>
+        </button>
+        {open ? (
         <div className="flex flex-wrap items-center gap-2">
           <div className="flex rounded-full border border-border bg-muted/50 p-0.5 text-[11px]">
             <button
@@ -152,7 +179,9 @@ export function LogPanel() {
             清空
           </Button>
         </div>
+        ) : null}
       </div>
+      {open ? (
       <div
         ref={ref}
         onScroll={onScroll}
@@ -188,6 +217,7 @@ export function LogPanel() {
           ))
         )}
       </div>
+      ) : null}
     </div>
   );
 }

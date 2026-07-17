@@ -1054,7 +1054,6 @@ export function SettingsForm() {
         <CardHeader
           title="授权管理"
           description={(() => {
-            // 显示顺序：Mint（核心）→ 自动 Auth → 401 保活
             const bits: string[] = [];
             const mode = String(draft.cpaMintMode || 'pkce');
             if (mode === 'device') bits.push('Mint B');
@@ -1070,15 +1069,16 @@ export function SettingsForm() {
             }
             if (draft.autoResignOn401 === true) bits.push('401重签');
             if (draft.resignPushRemote === true) bits.push('重签后推');
+            if (draft.enableNsfw) bits.push('NSFW');
             return bits.join(' · ');
           })()}
           right={<CardHeaderIcon icon={KeyRound} title="授权管理" />}
         />
         <CardBody className="space-y-4">
-          {/* —— 核心：出 Auth 流水线 —— */}
+          {/* ① Mint：SSO → Auth 出号 */}
           <div className="space-y-3">
             <div className="text-[12px] font-semibold tracking-tight text-muted-foreground">
-              核心 · SSO → Auth
+              ① Mint · SSO → Auth
             </div>
             <Field
               label="CPA Mint 模式"
@@ -1195,26 +1195,28 @@ export function SettingsForm() {
             )}
           </div>
 
-          {/* —— 测活 / 401 保活 —— */}
+          {/* ② 重签 / 保活 */}
           <div className="space-y-3 border-t border-border/50 pt-3">
             <div className="text-[12px] font-semibold tracking-tight text-muted-foreground">
-              测活 · 401 保活
+              ② 重签 · 保活
             </div>
-            <ToggleRow
-              label="401 自动重签"
-              hint="默认关。测活 HTTP 401 后自动 refresh→SSO 重签（不含密码重登）；建议配合代理"
-              checked={draft.autoResignOn401 === true}
-              onChange={(v) => update('autoResignOn401', v)}
-            />
-            <ToggleRow
-              label="重签后推远程"
-              hint="默认关。Auth 页「重签cli/api」成功后自动推到已配置的远程 CPA；401 自动重签不推"
-              checked={draft.resignPushRemote === true}
-              onChange={(v) => update('resignPushRemote', v)}
-            />
+            <div className="grid gap-3 sm:grid-cols-2">
+              <ToggleRow
+                label="401 自动重签"
+                hint="默认关。测活 HTTP 401 后自动 refresh→SSO 重签（不含密码重登）；建议配合代理"
+                checked={draft.autoResignOn401 === true}
+                onChange={(v) => update('autoResignOn401', v)}
+              />
+              <ToggleRow
+                label="重签后推远程"
+                hint="默认关。Auth 页「重签cli/api」成功后自动推到已配置的远程 CPA；401 自动重签不推"
+                checked={draft.resignPushRemote === true}
+                onChange={(v) => update('resignPushRemote', v)}
+              />
+            </div>
             <Field
-              label="重签/刷新401 并发"
-              hint="1～3，默认 2。过高易触发 accounts.x.ai 限流；走代理见「Auth 转换用代理」"
+              label="重签 / 死者苏生 并发"
+              hint="1～3，默认 2。Auth 页批量重签与「死者苏生」共用；过高易触发 accounts.x.ai 限流"
             >
               <Input
                 type="number"
@@ -1236,6 +1238,13 @@ export function SettingsForm() {
                 }}
               />
             </Field>
+          </div>
+
+          {/* ③ 测活清理 */}
+          <div className="space-y-3 border-t border-border/50 pt-3">
+            <div className="text-[12px] font-semibold tracking-tight text-muted-foreground">
+              ③ 测活 · 清理
+            </div>
             <div className="grid gap-3 sm:grid-cols-2">
               <ToggleRow
                 label="测活死号自动删除"
@@ -1252,10 +1261,10 @@ export function SettingsForm() {
             </div>
           </div>
 
-          {/* —— 次要：导出 / 特性 / 运行参数 —— */}
+          {/* ④ 附属特性 */}
           <div className="space-y-3 border-t border-border/50 pt-3">
             <div className="text-[12px] font-semibold tracking-tight text-muted-foreground">
-              其它
+              ④ 附属特性
             </div>
             <div className="grid gap-3 sm:grid-cols-2">
               <ToggleRow
@@ -1265,16 +1274,16 @@ export function SettingsForm() {
                 onChange={(v) => update('autoSsoCheckOnRegister', v)}
               />
               <ToggleRow
-                label="自动转换 sub2api"
-                hint="mint 成功后写 data/sub2api/（sub2api-data 官方形态，可直接导入）；默认关"
-                checked={!!draft.sub2apiExportEnabled}
-                onChange={(v) => update('sub2apiExportEnabled', v)}
-              />
-              <ToggleRow
                 label="开启 NSFW"
                 hint="授权队列 mint 后用 SSO 尝试 gRPC always_show_nsfw_content；成败均写 tag，不影响授权流水线"
                 checked={!!draft.enableNsfw}
                 onChange={(v) => update('enableNsfw', v)}
+              />
+              <ToggleRow
+                label="自动转换 sub2api"
+                hint="mint 成功后写 data/sub2api/（sub2api-data 官方形态，可直接导入）；默认关"
+                checked={!!draft.sub2apiExportEnabled}
+                onChange={(v) => update('sub2apiExportEnabled', v)}
               />
             </div>
             {/* ZDR 开关已隐藏（流程已断开，后续研究再开放）
@@ -1285,6 +1294,13 @@ export function SettingsForm() {
               onChange={(v) => update('enableDisableZdr', v)}
             />
             */}
+          </div>
+
+          {/* ⑤ 注册运行参数（与 Auth 流水线相关的长跑/收码） */}
+          <div className="space-y-3 border-t border-border/50 pt-3">
+            <div className="text-[12px] font-semibold tracking-tight text-muted-foreground">
+              ⑤ 注册运行
+            </div>
             <div className="grid gap-3 sm:grid-cols-2">
               <Field
                 label="每 N 成功重启浏览器"
