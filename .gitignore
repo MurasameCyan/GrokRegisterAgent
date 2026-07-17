@@ -44,3 +44,6 @@ uploads/
 register/BUILD_ID
 BUILD_ID
 
+# local superpowers plans/specs — do not push
+docs/superpowers/
+
