@@ -1696,13 +1696,13 @@ export function SettingsForm() {
                       </Field>
                       <Field
                         label="Admin Token"
-                        hint="管理端登录后复制 Bearer Token"
+                        hint="推荐填 Admin API Key（admin-...，走 x-api-key）；也可填管理端登录 JWT（自动 Bearer）。不要带「Bearer 」前缀"
                       >
                         <Input
                           type="password"
                           value={draft.sub2apiAdminToken || ''}
                           onChange={(e) => update('sub2apiAdminToken', e.target.value)}
-                          placeholder="JWT / Admin Token"
+                          placeholder="admin-... 或 JWT"
                           autoComplete="off"
                         />
                       </Field>
