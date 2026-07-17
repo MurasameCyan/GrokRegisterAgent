@@ -1252,8 +1252,9 @@ export async function pushSub2apiAuthRemoteBatch(input: {
           });
           continue;
         }
+        // 与 CPA 远程推送一致：管理端 API 直连，不走 sing-box。
+        // 内网 sub2api（如 http://LAN:8089）经代理常见 ECONNRESET。
         const url = `${base}/api/v1/admin/accounts`;
-        const proxy = resolveHttpProxy(settings);
         const res = await proxiedRequest(url, {
           method: 'POST',
           headers: {
@@ -1261,7 +1262,6 @@ export async function pushSub2apiAuthRemoteBatch(input: {
             'Content-Type': 'application/json'
           },
           body,
-          proxy,
           timeoutMs: 30000
         });
         const email = String(data.email || body.name || '');
@@ -1369,11 +1369,10 @@ export async function testSub2apiRemoteConnectivity(input?: {
   const url = `${base}/api/v1/admin/accounts?page=1&page_size=1`;
   const authMethod = token.split('.').length === 3 ? 'jwt' : 'x-api-key';
   try {
-    const proxy = resolveHttpProxy(settings);
+    // 探活与推送同样直连，避免内网地址被 sing-box 劫持
     const res = await proxiedRequest(url, {
       method: 'GET',
       headers: sub2apiAdminAuthHeaders(token),
-      proxy,
       timeoutMs: 12000
     });
     const ms = Date.now() - started;

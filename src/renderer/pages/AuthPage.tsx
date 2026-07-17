@@ -86,6 +86,7 @@ type TaskProgress = {
     | 'delete'
     | 'export'
     | 'push'
+    | 'pushS2a'
     | 'backfill'
     | 'relogin';
   total: number;
@@ -187,6 +188,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
     | 'delete'
     | 'export'
     | 'push'
+    | 'pushS2a'
     | 'backfill';
 
   const isAbortError = (err: unknown) => {
@@ -1359,9 +1361,9 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
       });
       return;
     }
-    const signal = beginBatch('push');
+    const signal = beginBatch('pushS2a');
     setProg({
-      kind: 'push',
+      kind: 'pushS2a',
       total: filenames.length,
       done: 0,
       ok: 0,
@@ -1400,7 +1402,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
           break;
         }
         setProg({
-          kind: 'push',
+          kind: 'pushS2a',
           total: filenames.length,
           done: Math.min(i + chunk.length, filenames.length),
           ok,
@@ -1435,7 +1437,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
         });
       }
     } finally {
-      endBatch('push');
+      endBatch('pushS2a');
       window.setTimeout(() => setProg(null), 3000);
     }
   };
@@ -2006,13 +2008,17 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
             ? prog.running
               ? '推送 CPA 进行中'
               : '推送 CPA 完成'
-            : prog?.kind === 'backfill'
+            : prog?.kind === 'pushS2a'
               ? prog.running
-                ? '回填 SSO 进行中'
-                : '回填 SSO 完成'
-              : prog?.running
-                ? '导出进行中'
-                : '导出完成';
+                ? '推送 S2A 进行中'
+                : '推送 S2A 完成'
+              : prog?.kind === 'backfill'
+                ? prog.running
+                  ? '回填 SSO 进行中'
+                  : '回填 SSO 完成'
+                : prog?.running
+                  ? '导出进行中'
+                  : '导出完成';
 
   return (
     <div className="space-y-5">
@@ -2399,17 +2405,17 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                 variant="secondary"
                 className="min-w-[5.5rem] justify-center tabular-nums"
                 disabled={
-                  (Boolean(busy) && batchBusy !== 'push') ||
-                  (batchBusy !== 'push' && filteredItems.length === 0) ||
+                  (Boolean(busy) && batchBusy !== 'pushS2a') ||
+                  (batchBusy !== 'pushS2a' && filteredItems.length === 0) ||
                   !sub2RemoteReady
                 }
                 onClick={() => {
-                  if (batchBusy === 'push') cancelBatch('push');
+                  if (batchBusy === 'pushS2a') cancelBatch('pushS2a');
                   else void pushSub2apiBatch();
                 }}
                 title={
-                  batchBusy === 'push'
-                    ? '取消推送 CPA'
+                  batchBusy === 'pushS2a'
+                    ? '取消推送 S2A'
                     : sub2RemoteReady
                       ? selected.size > 0
                         ? `推送 S2A · 已选 ${selected.size}`
@@ -2419,12 +2425,12 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                       : '请在设置开启 Auth→sub2api 并填写地址与 Token'
                 }
               >
-                {batchBusy === 'push' ? (
+                {batchBusy === 'pushS2a' ? (
                   <Ban className="h-3.5 w-3.5" />
                 ) : (
                   <CloudUpload className="h-3.5 w-3.5" />
                 )}
-                {batchBusy === 'push' ? '取消' : '推送 S2A'}
+                {batchBusy === 'pushS2a' ? '取消' : '推送 S2A'}
               </Button>
               <Button
                 variant={batchBusy === 'backfill' ? 'danger' : 'secondary'}
