@@ -104,7 +104,6 @@ type TaskProgress = {
   modeSummary?: string;
 };
 
-const RESIGN_PUSH_KEY = 'gra-resign-push-remote';
 const PAGE_SIZE_KEY = 'gra-auth-page-size';
 const META_FILTER_KEY = 'gra-auth-meta-filter';
 const STATUS_FILTER_KEY = 'gra-auth-status-filter';
@@ -147,6 +146,8 @@ function loadStatusFilter(): StatusFilter {
 export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
   const push = useToastStore((s) => s.push);
   const settings = useSettingsStore((s) => s.data);
+  /** 重签成功后是否推远程：读配置「授权管理 → 重签后推远程」 */
+  const resignPushRemote = settings?.resignPushRemote === true;
   const [dir, setDir] = useState('');
   const [items, setItems] = useState<CpaAuthItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -258,14 +259,6 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
   >({});
   const [prog, setProg] = useState<TaskProgress | null>(null);
   const [emailMasked, setEmailMasked] = useState(() => loadEmailPrivacyMask());
-  /** 重签成功后是否再推远程（默认关，localStorage 记忆） */
-  const [resignPushRemote, setResignPushRemote] = useState(() => {
-    try {
-      return localStorage.getItem(RESIGN_PUSH_KEY) === '1';
-    } catch {
-      return false;
-    }
-  });
   const [metaFilter, setMetaFilter] = useState<MetaFilter>(() => loadMetaFilter());
   const [statusFilter, setStatusFilter] = useState<StatusFilter>(() => loadStatusFilter());
 
@@ -682,7 +675,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
         push({
           tone: 'ok',
           title: recoveredAuth
-            ? `测活 OK（${recoverLabel} 已重登恢复）`
+            ? `测活 OK（${recoverLabel} 已密码重登恢复）`
             : '测活 OK',
           description: item.email || item.filename
         });
@@ -712,7 +705,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
     if (!String(item.email || '').trim()) {
       push({
         tone: 'warn',
-        title: '无法重登',
+        title: '无法密码重登',
         description: '该 Auth 无邮箱，无法从号池取密码'
       });
       return;
@@ -722,7 +715,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
       push({
         tone: 'warn',
         title: '号池无密码',
-        description: `${item.email || item.filename} 在号池中无密码，请先补全后再重登`
+        description: `${item.email || item.filename} 在号池中无密码，请先补全后再密码重登`
       });
       return;
     }
@@ -769,13 +762,13 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
       if (success) {
         push({
           tone: 'ok',
-          title: '重登激活成功',
+          title: '密码重登激活成功',
           description: `${item.email || item.filename}${http ? ` · HTTP ${http}` : ''}`
         });
       } else {
         push({
           tone: 'warn',
-          title: '重登完成但测活未通过',
+          title: '密码重登完成但测活未通过',
           description:
             String(r.error || action || 'unknown') + (http ? ` · HTTP ${http}` : '')
         });
@@ -786,7 +779,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
       setRowReloginStage(item.filename, 'error', msg);
       push({
         tone: 'danger',
-        title: '重登失败',
+        title: '密码重登失败',
         description: /HTTP 404/i.test(msg)
           ? '接口 /api/cpa-auth/relogin 不存在：请重新构建并重启 server（npm run server:build）'
           : msg
@@ -816,7 +809,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
   const reloginBatch = async () => {
     const filenames = targetNames();
     if (filenames.length === 0) {
-      push({ tone: 'warn', title: '没有可重登的文件' });
+      push({ tone: 'warn', title: '没有可密码重登的文件' });
       return;
     }
     const byName = new Map(items.map((it) => [it.filename, it]));
@@ -835,7 +828,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
     if (targets.length === 0) {
       push({
         tone: 'warn',
-        title: '没有可重登的文件',
+        title: '没有可密码重登的文件',
         description:
           skippedNoPw > 0
             ? `号池均无密码 ${skippedNoPw} 条（已跳过，未开浏览器）` +
@@ -846,7 +839,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
     }
     if (
       !window.confirm(
-        `将串行重登 ${targets.length} 条（并发 1，浏览器登录较慢）` +
+        `将串行密码重登 ${targets.length} 条（并发 1，浏览器登录较慢）` +
           (skippedNoEmail > 0 ? `\n跳过无邮箱 ${skippedNoEmail} 条` : '') +
           (skippedNoPw > 0 ? `\n跳过号池无密码 ${skippedNoPw} 条` : '') +
           `\n\n每条：密码登录 → mint → 随机英文消息 → 二次测活。\n确定继续？`
@@ -950,13 +943,13 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
       if (cancelled || signal.aborted) {
         push({
           tone: 'warn',
-          title: '批量重登已取消',
+          title: '批量密码重登已取消',
           description: `已完成 ${ok + failed}/${targets.length} · 成功 ${ok} · 失败 ${failed}`
         });
       } else {
         push({
           tone: failed > 0 ? 'warn' : 'ok',
-          title: '批量重登完成',
+          title: '批量密码重登完成',
           description:
             `成功 ${ok} · 失败 ${failed}` +
             (skippedNoEmail > 0 ? ` · 跳过无邮箱 ${skippedNoEmail}` : '') +
@@ -968,13 +961,13 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
       if (isAbortError(err) || signal.aborted) {
         push({
           tone: 'warn',
-          title: '批量重登已取消',
+          title: '批量密码重登已取消',
           description: `已完成 ${ok + failed}/${targets.length}`
         });
       } else {
         push({
           tone: 'danger',
-          title: '批量重登失败',
+          title: '批量密码重登失败',
           description: err instanceof Error ? err.message : String(err)
         });
       }
@@ -1148,7 +1141,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
         tone: 'warn',
         title: '没有可刷新的 401',
         description:
-          '请先测活筛出 401，或勾选含 refresh/sso 的项。403 请用「重登」'
+          '请先测活筛出 401，或勾选含 refresh/sso 的项。403 请用「密码重登」'
       });
       return;
     }
@@ -1994,8 +1987,8 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
         : 'CPA 测活完成'
       : prog?.kind === 'relogin'
         ? prog.running
-          ? '重登激活进行中'
-          : '重登激活完成'
+          ? '密码重登进行中'
+          : '密码重登完成'
         : prog?.kind === 'resign'
         ? prog.running
           ? '批量重签进行中（cli/api）'
@@ -2246,7 +2239,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                       : tab.id === '401'
                         ? 'HTTP 401 未授权'
                         : tab.id === '403'
-                          ? 'HTTP 403 禁止（可重登）'
+                          ? 'HTTP 403 禁止（可密码重登）'
                           : tab.id === 'other_err'
                             ? '其它错误码或失败（非 200/401/403）'
                             : '不限制状态'
@@ -2335,12 +2328,12 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                 }
                 title={
                   batchBusy === 'relogin'
-                    ? '取消重登批量任务'
+                    ? '取消密码重登批量任务'
                     : (selected.size > 0
-                        ? `重登已选 ${selected.size} 条`
+                        ? `密码重登已选 ${selected.size} 条`
                         : hasActiveFilter
-                          ? `重登筛选 ${filteredItems.length} 条`
-                          : '批量重登') + ' · 串行并发 1（浏览器登录）'
+                          ? `密码重登筛选 ${filteredItems.length} 条`
+                          : '批量密码重登') + ' · 串行并发 1（浏览器登录）'
                 }
               >
                 {batchBusy === 'relogin' ? (
@@ -2348,7 +2341,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                 ) : (
                   <KeyRound className="h-3.5 w-3.5" />
                 )}
-                {batchBusy === 'relogin' ? '取消' : '重登'}
+                {batchBusy === 'relogin' ? '取消' : '密码重登'}
               </Button>
               <Button
                 size="sm"
@@ -2535,30 +2528,6 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                   <Link2 className="h-3.5 w-3.5" />
                 )}
                 {batchBusy === 'backfill' ? '取消' : '回填SSO'}
-              </Button>
-              <Button
-                variant="secondary"
-                size="sm"
-                className="min-w-[5.75rem] justify-center"
-                onClick={() => {
-                  setResignPushRemote((v) => {
-                    const next = !v;
-                    try {
-                      localStorage.setItem(RESIGN_PUSH_KEY, next ? '1' : '0');
-                    } catch {
-                      /* ignore */
-                    }
-                    return next;
-                  });
-                }}
-                title={
-                  resignPushRemote
-                    ? '重签成功后会推送到远程 CPA（点击关闭）'
-                    : '重签后不推远程（点击开启）'
-                }
-              >
-                <CloudUpload className="h-3.5 w-3.5" />
-                {resignPushRemote ? '重签后推:开' : '重签后推:关'}
               </Button>
             </div>
 
@@ -2952,16 +2921,16 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                           onClick={() => void reloginOne(item)}
                           title={
                             rowNoEmail
-                              ? '无邮箱无法重登'
+                              ? '无邮箱无法密码重登'
                               : item.poolHasPassword === false
                                 ? '号池无该邮箱密码，请先补全（避免开浏览器后失败）'
                                 : rowStage
-                                  ? `重登：${reloginStageLabel(rowStage)}${
+                                  ? `密码重登：${reloginStageLabel(rowStage)}${
                                       rowReloginSt?.message
                                         ? ` · ${rowReloginSt.message}`
                                         : ''
                                     }`
-                                  : '密码重登 → mint → 随机英文消息激活 → 更新测活/状态'
+                                  : '密码登录 → mint → 随机英文消息激活 → 更新测活/状态'
                           }
                         >
                           <KeyRound
@@ -2974,7 +2943,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                             ? reloginStageLabel(rowStage)
                             : rowRelogin
                               ? '…'
-                              : '重登'}
+                              : '密码重登'}
                         </Button>
                         <Button
                           variant="secondary"

@@ -1069,6 +1069,7 @@ export function SettingsForm() {
               bits.push('Auth 关');
             }
             if (draft.autoResignOn401 === true) bits.push('401重签');
+            if (draft.resignPushRemote === true) bits.push('重签后推');
             return bits.join(' · ');
           })()}
           right={<CardHeaderIcon icon={KeyRound} title="授权管理" />}
@@ -1204,6 +1205,12 @@ export function SettingsForm() {
               hint="默认关。测活 HTTP 401 后自动 refresh→SSO 重签（不含密码重登）；建议配合代理"
               checked={draft.autoResignOn401 === true}
               onChange={(v) => update('autoResignOn401', v)}
+            />
+            <ToggleRow
+              label="重签后推远程"
+              hint="默认关。Auth 页「重签cli/api」成功后自动推到已配置的远程 CPA；401 自动重签不推"
+              checked={draft.resignPushRemote === true}
+              onChange={(v) => update('resignPushRemote', v)}
             />
             <Field
               label="重签/刷新401 并发"

@@ -271,6 +271,11 @@ export interface AppSettings {
    */
   cpaResignConcurrency: number;
   /**
+   * 手动「重签cli/api」成功后是否再推远程 CPA。
+   * 默认 false（仅本地写文件）。401 自动重签不读此开关。
+   */
+  resignPushRemote: boolean;
+  /**
    * 同一代理 IP 两次用于注册的最小间隔（秒）。
    * 0=不限制；未到时间时队列暂停等待（优先换其它已冷却 IP）。
    * 写入 Python config：proxy_ip_interval_sec
@@ -412,6 +417,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   cpaProbeDeleteSsoOnDead: false,
   autoResignOn401: false,
   cpaResignConcurrency: 2,
+  resignPushRemote: false,
   proxyIpIntervalSec: 0,
   skipBotFlag1OnMint: true,
   /** 号池验活默认走代理（若总开关与 proxy 已配） */

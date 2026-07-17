@@ -339,6 +339,10 @@ function merge(partial: unknown): AppSettings {
       if (!Number.isFinite(n) || n < 1) return DEFAULT_SETTINGS.cpaResignConcurrency;
       return Math.min(Math.floor(n), 3);
     })(),
+    resignPushRemote: asBool(
+      (p as AppSettings).resignPushRemote,
+      DEFAULT_SETTINGS.resignPushRemote
+    ),
     proxyIpIntervalSec: (() => {
       const n = Number((p as AppSettings).proxyIpIntervalSec);
       if (!Number.isFinite(n) || n < 0) return DEFAULT_SETTINGS.proxyIpIntervalSec;

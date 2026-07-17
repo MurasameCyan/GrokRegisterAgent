@@ -1075,11 +1075,11 @@ export function PoolPage() {
                 }}
                 title={
                   skipBotFlag1
-                    ? '补签 Auth 跳过 bot_flag=1（点击关闭）'
-                    : '补签 Auth 不跳过 flag1（点击开启）'
+                    ? '补签 Auth 跳过 Bot（bot_flag=1，点击关闭）'
+                    : '补签 Auth 不跳过 Bot（点击开启）'
                 }
               >
-                {skipBotFlag1 ? '跳过flag1:开' : '跳过flag1:关'}
+                {skipBotFlag1 ? '跳过Bot:开' : '跳过Bot:关'}
               </Button>
             </div>
             <div className="flex flex-wrap items-center gap-1.5">
