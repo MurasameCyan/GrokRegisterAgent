@@ -1,4 +1,4 @@
-# Grok Register Agent
+# Grok Register Agent (GRA)
 
 可自部署的 Grok 注册机 Web 控制台（Grok Register Agent）：Docker 多架构镜像、DrissionPage / Hybrid 注册、邮件验证码、SSO 号池、Auth mint、NSFW 标签与本地账号管理。
 
