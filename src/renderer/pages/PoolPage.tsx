@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Bot,
   CheckSquare,
   Copy,
   Database,
@@ -1018,6 +1019,7 @@ export function PoolPage() {
                     : '已关闭：补签 Auth 不跳过 Bot · 点击开启（开启为蓝色）'
                 }
               >
+                <Bot className="h-3.5 w-3.5" />
                 跳过 Bot
               </Button>
             </div>
