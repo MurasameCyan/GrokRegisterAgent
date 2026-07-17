@@ -1337,37 +1337,40 @@ function AccountCard({
             {emailDisplay}
           </div>
           <div className="mt-1 text-[11px] text-muted-foreground">{fmtBeijing(account.createdAt)}</div>
+          {/* tags：与邮箱左对齐（不顶到 Switch 列） */}
+          <div
+            className="mt-2 flex flex-wrap items-center gap-1.5 leading-none"
+            onClick={stop}
+          >
+            <AuthConvertedBadge converted={authConverted} channel={authChannel} />
+            <SsoBadge result={ssoResult} />
+            <NsfwBadge
+              status={
+                account.nsfwStatus ??
+                (account.nsfwAttempted
+                  ? account.nsfwEnabled
+                    ? 'ok'
+                    : 'fail'
+                  : 'none')
+              }
+              error={account.nsfwError}
+            />
+            <span
+              className="inline-flex"
+              title={
+                flagFrom === 'auth'
+                  ? 'bot_flag 来自匹配的 Auth 文件（SSO JWT 无 claim）'
+                  : flagFrom === 'probe'
+                    ? 'bot_flag 来自验活结果'
+                    : flagFrom === 'sso'
+                      ? 'bot_flag 来自 SSO JWT'
+                      : undefined
+              }
+            >
+              <BotFlagBadge flag={flagSource} is1={flagIs1} missing="muted" />
+            </span>
+          </div>
         </div>
-      </div>
-
-      {/* tags：横向排列，位于密码上方 */}
-      <div className="flex flex-wrap items-center gap-1.5" onClick={stop}>
-        <AuthConvertedBadge converted={authConverted} channel={authChannel} />
-        <SsoBadge result={ssoResult} />
-        <NsfwBadge
-          status={
-            account.nsfwStatus ??
-            (account.nsfwAttempted
-              ? account.nsfwEnabled
-                ? 'ok'
-                : 'fail'
-              : 'none')
-          }
-          error={account.nsfwError}
-        />
-        <span
-          title={
-            flagFrom === 'auth'
-              ? 'bot_flag 来自匹配的 Auth 文件（SSO JWT 无 claim）'
-              : flagFrom === 'probe'
-                ? 'bot_flag 来自验活结果'
-                : flagFrom === 'sso'
-                  ? 'bot_flag 来自 SSO JWT'
-                  : undefined
-          }
-        >
-          <BotFlagBadge flag={flagSource} is1={flagIs1} missing="muted" />
-        </span>
       </div>
 
       <SecretRow
@@ -1470,7 +1473,7 @@ function AuthConvertedBadge({
           : '已转 Auth A（Auth Code+PKCE）';
     return (
       <span
-        className="shrink-0 rounded-full bg-sky-500/15 px-2 py-0.5 text-[10px] font-medium text-sky-600 dark:text-sky-400"
+        className="inline-flex h-5 shrink-0 items-center rounded-full bg-sky-500/15 px-2 text-[10px] font-medium leading-none text-sky-600 dark:text-sky-400"
         title={title}
       >
         {tag}
@@ -1479,7 +1482,7 @@ function AuthConvertedBadge({
   }
   return (
     <span
-      className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground"
+      className="inline-flex h-5 shrink-0 items-center rounded-full bg-muted px-2 text-[10px] font-medium leading-none text-muted-foreground"
       title="未匹配：邮箱与 Auth 目录均无对应，且 SSO 哈希未命中（auth 需含 sso 字段）"
     >
       未转
@@ -1492,7 +1495,7 @@ function SsoBadge({ result }: { result?: SsoCheckResult }) {
   if (!result) {
     return (
       <span
-        className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground"
+        className="inline-flex h-5 shrink-0 items-center rounded-full bg-muted px-2 text-[10px] font-medium leading-none text-muted-foreground"
         title="尚未对本账号执行 SSO 验活；验活后会本地保存，切换页面不丢失"
       >
         None
@@ -1503,7 +1506,7 @@ function SsoBadge({ result }: { result?: SsoCheckResult }) {
   if (result.alive) {
     return (
       <span
-        className="shrink-0 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400"
+        className="inline-flex h-5 shrink-0 items-center rounded-full bg-emerald-500/15 px-2 text-[10px] font-medium leading-none text-emerald-600 dark:text-emerald-400"
         title={`Live · 存活${when}`}
       >
         Live
@@ -1512,7 +1515,7 @@ function SsoBadge({ result }: { result?: SsoCheckResult }) {
   }
   return (
     <span
-      className="shrink-0 rounded-full bg-destructive/15 px-2 py-0.5 text-[10px] font-medium text-destructive"
+      className="inline-flex h-5 shrink-0 items-center rounded-full bg-destructive/15 px-2 text-[10px] font-medium leading-none text-destructive"
       title={(result.error || 'Dead · 失效') + when}
     >
       Dead

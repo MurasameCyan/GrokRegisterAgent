@@ -36,7 +36,7 @@ function isFlag0(flag: number | string | null | undefined): boolean {
 }
 
 const pillBase =
-  'inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[10px] font-medium';
+  'inline-flex h-5 shrink-0 items-center rounded-full px-2 text-[10px] font-medium leading-none';
 
 /**
  * bot_flag_source 展示：与 xai 绿胶囊同风格
