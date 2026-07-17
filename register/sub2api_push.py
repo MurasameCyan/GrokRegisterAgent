@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """Auth → sub2api 远程推送：CPA xai JSON 先转官方格式再 POST Admin API。
 
-对齐 Wei-Shaw/sub2api：
+对齐 Wei-Shaw/sub2api Admin 鉴权（admin_auth.go）：
+  1) Admin API Key → header  x-api-key: <admin-...>
+  2) 管理员 JWT    → header  Authorization: Bearer <jwt>
   POST {base}/api/v1/admin/accounts
-  Authorization: Bearer <admin_token>
   body: CreateAccountRequest (platform=grok, type=oauth, credentials, …)
 
 配置键（register/config.json）：
@@ -43,6 +44,37 @@ def _truthy(v: Any) -> bool:
     return s in ("1", "true", "yes", "on")
 
 
+def _normalize_admin_secret(raw: str) -> str:
+    """Strip whitespace and accidental 'Bearer ' prefix from pasted secrets."""
+    s = (raw or "").strip()
+    if len(s) >= 7 and s[:7].lower() == "bearer ":
+        s = s[7:].strip()
+    return s
+
+
+def _looks_like_jwt(secret: str) -> bool:
+    """JWT = three base64url segments separated by dots."""
+    parts = secret.split(".")
+    return len(parts) == 3 and all(parts)
+
+
+def auth_headers_for_sub2api(token: str) -> dict[str, str]:
+    """Build Admin API headers.
+
+    - admin-... / non-JWT secrets → x-api-key (Admin API Key)
+    - three-segment JWT         → Authorization: Bearer ...
+    """
+    tok = _normalize_admin_secret(token)
+    headers: dict[str, str] = {"Accept": "application/json"}
+    if not tok:
+        return headers
+    if _looks_like_jwt(tok):
+        headers["Authorization"] = f"Bearer {tok}"
+    else:
+        headers["x-api-key"] = tok
+    return headers
+
+
 def read_sub2api_remote_config(
     config: dict[str, Any] | None = None,
 ) -> tuple[str, str]:
@@ -53,11 +85,11 @@ def read_sub2api_remote_config(
         or os.environ.get("sub2api_remote_url")
         or str(cfg.get("sub2api_remote_url") or cfg.get("sub2apiRemoteUrl") or "")
     ).strip().rstrip("/")
-    token = (
+    token = _normalize_admin_secret(
         os.environ.get("SUB2API_ADMIN_TOKEN")
         or os.environ.get("sub2api_admin_token")
         or str(cfg.get("sub2api_admin_token") or cfg.get("sub2apiAdminToken") or "")
-    ).strip()
+    )
     return url, token
 
 
@@ -92,10 +124,7 @@ def _http_json(
     timeout: float = 30.0,
 ) -> tuple[int, Any]:
     data = None
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/json",
-    }
+    headers = auth_headers_for_sub2api(token)
     if body is not None:
         data = json.dumps(body, ensure_ascii=False).encode("utf-8")
         headers["Content-Type"] = "application/json"

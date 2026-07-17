@@ -20,6 +20,37 @@ import {
   nsfwStatusFromTag
 } from './accountTags.js';
 
+/**
+ * Normalize Admin secret pasted from sub2api UI.
+ * Strips whitespace and accidental "Bearer " prefix.
+ */
+export function normalizeSub2apiAdminSecret(raw: string): string {
+  let s = String(raw || '').trim();
+  if (s.length >= 7 && s.slice(0, 7).toLowerCase() === 'bearer ') {
+    s = s.slice(7).trim();
+  }
+  return s;
+}
+
+/**
+ * Wei-Shaw/sub2api Admin 鉴权（admin_auth.go）：
+ * - Admin API Key（如 admin-...）→ x-api-key
+ * - 管理员 JWT（三段 base64url）→ Authorization: Bearer <jwt>
+ */
+export function sub2apiAdminAuthHeaders(token: string): Record<string, string> {
+  const tok = normalizeSub2apiAdminSecret(token);
+  const headers: Record<string, string> = { Accept: 'application/json' };
+  if (!tok) return headers;
+  const parts = tok.split('.');
+  const isJwt = parts.length === 3 && parts.every((p) => p.length > 0);
+  if (isJwt) {
+    headers.Authorization = `Bearer ${tok}`;
+  } else {
+    headers['x-api-key'] = tok;
+  }
+  return headers;
+}
+
 export interface CpaAuthItem {
   filename: string;
   path: string;
@@ -1075,9 +1106,9 @@ export async function pushSub2apiAuthRemoteBatch(input: {
   )
     .trim()
     .replace(/\/+$/, '');
-  const token = String(
-    (settings as { sub2apiAdminToken?: string }).sub2apiAdminToken || ''
-  ).trim();
+  const token = normalizeSub2apiAdminSecret(
+    String((settings as { sub2apiAdminToken?: string }).sub2apiAdminToken || '')
+  );
 
   if (!base || !token) {
     throw new Error(
@@ -1226,9 +1257,8 @@ export async function pushSub2apiAuthRemoteBatch(input: {
         const res = await proxiedRequest(url, {
           method: 'POST',
           headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
-            Accept: 'application/json'
+            ...sub2apiAdminAuthHeaders(token),
+            'Content-Type': 'application/json'
           },
           body,
           proxy,
@@ -1321,11 +1351,13 @@ export async function testSub2apiRemoteConnectivity(input?: {
   )
     .trim()
     .replace(/\/+$/, '');
-  const token = String(
-    input?.token ??
-      (settings as { sub2apiAdminToken?: string }).sub2apiAdminToken ??
-      ''
-  ).trim();
+  const token = normalizeSub2apiAdminSecret(
+    String(
+      input?.token ??
+        (settings as { sub2apiAdminToken?: string }).sub2apiAdminToken ??
+        ''
+    )
+  );
   if (!base) {
     return { ok: false, message: '请先填写 sub2api 地址' };
   }
@@ -1335,14 +1367,12 @@ export async function testSub2apiRemoteConnectivity(input?: {
 
   const started = Date.now();
   const url = `${base}/api/v1/admin/accounts?page=1&page_size=1`;
+  const authMethod = token.split('.').length === 3 ? 'jwt' : 'x-api-key';
   try {
     const proxy = resolveHttpProxy(settings);
     const res = await proxiedRequest(url, {
       method: 'GET',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        Accept: 'application/json'
-      },
+      headers: sub2apiAdminAuthHeaders(token),
       proxy,
       timeoutMs: 12000
     });
@@ -1366,7 +1396,7 @@ export async function testSub2apiRemoteConnectivity(input?: {
       }
       return {
         ok: true,
-        message: '远程 sub2api 连通（Admin API 可用）',
+        message: `远程 sub2api 连通（Admin API 可用 · ${authMethod}）`,
         ms,
         status: res.status,
         remoteUrl: base
@@ -1375,7 +1405,11 @@ export async function testSub2apiRemoteConnectivity(input?: {
     if (res.status === 401 || res.status === 403) {
       return {
         ok: false,
-        message: `已连上 ${base}，但 Token 被拒（HTTP ${res.status}）。请用管理端登录后复制 Admin JWT，不是 API Key`,
+        message:
+          `已连上 ${base}，但鉴权被拒（HTTP ${res.status} · 以 ${authMethod} 发送）。` +
+          (authMethod === 'x-api-key'
+            ? ' 请确认 Admin API Key（admin-...）正确；JWT 请填三段 token。'
+            : ' 请确认 JWT 未过期且为管理员；也可改填 Admin API Key（admin-...）。'),
         ms,
         status: res.status,
         remoteUrl: base

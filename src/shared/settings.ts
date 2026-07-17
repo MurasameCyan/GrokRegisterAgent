@@ -209,7 +209,9 @@ export interface AppSettings {
    */
   sub2apiRemoteUrl: string;
   /**
-   * sub2api Admin Bearer Token（管理端登录后复制）
+   * sub2api Admin 凭证：
+   * - Admin API Key（admin-...）→ 请求头 x-api-key
+   * - 管理员 JWT（三段）→ Authorization: Bearer
    * 写入 Python：sub2api_admin_token
    */
   sub2apiAdminToken: string;
