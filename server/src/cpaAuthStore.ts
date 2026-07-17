@@ -1023,13 +1023,16 @@ export async function pushCpaAuthRemoteBatch(input: {
           ? job.filename
           : `${job.filename}.json`;
         const url = `${base}/v0/management/auth-files?name=${encodeURIComponent(uploadName)}`;
-        const res = await proxiedRequest(url, {
+        // 优先直连，失败再走代理（与 sub2api / mail 一致）
+        const proxy = resolveHttpProxy(settings);
+        const res = await requestWithProxyFallback(url, {
           method: 'POST',
           headers: {
             Authorization: `Bearer ${key}`,
             'Content-Type': 'application/json'
           },
           body: data,
+          proxy,
           timeoutMs: 30000
         });
         if (res.status >= 400) {
@@ -1478,20 +1481,24 @@ export async function testCpaRemoteConnectivity(input?: {
   const started = Date.now();
   const url = `${base}/v0/management/auth-files`;
   try {
-    const res = await proxiedRequest(url, {
+    // 优先直连，失败再走代理（与 sub2api / mail / grok2api 一致）
+    const proxy = resolveHttpProxy(settings);
+    const res = await requestWithProxyFallback(url, {
       method: 'GET',
       headers: {
         Authorization: `Bearer ${key}`,
         Accept: 'application/json'
       },
+      proxy,
       timeoutMs: 12000
     });
     const ms = Date.now() - started;
+    const viaHint = res.via === 'proxy' ? ' · 经代理' : '';
     // 2xx = 连通且鉴权通过
     if (res.status >= 200 && res.status < 300) {
       return {
         ok: true,
-        message: `远程 CPA 连通（Management API 可用）`,
+        message: `远程 CPA 连通（Management API 可用${viaHint}）`,
         ms,
         status: res.status,
         remoteUrl: base
@@ -1501,7 +1508,7 @@ export async function testCpaRemoteConnectivity(input?: {
     if (res.status === 401 || res.status === 403) {
       return {
         ok: false,
-        message: `已连上 ${base}，但密钥被拒（HTTP ${res.status}）`,
+        message: `已连上 ${base}，但密钥被拒（HTTP ${res.status}）${viaHint}`,
         ms,
         status: res.status,
         remoteUrl: base
@@ -1525,7 +1532,7 @@ export async function testCpaRemoteConnectivity(input?: {
           : '';
     return {
       ok: false,
-      message: `HTTP ${res.status}${body ? `: ${body.slice(0, 120)}` : ''}`,
+      message: `HTTP ${res.status}${body ? `: ${body.slice(0, 120)}` : ''}${viaHint}`,
       ms,
       status: res.status,
       remoteUrl: base
@@ -1533,7 +1540,7 @@ export async function testCpaRemoteConnectivity(input?: {
   } catch (err) {
     return {
       ok: false,
-      message: err instanceof Error ? err.message : String(err),
+      message: errorMessage(err),
       ms: Date.now() - started,
       remoteUrl: base
     };
