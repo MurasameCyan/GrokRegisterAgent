@@ -39,11 +39,11 @@ export interface AppSettings {
   pythonPath: string;
   /** 注册机目录（可留空；服务端会自动使用项目内置 register/） */
   registerDir: string;
-  /** 一次"开始注册"要跑的轮数，1..233 */
+  /** 一次"开始注册"要跑的轮数，1..2333 */
   runCount: number;
   /**
    * 并行注册任务上限（同时 running/starting 的 worker 数）。
-   * 默认 3，硬上限 8。
+   * 固定默认 3，首页不可改（normalize 会钳制为 3）。
    */
   maxParallelWorkers: number;
   /**
@@ -1227,14 +1227,15 @@ export function validateSettings(s: AppSettings): Record<string, string> {
   }
   const mail = s.mail && typeof s.mail === 'object' ? s.mail : { apiBase: '', adminAuth: '', domain: '' };
   try {
-    if (!Number.isInteger(s.runCount) || s.runCount < 1 || s.runCount > 233)
-      errors.runCount = '数量必须在 1 到 233 之间';
+    if (!Number.isInteger(s.runCount) || s.runCount < 1 || s.runCount > 2333)
+      errors.runCount = '数量必须在 1 到 2333 之间';
+    // 并行上限固定 3，不在 UI 暴露；仍做宽松校验防止脏数据
     if (
       !Number.isInteger(s.maxParallelWorkers) ||
       s.maxParallelWorkers < 1 ||
       s.maxParallelWorkers > 8
     )
-      errors.maxParallelWorkers = '并行任务上限须在 1 到 8 之间';
+      errors.maxParallelWorkers = '并行任务上限无效';
     if (
       !Number.isInteger(s.turnstileAutoWaitMax) ||
       s.turnstileAutoWaitMax < 30 ||

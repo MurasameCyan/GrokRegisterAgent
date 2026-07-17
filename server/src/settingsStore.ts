@@ -75,7 +75,7 @@ function applyEnvOverrides(s: AppSettings, source: Partial<AppSettings>): AppSet
     source.runCount === undefined &&
     Number.isInteger(envRunCount) &&
     (envRunCount as number) >= 1 &&
-    (envRunCount as number) <= 233;
+    (envRunCount as number) <= 2333;
 
   const pick = (saved: string, envVal?: string, fallback = ''): string => {
     const v = (saved || '').trim();
@@ -339,10 +339,11 @@ function merge(partial: unknown): AppSettings {
       if (!Number.isFinite(n) || n < 0) return DEFAULT_SETTINGS.proxyIpIntervalSec;
       return Math.min(Math.floor(n), 86400);
     })(),
-    maxParallelWorkers: (() => {
-      const n = Number((p as AppSettings).maxParallelWorkers);
-      if (!Number.isFinite(n) || n < 1) return DEFAULT_SETTINGS.maxParallelWorkers;
-      return Math.min(Math.floor(n), 8);
+    maxParallelWorkers: 3, // 固定并行上限，不允许配置修改
+    runCount: (() => {
+      const n = Number((p as AppSettings).runCount);
+      if (!Number.isFinite(n) || n < 1) return DEFAULT_SETTINGS.runCount;
+      return Math.min(Math.floor(n), 2333);
     })(),
     skipBotFlag1OnMint: asBool(
       (p as AppSettings).skipBotFlag1OnMint,
