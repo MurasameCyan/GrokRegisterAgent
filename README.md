@@ -241,7 +241,7 @@ docker compose up -d --build
 
 - 感谢 [ReinerBRO/grok-register](https://github.com/ReinerBRO/grok-register)，自动化注册思路与 Python 流程受其启发
 - 感谢 [dreamhunter2333/cloudflare_temp_email](https://github.com/dreamhunter2333/cloudflare_temp_email)，默认邮件后端适配对象
-
+- [LINUX DO](https://linux.do/)
 ---
 
 ## 开源协议
