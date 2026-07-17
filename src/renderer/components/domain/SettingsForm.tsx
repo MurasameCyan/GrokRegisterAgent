@@ -190,6 +190,7 @@ export function SettingsForm() {
   const [sbLog, setSbLog] = useState<SingBoxLogResult | null>(null);
   const [sbLogLoading, setSbLogLoading] = useState(false);
   const [sbLogCleared, setSbLogCleared] = useState(false);
+  const [sbLogOpen, setSbLogOpen] = useState(false);
   const [sbParsedNodes, setSbParsedNodes] = useState<
     { tag: string; name: string; type: string; server: string; port: number }[]
   >([]);
@@ -636,11 +637,10 @@ export function SettingsForm() {
         <CardBody className="grid gap-4 lg:grid-cols-2">
           {/* 单行：Sing-Box | 直连 */}
           <div className="lg:col-span-2">
-            <div className="flex items-center justify-between gap-3">
-              <div className="text-[13px] font-medium tracking-tight">代理</div>
+            <div className="flex items-center justify-end gap-3">
               <div
                 role="group"
-                aria-label="代理"
+                aria-label="代理模式"
                 className="inline-flex h-9 w-full max-w-[280px] rounded-full bg-muted p-0.5"
               >
                 {(
@@ -680,11 +680,10 @@ export function SettingsForm() {
               <div className="flex flex-wrap items-start justify-between gap-2">
                 <div className="min-w-0">
                   <div className="text-[13px] font-semibold tracking-tight">
-                    sing-box 本地 mixed 代理
+                    Sing-Box 内核
                   </div>
                   <p className="mt-0.5 text-[11px] leading-4 text-muted-foreground">
-                    粘贴 ss/vmess/vless/trojan/hysteria2/tuic 等分享链接；路由固定全局。保存设置后自动启停
-                    sing-box。
+                    粘贴 ss/vmess/vless/trojan/hysteria2/tuic 等节点链接
                   </p>
                 </div>
                 <div className="flex shrink-0 flex-wrap items-center gap-1.5">
@@ -743,7 +742,7 @@ export function SettingsForm() {
 
               <Field
                 label="节点列表"
-                hint="每行一个分享链接；解析成功后可选下拉。注册随机 / 失败自动换节点"
+                hint="每行一个节点链接；解析成功后可选下拉。注册随机 / 失败自动换节点"
                 error={errors.singBoxNodes}
               >
                 <textarea
@@ -809,66 +808,86 @@ export function SettingsForm() {
               )}
 
               <div className="rounded-xl border border-border/60 bg-muted/40">
-                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 px-3.5 py-2.5">
-                  <div className="flex items-center gap-2 text-[12px] font-medium">
-                    <Terminal className="h-3.5 w-3.5 text-muted-foreground" />
-                    sing-box 日志
-                    {sbLog?.truncated && (
+                <div className="flex flex-wrap items-center justify-between gap-2 px-3.5 py-2.5">
+                  <button
+                    type="button"
+                    className="flex min-w-0 flex-1 items-center gap-2 text-left text-[12px] font-medium"
+                    onClick={() => {
+                      setSbLogOpen((v) => {
+                        const next = !v;
+                        if (next) void refreshSbLog();
+                        return next;
+                      });
+                    }}
+                    title={sbLogOpen ? '折叠日志' : '展开日志'}
+                  >
+                    {sbLogOpen ? (
+                      <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    ) : (
+                      <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    )}
+                    <Terminal className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                    <span>sing-box 日志</span>
+                    {sbLog?.truncated && sbLogOpen && (
                       <span className="text-[11px] text-amber-600">仅显示最近内容</span>
                     )}
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="secondary"
-                      className="h-7"
-                      disabled={sbLogLoading}
-                      onClick={() => void refreshSbLog()}
-                    >
-                      {sbLogLoading ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      ) : (
-                        <RefreshCw className="h-3.5 w-3.5" />
-                      )}
-                      刷新
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="secondary"
-                      className="h-7"
-                      disabled={!sbLog?.content}
-                      onClick={() => void copySbLog()}
-                    >
-                      <Clipboard className="h-3.5 w-3.5" />
-                      复制
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="secondary"
-                      className="h-7"
-                      disabled={!sbLog?.content && !sbLog?.error}
-                      onClick={() => setSbLogCleared(true)}
-                    >
-                      清空显示
-                    </Button>
-                  </div>
+                  </button>
+                  {sbLogOpen ? (
+                    <div className="flex items-center gap-1.5">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        className="h-7"
+                        disabled={sbLogLoading}
+                        onClick={() => void refreshSbLog()}
+                      >
+                        {sbLogLoading ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <RefreshCw className="h-3.5 w-3.5" />
+                        )}
+                        刷新
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        className="h-7"
+                        disabled={!sbLog?.content}
+                        onClick={() => void copySbLog()}
+                      >
+                        <Clipboard className="h-3.5 w-3.5" />
+                        复制
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        className="h-7"
+                        disabled={!sbLog?.content && !sbLog?.error}
+                        onClick={() => setSbLogCleared(true)}
+                      >
+                        清空显示
+                      </Button>
+                    </div>
+                  ) : null}
                 </div>
-                <div className="px-3.5 py-2.5">
-                  <div className="mb-1 truncate font-mono text-[10px] text-muted-foreground">
-                    {sbLog?.logPath || sbStatus?.logPath || '暂无日志路径'}
+                {sbLogOpen ? (
+                  <div className="border-t border-border/60 px-3.5 py-2.5">
+                    <div className="mb-1 truncate font-mono text-[10px] text-muted-foreground">
+                      {sbLog?.logPath || sbStatus?.logPath || '暂无日志路径'}
+                    </div>
+                    <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded-[12px] border border-border/50 bg-muted/60 p-3 font-mono text-[11px] leading-5 text-foreground">
+                      {sbLogCleared
+                        ? '已清空当前显示，点击「刷新」重新读取日志。'
+                        : sbLog?.error
+                          ? `读取日志失败：${sbLog.error}`
+                          : sbLog?.content ||
+                            '暂无日志，保存或启动 sing-box 后刷新。'}
+                    </pre>
                   </div>
-                  <pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded-[12px] border border-border/50 bg-muted/60 p-3 font-mono text-[11px] leading-5 text-foreground">
-                    {sbLogCleared
-                      ? '已清空当前显示，点击「刷新」重新读取日志。'
-                      : sbLog?.error
-                        ? `读取日志失败：${sbLog.error}`
-                        : sbLog?.content ||
-                          '暂无日志，保存或启动 sing-box 后刷新。'}
-                  </pre>
-                </div>
+                ) : null}
               </div>
 
               <div className="grid gap-3 sm:grid-cols-2">
