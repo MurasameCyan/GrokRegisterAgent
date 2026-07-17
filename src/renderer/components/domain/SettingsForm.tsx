@@ -34,7 +34,6 @@ import type {
   RegisterMode
 } from '@shared/settings';
 import {
-  buildSingBoxLocalProxyUrl,
   DEFAULT_SETTINGS,
   enforceProxyModeMutex,
   validateSettings
@@ -773,32 +772,30 @@ export function SettingsForm() {
                 </select>
               </Field>
 
-              <div className="rounded-xl border border-border/60 bg-muted/40 px-3.5 py-3 text-[12px]">
-                <div className="font-medium">本地代理（固定端口）</div>
-                <code className="mt-0.5 block break-all font-mono text-[11px] text-muted-foreground">
-                  {buildSingBoxLocalProxyUrl(draft)}
-                </code>
-                <p className="mt-1 text-[11px] text-muted-foreground">
-                  监听 127.0.0.1:2080 · mixed HTTP/SOCKS · 不可改端口
-                </p>
-                {(sbStatus?.selectedName || sbStatus?.selected) && (
-                  <p className="mt-1 text-[11px] text-muted-foreground">
-                    当前节点：{sbStatus.selectedName || sbStatus.selected}
-                    {typeof sbStatus.nodeCount === 'number'
-                      ? ` · 共 ${sbStatus.nodeCount} 个`
-                      : ''}
-                  </p>
-                )}
-                {sbStatus?.lastError && (
-                  <p className="mt-1 text-[11px] text-danger">{sbStatus.lastError}</p>
-                )}
-                {sbStatus && !sbStatus.binaryExists && (
-                  <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-300">
-                    未找到 Linux sing-box 二进制。请使用 GHCR 镜像（Actions
-                    构建时下载），Windows 本机无法直接启动。
-                  </p>
-                )}
-              </div>
+              {(sbStatus?.selectedName ||
+                sbStatus?.selected ||
+                sbStatus?.lastError ||
+                (sbStatus && !sbStatus.binaryExists)) && (
+                <div className="space-y-1 text-[11px] text-muted-foreground">
+                  {(sbStatus?.selectedName || sbStatus?.selected) && (
+                    <p>
+                      当前节点：{sbStatus.selectedName || sbStatus.selected}
+                      {typeof sbStatus.nodeCount === 'number'
+                        ? ` · 共 ${sbStatus.nodeCount} 个`
+                        : ''}
+                    </p>
+                  )}
+                  {sbStatus?.lastError && (
+                    <p className="text-danger">{sbStatus.lastError}</p>
+                  )}
+                  {sbStatus && !sbStatus.binaryExists && (
+                    <p className="text-amber-700 dark:text-amber-300">
+                      未找到 Linux sing-box 二进制。请使用 GHCR 镜像（Actions
+                      构建时下载），Windows 本机无法直接启动。
+                    </p>
+                  )}
+                </div>
+              )}
 
               <div className="rounded-xl border border-border/60 bg-muted/40">
                 <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 px-3.5 py-2.5">
