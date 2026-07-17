@@ -346,7 +346,7 @@ function SidebarUpdateBar({
   return (
     <div className="flex min-w-0 items-center gap-1.5">
       <span
-        className="chip min-w-0 flex-1 truncate px-2 py-1 font-mono text-[11px] tabular-nums"
+        className="inline-flex h-8 min-w-0 flex-1 items-center justify-center truncate rounded-xl bg-muted px-2.5 font-mono text-[11px] font-medium leading-none tabular-nums text-muted-foreground"
         title={chipTitle}
       >
         {buildId ?? '…'}
