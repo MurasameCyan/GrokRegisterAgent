@@ -198,23 +198,23 @@
     @apply min-w-0 flex-1;
   }
 
-  /* 导航品牌：紧凑横排，logo + 三行站名 */
+  /* 导航品牌：整块左右居中（图标 + 三行站名） */
   .nav-brand {
-    @apply flex items-center gap-2.5 border-b border-border/60 px-3 py-3;
+    @apply flex items-center justify-center gap-2.5 border-b border-border/60 px-3 py-3;
   }
 
-  /* 侧边栏品牌：48×48 图标，站名自然行高（不再硬拉到同高） */
+  /* 侧边栏品牌：48×48 图标，站名自然行高 */
   .nav-brand .nav-logo {
     @apply h-12 w-12 shrink-0 text-[14px];
   }
 
   .nav-brand .site-name {
-    flex: 1;
+    flex: 0 1 auto;
     min-width: 0;
     height: auto;
     justify-content: center;
-    align-items: flex-start;
-    text-align: left;
+    align-items: center;
+    text-align: center;
     font-size: 13px;
     line-height: 1.2;
     letter-spacing: -0.04em;

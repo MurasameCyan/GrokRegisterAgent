@@ -348,7 +348,7 @@ function RuntimeSettingsInline() {
           <div className="mt-2">
             <Slider
               min={1}
-              max={2333}
+              max={721}
               value={draft.runCount}
               onValueChange={(v) => update('runCount', v)}
             />

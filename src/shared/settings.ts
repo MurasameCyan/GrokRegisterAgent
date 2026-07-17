@@ -39,7 +39,7 @@ export interface AppSettings {
   pythonPath: string;
   /** 注册机目录（可留空；服务端会自动使用项目内置 register/） */
   registerDir: string;
-  /** 一次"开始注册"要跑的轮数，1..2333 */
+  /** 一次"开始注册"要跑的轮数，1..721 */
   runCount: number;
   /**
    * 并行注册任务上限（同时 running/starting 的 worker 数）。
@@ -1227,8 +1227,8 @@ export function validateSettings(s: AppSettings): Record<string, string> {
   }
   const mail = s.mail && typeof s.mail === 'object' ? s.mail : { apiBase: '', adminAuth: '', domain: '' };
   try {
-    if (!Number.isInteger(s.runCount) || s.runCount < 1 || s.runCount > 2333)
-      errors.runCount = '数量必须在 1 到 2333 之间';
+    if (!Number.isInteger(s.runCount) || s.runCount < 1 || s.runCount > 721)
+      errors.runCount = '数量必须在 1 到 721 之间';
     // 并行上限固定 3，不在 UI 暴露；仍做宽松校验防止脏数据
     if (
       !Number.isInteger(s.maxParallelWorkers) ||
