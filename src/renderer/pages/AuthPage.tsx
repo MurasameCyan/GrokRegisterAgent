@@ -18,6 +18,7 @@ import {
   Trash2
 } from 'lucide-react';
 import { Button } from '@renderer/components/ui/Button';
+import { FilterBar, FilterSegmentGroup } from '@renderer/components/ui/FilterSegmentGroup';
 import { Switch } from '@renderer/components/ui/Switch';
 import { PaginationBar } from '@renderer/components/ui/PaginationBar';
 import { BotFlagBadge } from '@renderer/components/domain/BotFlagBadge';
@@ -2159,99 +2160,39 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
             </div>
           </div>
 
-          {/* 筛选：标记 + 状态 宽屏并排 */}
-          <div className="flex flex-col gap-1.5 lg:flex-row lg:flex-wrap lg:items-center lg:gap-x-3 lg:gap-y-1.5">
-          <div className="flex min-w-0 flex-wrap items-center gap-1">
-            <span className="mr-0.5 w-8 shrink-0 text-[10px] font-semibold tracking-wide text-primary">标记</span>
-            {(
-              [
-                { id: 'all' as const, label: '全部', count: items.length },
-                { id: 'no_sso' as const, label: '无sso', count: missingSsoCount },
-                { id: 'no_email' as const, label: '无邮箱', count: noEmailAuthCount },
-                { id: 'need_fill' as const, label: '待补全', count: needFillCount }
-              ] as const
-            ).map((tab) => (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => changeMetaFilter(tab.id)}
-                className={cn(
-                  'rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors',
-                  metaFilter === tab.id
-                    ? tab.id === 'no_email'
-                      ? 'bg-orange-600 text-white shadow-sm'
-                      : tab.id === 'no_sso'
-                        ? 'bg-amber-600 text-white shadow-sm'
-                        : 'bg-primary text-primary-foreground shadow-sm'
-                    : 'bg-muted/70 text-muted-foreground hover:bg-muted hover:text-foreground'
-                )}
-                title={
-                  tab.id === 'no_sso'
-                    ? '无 sso 字段，可回填'
-                    : tab.id === 'no_email'
-                      ? '无邮箱，无法 email 回填'
-                      : tab.id === 'need_fill'
-                        ? '无 sso 或无邮箱'
-                        : '不限制标记'
-                }
-              >
-                {tab.label}
-                <span className="ml-1 tabular-nums opacity-80">{tab.count}</span>
-              </button>
-            ))}
-          </div>
-
-          <div className="flex min-w-0 flex-wrap items-center gap-1">
-            <span className="mr-0.5 w-8 shrink-0 text-[10px] font-semibold tracking-wide text-primary">状态</span>
-            {(
-              [
-                { id: 'all' as const, label: '全部', count: items.length },
-                { id: 'unprobed' as const, label: '未测', count: statusCounts.unprobed },
-                { id: '200' as const, label: '200', count: statusCounts.c200 },
-                { id: '401' as const, label: '401', count: statusCounts.c401 },
-                { id: '403' as const, label: '403', count: statusCounts.c403 },
-                { id: 'other_err' as const, label: '其它', count: statusCounts.other }
-              ] as const
-            ).map((tab) => (
-              <button
-                key={tab.id}
-                type="button"
-                onClick={() => changeStatusFilter(tab.id)}
-                className={cn(
-                  'rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors',
-                  statusFilter === tab.id
-                    ? tab.id === '200'
-                      ? 'bg-emerald-600 text-white shadow-sm'
-                      : tab.id === '401' || tab.id === '403'
-                        ? 'bg-red-600 text-white shadow-sm'
-                        : tab.id === 'other_err'
-                          ? 'bg-amber-600 text-white shadow-sm'
-                          : tab.id === 'unprobed'
-                            ? 'bg-slate-600 text-white shadow-sm'
-                            : 'bg-primary text-primary-foreground shadow-sm'
-                    : 'bg-muted/70 text-muted-foreground hover:bg-muted hover:text-foreground'
-                )}
-                title={
-                  tab.id === 'unprobed'
-                    ? '尚未测活（无状态码）'
-                    : tab.id === '200'
-                      ? 'HTTP 200 / 测活通过'
-                      : tab.id === '401'
-                        ? 'HTTP 401 未授权'
-                        : tab.id === '403'
-                          ? 'HTTP 403 禁止（可密码重登）'
-                          : tab.id === 'other_err'
-                            ? '其它错误码或失败（非 200/401/403）'
-                            : '不限制状态'
-                }
-              >
-                {tab.label}
-                <span className="ml-1 tabular-nums opacity-80">{tab.count}</span>
-              </button>
-            ))}
-          </div>
-
-          </div>
+          {/* 筛选：标记 + 状态 统一分段轨 */}
+          <FilterBar
+            hasActive={hasActiveFilter}
+            onClear={() => {
+              clearMetaFilter();
+              changeStatusFilter('all');
+            }}
+          >
+            <FilterSegmentGroup
+              label="标记"
+              value={metaFilter}
+              onChange={changeMetaFilter}
+              options={[
+                { id: 'all', label: '全部', count: items.length, title: '不限制标记' },
+                { id: 'no_sso', label: '无SSO', count: missingSsoCount, title: '无 sso 字段，可回填', tone: 'warn' },
+                { id: 'no_email', label: '无邮箱', count: noEmailAuthCount, title: '无邮箱，无法 email 回填', tone: 'warn' },
+                { id: 'need_fill', label: '待补全', count: needFillCount, title: '无 sso 或无邮箱' }
+              ]}
+            />
+            <FilterSegmentGroup
+              label="状态"
+              value={statusFilter}
+              onChange={changeStatusFilter}
+              options={[
+                { id: 'all', label: '全部', count: items.length, title: '不限制状态' },
+                { id: 'unprobed', label: '未测', count: statusCounts.unprobed, title: '尚未测活（无状态码）', tone: 'muted' },
+                { id: '200', label: '200', count: statusCounts.c200, title: 'HTTP 200 / 测活通过', tone: 'ok' },
+                { id: '401', label: '401', count: statusCounts.c401, title: 'HTTP 401 未授权 · 可死者苏生', tone: 'danger' },
+                { id: '403', label: '403', count: statusCounts.c403, title: 'HTTP 403 · 可密码重登', tone: 'danger' },
+                { id: 'other_err', label: '其它', count: statusCounts.other, title: '其它错误码或失败', tone: 'warn' }
+              ]}
+            />
+          </FilterBar>
 
           {/* 操作：选择 | 业务 — 紧凑折行 */}
           <div className="flex flex-col gap-1.5">

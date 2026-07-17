@@ -17,6 +17,7 @@ import {
   X
 } from 'lucide-react';
 import { Button } from '@renderer/components/ui/Button';
+import { FilterBar, FilterSegmentGroup } from '@renderer/components/ui/FilterSegmentGroup';
 import { Switch } from '@renderer/components/ui/Switch';
 import { PaginationBar } from '@renderer/components/ui/PaginationBar';
 import { AccountDetailDrawer } from '@renderer/components/domain/AccountDetailDrawer';
@@ -891,103 +892,47 @@ export function PoolPage() {
             </div>
           </div>
 
-          {/* 筛选：三组并排（宽屏）/ 换行（窄屏），减少纵向占位 */}
-          <div className="flex flex-col gap-1.5 lg:flex-row lg:flex-wrap lg:items-center lg:gap-x-3 lg:gap-y-1.5">
-            <div className="flex min-w-0 flex-wrap items-center gap-1">
-              <span className="mr-0.5 w-8 shrink-0 text-[10px] font-semibold tracking-wide text-primary">SSO</span>
-              {(
-                [
-                  { id: 'all' as const, label: '全部', count: accounts.length },
-                  { id: 'has_sso' as const, label: '有SSO', count: ssoCount },
-                  { id: 'no_sso' as const, label: '未SSO', count: noSsoCount }
-                ] as const
-              ).map((tab) => (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => changeSsoFilter(tab.id)}
-                  className={cn(
-                    'rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors',
-                    ssoFilter === tab.id
-                      ? 'bg-primary text-primary-foreground shadow-sm'
-                      : 'bg-muted/70 text-muted-foreground hover:bg-muted hover:text-foreground'
-                  )}
-                  title={
-                    tab.id === 'no_sso'
-                      ? '无 SSO 的账号（分页与列表按此筛选）'
-                      : tab.id === 'has_sso'
-                        ? '含 SSO，可验活/补签 Auth'
-                        : '不限制是否有 SSO'
-                  }
-                >
-                  {tab.label}
-                  <span className="ml-1 tabular-nums opacity-80">{tab.count}</span>
-                </button>
-              ))}
-            </div>
-            <div className="flex min-w-0 flex-wrap items-center gap-1">
-              <span className="mr-0.5 w-8 shrink-0 text-[10px] font-semibold tracking-wide text-primary">Auth</span>
-              {(
-                [
-                  { id: 'all' as const, label: '全部', count: accounts.length },
-                  { id: 'unconverted' as const, label: '未转换', count: unconvertedCount },
-                  { id: 'converted' as const, label: '已转换', count: convertedCount }
-                ] as const
-              ).map((tab) => (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => changeAuthFilter(tab.id)}
-                  className={cn(
-                    'rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors',
-                    authFilter === tab.id
-                      ? 'bg-primary text-primary-foreground shadow-sm'
-                      : 'bg-muted/70 text-muted-foreground hover:bg-muted hover:text-foreground'
-                  )}
-                  title={
-                    tab.id === 'converted'
-                      ? '已匹配 Auth（email 或 SSO 哈希）'
-                      : tab.id === 'unconverted'
-                        ? '尚未转 Auth'
-                        : '不限制 Auth 转换状态'
-                  }
-                >
-                  {tab.label}
-                  <span className="ml-1 tabular-nums opacity-80">{tab.count}</span>
-                </button>
-              ))}
-            </div>
-            <div className="flex min-w-0 flex-wrap items-center gap-1">
-              <span className="mr-0.5 w-8 shrink-0 text-[10px] font-semibold tracking-wide text-primary">验活</span>
-              {(
-                [
-                  { id: 'all' as const, label: '全部', count: accounts.length },
-                  { id: 'unchecked' as const, label: '未验', count: uncheckedCount },
-                  { id: 'alive' as const, label: '存活', count: aliveOnlyCount },
-                  { id: 'dead' as const, label: '失效', count: deadOnlyCount }
-                ] as const
-              ).map((tab) => (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => changeAliveFilter(tab.id)}
-                  className={cn(
-                    'rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors',
-                    aliveFilter === tab.id
-                      ? tab.id === 'alive'
-                        ? 'bg-emerald-600 text-white shadow-sm'
-                        : tab.id === 'dead'
-                          ? 'bg-destructive text-destructive-foreground shadow-sm'
-                          : 'bg-primary text-primary-foreground shadow-sm'
-                      : 'bg-muted/70 text-muted-foreground hover:bg-muted hover:text-foreground'
-                  )}
-                >
-                  {tab.label}
-                  <span className="ml-1 tabular-nums opacity-80">{tab.count}</span>
-                </button>
-              ))}
-            </div>
-          </div>
+          {/* 筛选：统一分段胶囊轨 */}
+          <FilterBar
+            hasActive={hasActiveFilter}
+            onClear={() => {
+              changeSsoFilter('all');
+              changeAuthFilter('all');
+              changeAliveFilter('all');
+            }}
+          >
+            <FilterSegmentGroup
+              label="SSO"
+              value={ssoFilter}
+              onChange={changeSsoFilter}
+              options={[
+                { id: 'all', label: '全部', count: accounts.length, title: '不限制是否有 SSO' },
+                { id: 'has_sso', label: '有SSO', count: ssoCount, title: '含 SSO，可验活/补签 Auth' },
+                { id: 'no_sso', label: '无SSO', count: noSsoCount, title: '无 SSO 的账号' }
+              ]}
+            />
+            <FilterSegmentGroup
+              label="Auth"
+              value={authFilter}
+              onChange={changeAuthFilter}
+              options={[
+                { id: 'all', label: '全部', count: accounts.length, title: '不限制 Auth 转换状态' },
+                { id: 'unconverted', label: '未转', count: unconvertedCount, title: '尚未转 Auth' },
+                { id: 'converted', label: '已转', count: convertedCount, title: '已匹配 Auth（email 或 SSO 哈希）' }
+              ]}
+            />
+            <FilterSegmentGroup
+              label="验活"
+              value={aliveFilter}
+              onChange={changeAliveFilter}
+              options={[
+                { id: 'all', label: '全部', count: accounts.length, title: '不限制验活状态' },
+                { id: 'unchecked', label: 'None', count: uncheckedCount, title: '尚未验活', tone: 'muted' },
+                { id: 'alive', label: 'Live', count: aliveOnlyCount, title: '验活存活', tone: 'ok' },
+                { id: 'dead', label: 'Dead', count: deadOnlyCount, title: '验活失效', tone: 'danger' }
+              ]}
+            />
+          </FilterBar>
 
           {/* 操作：一行优先折行，标签仅宽屏显示 */}
           <div className="flex flex-col gap-1.5">
