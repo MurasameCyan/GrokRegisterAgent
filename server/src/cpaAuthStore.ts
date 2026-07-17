@@ -1253,8 +1253,9 @@ export async function pushSub2apiAuthRemoteBatch(input: {
           continue;
         }
         const url = `${base}/api/v1/admin/accounts`;
+        // 优先直连，失败再走代理（内网 sub2api 避免被 Sing-Box 劫持）
         const proxy = resolveHttpProxy(settings);
-        const res = await proxiedRequest(url, {
+        const res = await requestWithProxyFallback(url, {
           method: 'POST',
           headers: {
             ...sub2apiAdminAuthHeaders(token),
@@ -1396,7 +1397,7 @@ export async function testSub2apiRemoteConnectivity(input?: {
       }
       return {
         ok: true,
-        message: `远程 sub2api 连通（Admin API 可用 · ${authMethod}${res.via === 'direct' && proxy ? ' · 直连' : ''}）`,
+        message: `远程 sub2api 连通（Admin API 可用 · ${authMethod}${res.via === 'proxy' ? ' · 经代理' : ''}）`,
         ms,
         status: res.status,
         remoteUrl: base

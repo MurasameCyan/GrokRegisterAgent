@@ -927,7 +927,7 @@ app.post('/api/test/mail', async (req, res) => {
         if (resp.status >= 200 && resp.status < 300) {
           return res.json({
             ok: true,
-            message: `YYDS Mail 连通（API Key 可用${resp.via === 'direct' && proxy ? ' · 直连' : ''}）`,
+            message: `YYDS Mail 连通（API Key 可用${resp.via === 'proxy' ? ' · 经代理' : ''}）`,
             ms,
             status: resp.status
           });
@@ -975,7 +975,7 @@ app.post('/api/test/mail', async (req, res) => {
         if (resp.status >= 200 && resp.status < 300) {
           return res.json({
             ok: true,
-            message: `DuckMail 连通（/domains 可用${resp.via === 'direct' && proxy ? ' · 直连' : ''}）`,
+            message: `DuckMail 连通（/domains 可用${resp.via === 'proxy' ? ' · 经代理' : ''}）`,
             ms,
             status: resp.status
           });
@@ -1025,7 +1025,7 @@ app.post('/api/test/mail', async (req, res) => {
       if (resp.status === 401 || resp.status === 200 || resp.status === 403) {
         return res.json({
           ok: true,
-          message: `邮箱服务器连接成功${resp.via === 'direct' && proxy ? '（代理失败已直连）' : ''}`,
+          message: `邮箱服务器连接成功${resp.via === 'proxy' ? '（直连失败已走代理）' : ''}`,
           ms,
           status: resp.status
         });
@@ -1069,7 +1069,7 @@ app.post('/api/test/mail', async (req, res) => {
           return res.json({
             ok: true,
             message: `邮箱 Admin API 可达（HTTP ${adminResp.status}${
-              adminResp.via === 'direct' && proxy ? ' · 直连' : ''
+              adminResp.via === 'proxy' ? ' · 经代理' : ''
             }）`,
             ms: ms2,
             status: adminResp.status
@@ -1167,7 +1167,7 @@ app.post('/api/test/grok2api-remote', async (req, res) => {
       });
       const ms = Date.now() - started;
       const viaHint =
-        resp.via === 'direct' && proxy ? '（Sing-Box 代理失败，已改直连）' : '';
+        resp.via === 'proxy' ? '（直连失败，已改走代理）' : '';
       if (resp.status >= 200 && resp.status < 300) {
         const data = resp.data as Record<string, unknown> | null;
         const nested =

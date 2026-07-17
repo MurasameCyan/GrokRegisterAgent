@@ -1,6 +1,6 @@
 /**
  * 统一的出站 HTTP 客户端：可选 HTTP 代理（Sing-Box 本地）。
- * 连通检测 / 自建服务建议优先直连；代理失败可 fallback。
+ * 连通/推送策略：优先直连 → 失败再走代理 → 再失败抛错。
  */
 import axios, { type AxiosRequestConfig } from 'axios';
 import { HttpsProxyAgent } from 'https-proxy-agent';
@@ -65,25 +65,33 @@ export async function proxiedRequest(
 }
 
 /**
- * 出站请求：有代理时先走代理；传输层失败（ECONNRESET 等）再直连一次。
- * 自建 grok2api / CF Worker 在代理异常时常见 ECONNRESET。
+ * 出站请求：优先直连；传输层失败时若配置了代理再试代理；仍失败则抛出合并错误信息。
+ * 适用于 CF Worker / 自建 grok2api / sub2api 等连通与推送。
  */
 export async function requestWithProxyFallback(
   url: string,
   opts: Omit<ProxiedOptions, 'proxy'> & { proxy?: string } = {}
 ): Promise<ProxiedResponse & { via: 'proxy' | 'direct' }> {
   const proxy = String(opts.proxy || '').trim();
-  if (!proxy) {
-    const res = await proxiedRequest(url, { ...opts, proxy: undefined });
-    return { ...res, via: 'direct' };
-  }
+
+  // 1) 优先直连
   try {
-    const res = await proxiedRequest(url, { ...opts, proxy });
-    return { ...res, via: 'proxy' };
-  } catch (err) {
-    if (!isTransportError(err)) throw err;
     const res = await proxiedRequest(url, { ...opts, proxy: undefined });
     return { ...res, via: 'direct' };
+  } catch (directErr) {
+    if (!proxy) throw directErr;
+    if (!isTransportError(directErr)) throw directErr;
+
+    // 2) 直连传输失败 → 再试代理
+    try {
+      const res = await proxiedRequest(url, { ...opts, proxy });
+      return { ...res, via: 'proxy' };
+    } catch (proxyErr) {
+      // 3) 都失败：合并错误信息
+      const d = errorMessage(directErr);
+      const p = errorMessage(proxyErr);
+      throw new Error(`直连失败: ${d}；代理重试失败: ${p}`);
+    }
   }
 }
 
