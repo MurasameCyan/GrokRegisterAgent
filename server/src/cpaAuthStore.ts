@@ -706,6 +706,12 @@ export async function resignCpaAuth(input: {
   sso?: string;
   /** 重签成功后是否推送到远程 CPA（默认 false） */
   pushRemote?: boolean;
+  /**
+   * 重签后 base_url 目标：
+   * - "cli"（默认）→ https://cli-chat-proxy.grok.com/v1 满额度
+   * - "api" → https://api.x.ai/v1 防风控更强、额度约 50%
+   */
+  baseUrlTarget?: 'cli' | 'api' | string;
 }): Promise<Record<string, unknown>> {
   const settings = await loadSettings();
   const dir = resolveAuthDir(settings.authDir);
@@ -726,6 +732,7 @@ export async function resignCpaAuth(input: {
   if (!runtime) throw new Error('未找到注册脚本目录，无法调用 Python 重签');
 
   const pushRemote = input.pushRemote === true;
+  const baseUrlTarget = String(input.baseUrlTarget || 'cli').trim() || 'cli';
   const code = `
 import json, sys
 sys.path.insert(0, ${JSON.stringify(runtime.registerDir)})
@@ -734,8 +741,16 @@ path = sys.argv[1]
 proxy = sys.argv[2] if len(sys.argv) > 2 else ""
 sso = sys.argv[3] if len(sys.argv) > 3 else ""
 push = (sys.argv[4] if len(sys.argv) > 4 else "0") == "1"
+base_target = sys.argv[5] if len(sys.argv) > 5 else "cli"
 # 重签强制 delete_on_dead=False，避免点重签后文件被 probe 删掉
-r = resign_auth_file(path, sso=sso, proxy=proxy, push_remote=push, delete_on_dead=False)
+r = resign_auth_file(
+    path,
+    sso=sso,
+    proxy=proxy,
+    push_remote=push,
+    delete_on_dead=False,
+    base_url_target=base_target,
+)
 print(json.dumps(r, ensure_ascii=False))
 `.trim();
 
@@ -744,7 +759,8 @@ print(json.dumps(r, ensure_ascii=False))
     resolved,
     proxy,
     String(input.sso || '').trim(),
-    pushRemote ? '1' : '0'
+    pushRemote ? '1' : '0',
+    baseUrlTarget
   ]);
 
   const outPath = String(r.path || resolved);
@@ -775,6 +791,8 @@ export async function resignCpaAuthBatch(input: {
   concurrency?: number;
   /** 重签成功后推送远程（默认 false） */
   pushRemote?: boolean;
+  /** cli | api — 写入 base_url */
+  baseUrlTarget?: 'cli' | 'api' | string;
 }): Promise<{
   total: number;
   ok: number;
@@ -818,7 +836,7 @@ export async function resignCpaAuthBatch(input: {
         if (gapMs > 0 && i > 0) {
           await new Promise((r) => setTimeout(r, gapMs));
         }
-        const r = await resignCpaAuth({ ...job, pushRemote });
+        const r = await resignCpaAuth({ ...job, pushRemote, baseUrlTarget: input.baseUrlTarget });
         const probeObj =
           r.probe && typeof r.probe === 'object'
             ? (r.probe as Record<string, unknown>)

@@ -546,12 +546,14 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
       ? [...selected]
       : filteredItems.map((i) => i.filename);
 
-  const resign = async (item: CpaAuthItem) => {
+  const resign = async (item: CpaAuthItem, baseUrlTarget: 'cli' | 'api' = 'cli') => {
+    const label = baseUrlTarget === 'api' ? '重签api' : '重签cli';
     setRowBusy(`resign:${item.filename}`);
     try {
       const r = await window.api.resignCpaAuth({
         filename: item.filename,
-        pushRemote: resignPushRemote
+        pushRemote: resignPushRemote,
+        baseUrlTarget
       });
       // 重签写出成功后后端 ok=true；仅 probe 死号时带 probe_warn，文件仍保留
       const wrote =
@@ -560,7 +562,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
       if (r.ok === false && !wrote) {
         push({
           tone: 'danger',
-          title: '重签失败',
+          title: `${label}失败`,
           description: String(r.error || 'unknown')
         });
       } else {
@@ -585,20 +587,27 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
           : r.alive === false
             ? ' · ⚠ CPA 测活死号（文件已保留）'
             : '';
+        const baseHint =
+          baseUrlTarget === 'api'
+            ? ' · base=api.x.ai（防风控·约50%额度）'
+            : ' · base=cli-chat-proxy（满额）';
         push({
           tone:
             r.xai === false || r.remoteOk === false || r.probe_warn || r.alive === false
               ? 'warn'
               : 'ok',
-          title: r.probe_warn || r.alive === false ? '重签完成（测活警告）' : '重签成功',
-          description: `${item.email || item.filename}（${r.mode || 'ok'}）${xaiHint}${remoteHint}${probeHint}`
+          title:
+            r.probe_warn || r.alive === false
+              ? `${label}完成（测活警告）`
+              : `${label}成功`,
+          description: `${item.email || item.filename}（${r.mode || 'ok'}）${baseHint}${xaiHint}${remoteHint}${probeHint}`
         });
         await reload();
       }
     } catch (err) {
       push({
         tone: 'danger',
-        title: '重签失败',
+        title: `${label}失败`,
         description: err instanceof Error ? err.message : String(err)
       });
     } finally {
@@ -997,10 +1006,11 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
       .join(' ');
   };
 
-  const resignBatch = async () => {
+  const resignBatch = async (baseUrlTarget: 'cli' | 'api' = 'cli') => {
+    const label = baseUrlTarget === 'api' ? '重签api' : '重签cli';
     const filenames = targetNames();
     if (filenames.length === 0) {
-      push({ tone: 'warn', title: '没有可重签的文件' });
+      push({ tone: 'warn', title: `没有可${label}的文件` });
       return;
     }
     const signal = beginBatch('resign');
@@ -1036,7 +1046,8 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
           const r = await window.api.resignCpaAuthBatch({
             filenames: chunk,
             concurrency: resignConcurrency,
-            pushRemote: resignPushRemote
+            pushRemote: resignPushRemote,
+            baseUrlTarget
           });
           ok += r.ok || 0;
           failed += r.failed || 0;
@@ -1073,7 +1084,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
       if (cancelled || signal.aborted) {
         push({
           tone: 'warn',
-          title: '批量重签已取消',
+          title: `批量${label}已取消`,
           description: `已处理约 ${ok + failed}/${filenames.length} · 成功 ${ok} · 失败 ${failed}`
         });
       } else {
@@ -1083,18 +1094,18 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
         const modePart = modeParts.length ? ` · ${modeParts.join(' ')}` : '';
         push({
           tone: failed > 0 || remoteFailedN > 0 ? 'warn' : 'ok',
-          title: '批量重签完成',
+          title: `批量${label}完成`,
           description: `成功 ${ok} · 失败 ${failed}${noXai ? ` · 无 xai ${noXai}` : ''}${remotePart}${modePart}`
         });
       }
       await reload();
     } catch (err) {
       if (isAbortError(err) || signal.aborted) {
-        push({ tone: 'warn', title: '批量重签已取消' });
+        push({ tone: 'warn', title: `批量${label}已取消` });
       } else {
         push({
           tone: 'danger',
-          title: '批量重签失败',
+          title: `批量${label}失败`,
           description: err instanceof Error ? err.message : String(err)
         });
       }
@@ -1987,7 +1998,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
           : '重登激活完成'
         : prog?.kind === 'resign'
         ? prog.running
-          ? '批量重签进行中'
+          ? '批量重签进行中（cli/api）'
           : '批量重签完成'
         : prog?.kind === 'refresh401'
           ? prog.running
@@ -2341,8 +2352,8 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
               </Button>
               <Button
                 size="sm"
-                className="min-w-[5rem] justify-center tabular-nums"
-                {...batchBtnProps('resign', () => void resignBatch())}
+                className="min-w-[5.25rem] justify-center tabular-nums"
+                {...batchBtnProps('resign', () => void resignBatch('cli'))}
                 disabled={
                   (Boolean(busy) && batchBusy !== 'resign') ||
                   (batchBusy !== 'resign' && filteredItems.length === 0)
@@ -2351,10 +2362,11 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                   batchBusy === 'resign'
                     ? '取消重签批量任务'
                     : (selected.size > 0
-                        ? `重签已选 ${selected.size} 条`
+                        ? `重签cli 已选 ${selected.size} 条`
                         : hasActiveFilter
-                          ? `重签筛选 ${filteredItems.length} 条`
-                          : '批量重签') +
+                          ? `重签cli 筛选 ${filteredItems.length} 条`
+                          : '批量重签cli') +
+                      ' · base=cli-chat-proxy 满额' +
                       (resignPushRemote ? ' · 成功后推远程' : ' · 仅本地')
                 }
               >
@@ -2363,7 +2375,38 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                 ) : (
                   <RotateCcw className="h-3.5 w-3.5" />
                 )}
-                {batchBusy === 'resign' ? '取消' : '重签'}
+                {batchBusy === 'resign' ? '取消' : '重签cli'}
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                className="min-w-[5.25rem] justify-center tabular-nums"
+                disabled={
+                  (Boolean(busy) && batchBusy !== 'resign') ||
+                  (batchBusy !== 'resign' && filteredItems.length === 0)
+                }
+                onClick={() => {
+                  if (batchBusy === 'resign') cancelBatch('resign');
+                  else void resignBatch('api');
+                }}
+                title={
+                  batchBusy === 'resign'
+                    ? '取消重签批量任务'
+                    : (selected.size > 0
+                        ? `重签api 已选 ${selected.size} 条`
+                        : hasActiveFilter
+                          ? `重签api 筛选 ${filteredItems.length} 条`
+                          : '批量重签api') +
+                      ' · base=api.x.ai 防风控·约50%额度' +
+                      (resignPushRemote ? ' · 成功后推远程' : ' · 仅本地')
+                }
+              >
+                {batchBusy === 'resign' ? (
+                  <Ban className="h-3.5 w-3.5" />
+                ) : (
+                  <RotateCcw className="h-3.5 w-3.5" />
+                )}
+                {batchBusy === 'resign' ? '取消' : '重签api'}
               </Button>
               <Button
                 size="sm"
@@ -2938,12 +2981,26 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                           size="sm"
                           className="h-7 shrink-0"
                           disabled={busy}
-                          onClick={() => void resign(item)}
+                          title="重签cli · base=cli-chat-proxy 满额"
+                          onClick={() => void resign(item, 'cli')}
                         >
                           <RotateCcw
                             className={cn('h-3.5 w-3.5', rowResign && 'animate-spin')}
                           />
-                          {rowResign ? '…' : '重签'}
+                          {rowResign ? '…' : '重签cli'}
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          className="h-7 shrink-0"
+                          disabled={busy}
+                          title="重签api · base=api.x.ai 防风控·约50%额度"
+                          onClick={() => void resign(item, 'api')}
+                        >
+                          <RotateCcw
+                            className={cn('h-3.5 w-3.5', rowResign && 'animate-spin')}
+                          />
+                          {rowResign ? '…' : '重签api'}
                         </Button>
                       </div>
                     </td>

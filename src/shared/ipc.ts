@@ -153,6 +153,8 @@ export interface CpaAuthListResult {
 }
 
 export interface CpaAuthResignInput {
+  /** cli=cli-chat-proxy 满额；api=api.x.ai 防风控 */
+  baseUrlTarget?: 'cli' | 'api' | string;
   filename?: string;
   path?: string;
   sso?: string;
@@ -343,6 +345,7 @@ export interface RendererApi {
     paths?: string[];
     concurrency?: number;
     pushRemote?: boolean;
+    baseUrlTarget?: 'cli' | 'api' | string;
   }): Promise<CpaAuthBatchResult>;
   mintCpaAuthFromSso(input: {
     items: CpaAuthMintItem[];

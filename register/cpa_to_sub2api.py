@@ -207,11 +207,15 @@ def cpa_xai_to_sub2api_account(
         "priority": int(cpa.get("priority") or 0),
     }
 
-    exp_unix = _parse_expires_unix(expired_raw)
-    if exp_unix is not None:
-        # DataAccount.expires_at = *int64 unix（账号级过期，可选）
-        account["expires_at"] = exp_unix
-        account["auto_pause_on_expired"] = True
+    # 对齐 GrokSession2CPA / sub2api 惯例：
+    # - 有 refresh：不写账号级 expires_at / auto_pause（access≈6h，写了会被 pause）
+    # - 无 refresh：才钉 access exp + auto_pause
+    # credentials.expires_at 仍保留，供 token 级展示/刷新
+    if not refresh:
+        exp_unix = _parse_expires_unix(expired_raw)
+        if exp_unix is not None:
+            account["expires_at"] = exp_unix
+            account["auto_pause_on_expired"] = True
 
     return account
 

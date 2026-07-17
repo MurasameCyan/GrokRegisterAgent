@@ -907,6 +907,7 @@ def resign_auth_file(
     proxy: str = "",
     push_remote: bool = False,
     delete_on_dead: bool = False,
+    base_url_target: str = "",
     log: LogFn | None = None,
 ) -> dict[str, Any]:
     """重签单个 auth JSON：优先 refresh_token；失败则用 sso 重 mint。
@@ -914,10 +915,28 @@ def resign_auth_file(
     push_remote=True 时，成功后按 config/环境推送 Management API（默认 False）。
     delete_on_dead：接口保留兼容，重签路径 **始终不删** 文件（防点重签后文件消失）。
     需要删死号请用「测活」+ cpaProbeDeleteOnDead。
+
+    base_url_target:
+      - "cli" / "cli-chat" / "" → https://cli-chat-proxy.grok.com/v1（默认，额度满）
+      - "api" / "api.x.ai" → https://api.x.ai/v1（防风控更强，额度约 50%）
     """
     # 兼容旧调用方；重签绝不删文件
     _ = delete_on_dead
     log = log or _noop
+    # 解析 base_url 目标
+    _bt = str(base_url_target or "").strip().lower()
+    if _bt in ("api", "api.x.ai", "apixai", "xai-api"):
+        force_base_url = "https://api.x.ai/v1"
+    elif _bt in ("cli", "cli-chat", "cli-chat-proxy", "cliproxy", "free"):
+        force_base_url = DEFAULT_BASE_URL
+    elif _bt.startswith("http"):
+        force_base_url = str(base_url_target).strip().rstrip("/")
+        if force_base_url.endswith("cli-chat-proxy.grok.com"):
+            force_base_url = force_base_url + "/v1"
+        if force_base_url.endswith("api.x.ai") and not force_base_url.endswith("/v1"):
+            force_base_url = force_base_url + "/v1"
+    else:
+        force_base_url = DEFAULT_BASE_URL
     p = Path(path).expanduser().resolve()
     if not p.is_file():
         return {"ok": False, "error": f"file not found: {p}"}
@@ -947,7 +966,7 @@ def resign_auth_file(
                     refresh_token=new_refresh,
                     id_token=token.get("id_token") or payload.get("id_token"),
                     expires_in=token.get("expires_in"),
-                    base_url=str(payload.get("base_url") or DEFAULT_BASE_URL),
+                    base_url=force_base_url,
                     headers=headers,
                     sub=str(payload.get("sub") or "") or None,
                     extra=extra,
@@ -989,6 +1008,7 @@ def resign_auth_file(
                 "probe": probe,
                 "deleted": False,
                 "referrer": ref,
+                "base_url": force_base_url,
             }
             if probe.get("action") == "dead":
                 out["probe_warn"] = f"cpa probe dead HTTP {probe.get('http_status')}"
@@ -1021,6 +1041,35 @@ def resign_auth_file(
         # mint 写出后若仅 probe dead，文件仍在：视为重签成功 + 警告
         if r.get("ok"):
             r["mode"] = "sso"
+            # sso mint 默认写 DEFAULT_BASE_URL；按目标改写 base_url（不改 token）
+            try:
+                paths = list(r.get("paths") or [])
+                if r.get("path"):
+                    paths.insert(0, str(r.get("path")))
+                if not paths:
+                    paths = [str(p)]
+                seen = set()
+                for fp in paths:
+                    fp = str(fp or "").strip()
+                    if not fp or fp in seen:
+                        continue
+                    seen.add(fp)
+                    fp_path = Path(fp)
+                    if not fp_path.is_file():
+                        continue
+                    doc = json.loads(fp_path.read_text(encoding="utf-8"))
+                    if isinstance(doc, dict):
+                        doc["base_url"] = force_base_url
+                        tmp = fp_path.with_suffix(fp_path.suffix + ".tmp")
+                        tmp.write_text(
+                            json.dumps(doc, ensure_ascii=False, indent=2) + "\n",
+                            encoding="utf-8",
+                        )
+                        os.replace(tmp, fp_path)
+                r["base_url"] = force_base_url
+                log(f"[auth] mode=sso base_url={force_base_url}")
+            except Exception as be:
+                log(f"[auth] mode=sso base_url patch skip: {be}")
             log(f"[auth] mode=sso ok: {p.name}")
             return r
         path_still = str(r.get("path") or "")

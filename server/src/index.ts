@@ -525,6 +525,7 @@ app.post('/api/cpa-auth/resign', async (req: Request, res: Response) => {
       path?: string;
       sso?: string;
       pushRemote?: boolean;
+      baseUrlTarget?: string;
     };
     res.json(await resignCpaAuth(body));
   } catch (err) {
@@ -541,6 +542,7 @@ app.post('/api/cpa-auth/resign-batch', async (req: Request, res: Response) => {
       paths?: string[];
       concurrency?: number;
       pushRemote?: boolean;
+      baseUrlTarget?: string;
     };
     res.json(await resignCpaAuthBatch(body));
   } catch (err) {
