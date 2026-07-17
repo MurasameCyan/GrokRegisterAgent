@@ -10,7 +10,7 @@ import { loadSettings, dataDir } from './settingsStore.js';
 import { resolveHttpProxy } from './resolveHttpProxy.js';
 import { resolveRegisterRuntime } from './bot/registerRuntime.js';
 import { readBotFlagFromAuthRecord, readBotFlagFromToken } from './jwtBotFlag.js';
-import { proxiedRequest } from './httpClient.js';
+import { proxiedRequest, requestWithProxyFallback, errorMessage } from './httpClient.js';
 import { broadcastAppEvent } from './appEvents.js';
 import type { ReloginStage } from '@shared/runEvents.js';
 import {
@@ -1252,16 +1252,17 @@ export async function pushSub2apiAuthRemoteBatch(input: {
           });
           continue;
         }
-        // 与 CPA 远程推送一致：管理端 API 直连，不走 sing-box。
-        // 内网 sub2api（如 http://LAN:8089）经代理常见 ECONNRESET。
+        // 优先直连，失败再走代理（内网 sub2api 避免被 Sing-Box 劫持）
         const url = `${base}/api/v1/admin/accounts`;
-        const res = await proxiedRequest(url, {
+        const proxy = resolveHttpProxy(settings);
+        const res = await requestWithProxyFallback(url, {
           method: 'POST',
           headers: {
             ...sub2apiAdminAuthHeaders(token),
             'Content-Type': 'application/json'
           },
           body,
+          proxy,
           timeoutMs: 30000
         });
         const email = String(data.email || body.name || '');
@@ -1369,10 +1370,11 @@ export async function testSub2apiRemoteConnectivity(input?: {
   const url = `${base}/api/v1/admin/accounts?page=1&page_size=1`;
   const authMethod = token.split('.').length === 3 ? 'jwt' : 'x-api-key';
   try {
-    // 探活与推送同样直连，避免内网地址被 sing-box 劫持
-    const res = await proxiedRequest(url, {
+    const proxy = resolveHttpProxy(settings);
+    const res = await requestWithProxyFallback(url, {
       method: 'GET',
       headers: sub2apiAdminAuthHeaders(token),
+      proxy,
       timeoutMs: 12000
     });
     const ms = Date.now() - started;
@@ -1395,7 +1397,7 @@ export async function testSub2apiRemoteConnectivity(input?: {
       }
       return {
         ok: true,
-        message: `远程 sub2api 连通（Admin API 可用 · ${authMethod}）`,
+        message: `远程 sub2api 连通（Admin API 可用 · ${authMethod}${res.via === 'proxy' ? ' · 经代理' : ''}）`,
         ms,
         status: res.status,
         remoteUrl: base
@@ -1439,7 +1441,7 @@ export async function testSub2apiRemoteConnectivity(input?: {
   } catch (err) {
     return {
       ok: false,
-      message: err instanceof Error ? err.message : String(err),
+      message: errorMessage(err),
       ms: Date.now() - started,
       remoteUrl: base
     };

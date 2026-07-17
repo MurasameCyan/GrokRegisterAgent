@@ -162,6 +162,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
     | 'delete'
     | 'export'
     | 'push'
+    | 'pushS2a'
     | 'backfill'
     | null
   >(null);
@@ -175,6 +176,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
     | 'delete'
     | 'export'
     | 'push'
+    | 'pushS2a'
     | 'backfill'
     | null
   >(null);
