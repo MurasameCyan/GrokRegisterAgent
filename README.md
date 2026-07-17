@@ -1,76 +1,100 @@
 # Grok Register Agent
 
-可自部署的 Grok 注册机 Web 控制台（Grok Register Agent）：Docker 多架构镜像、DrissionPage 自动化注册、邮件验证码读取、SSO 输出和本地账号号池管理。
+可自部署的 Grok 注册机 Web 控制台（Grok Register Agent）：Docker 多架构镜像、DrissionPage / Hybrid 注册、邮件验证码、SSO 号池、Auth mint、NSFW 标签与本地账号管理。
 
 > 本项目与 xAI、Grok、X 没有官方关联。请仅在合法、合规、获得许可的研究、学习或自托管实验环境中使用。
 
-## 功能
+**开发主线分支：`beta`**  
+**当前文档对齐提交：`f0826ce` 及之后 `beta` 最新**  
+**镜像：** `ghcr.io/murasamecyan/grokregisteragent:beta`（推送 `beta` 时 CI 同步打 `latest`；`v*` 标签打 semver）
 
-- Web 控制台：启动、停止、查看注册任务和实时日志。
-- 内置注册机：Python 注册脚本在 `register/`，镜像构建时自动安装依赖。
-- 邮件后端：支持对接 `cloudflare_temp_email` 读取验证码。
-- 号池管理：本地保存账号记录和 SSO 输出。
-- 多架构 Docker：GitHub Actions 构建 `linux/amd64` + `linux/arm64` 并推送 GHCR。
+---
+
+## 功能一览
+
+| 模块 | 说明 |
+|------|------|
+| **Web 控制台** | 注册机 / SSO 号池 / Auth / 配置 四个页；启动·停止·实时日志 |
+| **注册方案 A/B/C** | Plan A 浏览器主流程、Plan B 拟人兜底、Plan C Hybrid（浏览器 harvest + 协议）；可单独开关，全开则 A→B→C 顺序兜底 |
+| **邮件后端** | 对接 `cloudflare_temp_email` 创建地址并读验证码 |
+| **SSO 号池** | 本地保存账号与 SSO；注册成功可自动 SSO 验活并刷新徽章 |
+| **Auth mint** | PKCE / Device / Double 双通道；可后台延迟队列；可选 grok-4.5 校验 |
+| **NSFW 标签** | 可选 mint 后打标；侧车 `account_tags.json` 优先落在 `DATA_DIR`；UI 始终显示 `NSFW` / `NSFW×` / `NSFW—` |
+| **代理** | 设置页仅 **Sing-Box** / **直连**；mint 路径须有可用代理（勿强制 none） |
+| **外置 Turnstile Solver** | 可选 compose profile；设置页开关 + 探活；多架构 amd64/arm64 |
+| **多架构 Docker** | GHCR：`linux/amd64` + `linux/arm64` |
+| **版本** | 侧边栏 `BUILD_ID`（git short SHA）；**仅用户点击「检查更新」**，不自动探远端 |
+
+---
 
 ## 快速部署（GHCR 镜像，推荐）
-
-开发主线分支：**`beta`**。镜像：`ghcr.io/murasamecyan/grokregisteragent:beta`（推送 `beta` 时 CI 同步打 `latest`；`v*` 标签打 semver）。
 
 ```bash
 git clone -b beta https://github.com/MurasameCyan/GrokRegisterAgent.git
 cd GrokRegisterAgent
 cp .env.example .env
-# 按需编辑 .env 中的邮件/代理等配置
+# 按需编辑 .env：邮件 / 端口 / Solver 等
 docker compose pull
 docker compose up -d
 # 根目录 docker-compose.yml 只拉取 GHCR，不本地 build（:beta）
-
-# 可选：外置 Turnstile Solver 子容器（默认不拉取；multi-arch amd64/arm64）
-# docker compose --profile solver pull
-# docker compose --profile solver up -d
-# 或 .env 写 COMPOSE_PROFILES=solver 且 TURNSTILE_SOLVER_ENABLED=1
-# 设置页「注册方案 → 外置 Turnstile Solver」开关 + 探活图标
-# 镜像：ghcr.io/murasamecyan/grok-turnstile-solver:beta
-# ARM 可运行；Turnstile 成功率通常仍低于 x86
 ```
 
-若 GHCR 包为私有，先登录：
+### 可选：外置 Turnstile Solver
+
+默认**不**拉取 Solver 子容器。需要时：
+
+```bash
+docker compose --profile solver pull
+docker compose --profile solver up -d
+# 或在 .env：
+# COMPOSE_PROFILES=solver
+# TURNSTILE_SOLVER_ENABLED=1
+```
+
+- 设置页：**注册方案 → 外置 Turnstile Solver**（默认折叠）+ 探活图标  
+- Solver 镜像：`ghcr.io/murasamecyan/grok-turnstile-solver:beta`  
+- ARM 可运行；Turnstile 成功率通常仍低于 x86  
+
+### GHCR 私有包
 
 ```bash
 echo $GITHUB_TOKEN | docker login ghcr.io -u YOUR_GITHUB_USER --password-stdin
 ```
 
-访问：
+### 访问
 
 ```text
 http://你的服务器IP:6657
 ```
 
-初始 Web 登录信息：
+初始 Web 登录（用户名/密码会打印在日志中，默认常见为 `admin` / `admin`）：
 
 ```bash
-docker logs grok-agent
+docker logs grok-register-agent
+# 部分环境容器名也可能是 grok-agent，以 compose 中 container_name 为准
 ```
 
-首次登录后请修改默认用户名和密码。直接用 `http://服务器IP:6657` 访问时，`COOKIE_SECURE` 请留空；仅 HTTPS 反代时建议 `COOKIE_SECURE=1`。
+首次登录后请修改默认用户名和密码。直接用 `http://IP:6657` 访问时，`COOKIE_SECURE` 请留空；仅 HTTPS 反代时建议 `COOKIE_SECURE=1`。
+
+---
 
 ## 热更新注册脚本（自动同步）
 
-compose 会把宿主机 `./register` **只读挂载到** `/opt/register-host`（**不是**直接盖 `/app/register`）。
+compose 把宿主机 `./register` **只读挂载到** `/opt/register-host`（**不是**直接盖 `/app/register`）。
 
 容器启动时 `entrypoint` 会：
 
-1. 若 `/opt/register-host` 含 `runner.py` 或 `DrissionPage_example.py` → **自动 rsync 到** `/app/register`
-2. 若宿主目录为空/不完整 → **跳过同步**，继续用镜像内置脚本
+1. 若 `/opt/register-host` 含 `runner.py` 或 `DrissionPage_example.py` → **rsync 到** `/app/register`
+2. 若宿主目录为空/不完整 → **跳过同步**，用镜像内置脚本
 3. 若 `/app/register` 被破坏 → 尝试从镜像种子 `/opt/register-seed` 恢复
 
-保留：`logs/`、`sso/`、`config.json`（不会被覆盖）。
+**保留（不会被覆盖）：** `logs/`、`sso/`、`config.json`
 
 ```bash
-# 改完本地 register/ 后重启即可同步进运行目录
+# 改完本地 register/ 后
 docker compose restart
-docker logs grok-agent 2>&1 | head -n 30
-# 应看到类似：
+docker logs grok-register-agent 2>&1 | head -n 30
+# 期望类似：
 # [entrypoint] syncing register from host:/opt/register-host -> /app/register
 # [entrypoint] register sync done from host:...
 ```
@@ -78,11 +102,134 @@ docker logs grok-agent 2>&1 | head -n 30
 注意：
 
 - 不要把空的 `register` 目录直接挂到 `/app/register`
-- 使用 GHCR 预构建镜像时，若镜像尚无新版 entrypoint，请 `docker compose pull` 等 GHCR 更新后再 `up -d`；也可先把完整 `register/` 放到项目目录再 `restart`
+- 使用 GHCR 预构建镜像时，若镜像尚无新版 entrypoint，请 `docker compose pull` 后再 `up -d`
+- **NSFW 等侧车标签**优先写在 `DATA_DIR`（默认 `/data` → 宿主 `./data`），避免被 register 热同步冲掉；旧数据可能仍在 `register/data/account_tags.json`，服务端会合并多路径读取
+
+---
+
+## 环境变量（`.env`）
+
+复制自根目录 [`.env.example`](.env.example)：
+
+| 变量 | 说明 |
+|------|------|
+| `WEB_PORT` | 宿主机端口，默认 `6657` |
+| `RUN_COUNT` | 注册轮数默认值 |
+| `MAIL_API_BASE` | cloudflare_temp_email 后端 API 根地址 |
+| `MAIL_ADMIN_AUTH` | admin 密码 → `x-admin-auth` |
+| `MAIL_DOMAIN` | 可收信域名 |
+| `HTTP_PROXY` / `BROWSER_PROXY` | 可选全局代理（更推荐在 Web「配置」里用 Sing-Box） |
+| `COOKIE_SECURE` | HTTPS 反代时设 `1`；纯 HTTP 留空 |
+| `TURNSTILE_SOLVER_ENABLED` | `1` 启用外置 Solver 客户端 |
+| `TURNSTILE_SOLVER_URL` | 默认 `http://turnstile-solver:5072` |
+| `TURNSTILE_SOLVER_THREADS` / `BROWSER` | Solver 容器线程与浏览器类型 |
+| `YESCAPTCHA_KEY` | 可选第三方打码 |
+
+---
+
+## Web 配置要点（设置页）
+
+设置会写入容器内 `register/config.json`（热同步时**不会**被宿主 `register/` 覆盖）。示例键见 [`register/config.example.json`](register/config.example.json)。
+
+### 注册方案
+
+| 开关 | 含义 |
+|------|------|
+| **Plan A** | 浏览器主流程（默认开） |
+| **Plan B** | 拟人兜底（默认开） |
+| **Plan C** | Hybrid：浏览器 harvest Castle/CF/Turnstile + 协议 CreateEmail / Server Action（默认**关**，需显式开启） |
+
+全开时顺序兜底：**A → B → C**。建议先单独验证某一 Plan（例如只测 Plan C 时关闭 A/B）。
+
+### Auth / Mint
+
+| 项 | 说明 |
+|----|------|
+| `auto_auth_export` | 拿到 SSO 后后台 mint / 推送（默认开） |
+| `auto_auth_delay_*` | 入队前随机延迟（秒），不阻塞注册 |
+| `cpa_mint_mode` | `pkce`（推荐）/ `device` / `double`（两通道各一份并分别测活） |
+| `require_grok_45` | mint 后无 grok-4.5 则不进 CPA |
+| `enable_nsfw` | mint 后尝试 NSFW 开关并写标签 |
+| `enable_disable_zdr` | 尝试关闭 ZDR（失败不挡流水线） |
+
+Auth 页可批量 mint；**Mint 快捷**支持 A(PKCE) / B(Device) / C(Double) 分段控件。
+
+### 代理
+
+- UI 仅保留 **Sing-Box** 与 **直连**（已移除旧「普通代理池成功计数」类逻辑）
+- Sing-Box 二进制由镜像 / Actions 附带（`register/bin/sing-box/`）
+- 状态图标：直连常绿；Sing-Box 按连通性 R/Y/G
+
+### Turnstile
+
+- 页面内 1×1 点击路径为主；短 token 有重试
+- 可选外置 Solver + YesCaptcha；**Solver 设置块默认折叠**
+
+---
+
+## 注册方案说明（简表）
+
+```text
+Plan A  浏览器填表 + Turnstile + 同意流（Allow-only；勿点 Continue 当同意）
+Plan B  拟人节奏 / 兜底路径
+Plan C  harvest Castle/CF → CreateEmail（可无 castle 继续）→ 邮件码 → Turnstile
+        → Server Action → SSO materialize → 入号池 + 可选 auto sso-check
+```
+
+**Plan C 注意（现网行为）：**
+
+- CreateEmail 可能 **HTTP 200 且 body 很短（无 castle）**，流程可 **continue without castle**，不因缺 `IBYIll` 整轮失败
+- Castle 依赖页面原生捕获；CDN 注入 token 通常对 x.ai **无效**
+- Turnstile 1×1 在部分 ARM 环境更不稳定；可开外置 Solver
+
+---
+
+## 号池 / Auth / NSFW
+
+### SSO 页（Pool）
+
+- 筛选区标题（SSO / Auth / 验活 等）使用 **primary 加粗** 样式
+- 账号卡展示 **NsfwBadge**：`NSFW`（成功）/ `NSFW×`（失败）/ `NSFW—`（未尝试）
+- 注册成功可自动写回 SSO 验活结果
+
+### Auth 页
+
+- 授权记录列表、批量 mint、导出
+- 同样展示 NSFW 药丸与筛选标签配色
+
+### NSFW 持久化
+
+| 角色 | 路径 |
+|------|------|
+| Python 写入优先 | `$DATA_DIR/account_tags.json`（Docker 默认 `/data/account_tags.json`） |
+| 回退 | `register/data/account_tags.json` 等 |
+| 服务端列表 | 合并**所有候选路径**的 `by_email` / `by_sso_hash` 再挂到账号记录 |
+
+升级后若旧账号仍无标签：检查并合并 `./data/account_tags.json` 与 `register/data/account_tags.json`，或开 `enableNsfw` 再 mint 一条验证写入路径。
+
+---
+
+## 常用路径
+
+| 用途 | 路径 |
+|------|------|
+| 容器内注册脚本（运行目录） | `/app/register` |
+| 宿主机脚本挂载（热更新源） | `./register` → `/opt/register-host` |
+| 镜像种子（防空挂载恢复） | `/opt/register-seed` |
+| Python 入口 | `/app/register/runner.py` |
+| 容器内数据目录 | `/data`（`DATA_DIR`） |
+| 宿主机数据（GHCR compose） | `./data` |
+| 宿主机数据（本地 build） | `docker/data` |
+| 账号主库 | `/data/accounts.json` |
+| NSFW 侧车标签 | `/data/account_tags.json` |
+| SSO 输出 | `./data/sso` 或 `docker/data/sso` |
+| 配置（容器内，不被热同步覆盖） | `/app/register/config.json` |
+
+---
 
 ## 本地从源码构建
 
-根目录 `docker-compose.yml` **只拉取镜像**。需要本地 build 时用 `docker/` 下 compose：
+根目录 `docker-compose.yml` **只拉取镜像**。需要本地 build 时：
 
 ```bash
 cd docker
@@ -90,39 +237,39 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
+---
+
 ## GitHub Actions 镜像
 
-- 工作流：[`.github/workflows/docker-multiarch.yml`](.github/workflows/docker-multiarch.yml)
-- 触发：`push` 到 **`beta`**、tag `v*`、手动 `workflow_dispatch`
-- 平台：`linux/amd64`、`linux/arm64`
-- 标签：`beta` + `latest`（推送 beta 时）、分支名、semver、`sha-*`
+| 项 | 说明 |
+|----|------|
+| 工作流 | [`.github/workflows/docker-multiarch.yml`](.github/workflows/docker-multiarch.yml) |
+| 触发 | `push` → **`beta`**、tag `v*`、`workflow_dispatch` |
+| 平台 | `linux/amd64`、`linux/arm64` |
+| 主镜像标签 | `beta` + `latest`（推 beta 时）、semver、`sha-*` |
+| Solver 工作流 | [`.github/workflows/docker-turnstile-solver.yml`](.github/workflows/docker-turnstile-solver.yml) → `ghcr.io/murasamecyan/grok-turnstile-solver` |
+| 备注 | 标签手写，避免 `docker/metadata-action` 在 GH 不稳时失败；镜像名全小写 |
+
+构建时会拉取 **sing-box** 多架构二进制打进镜像（版本见 workflow 中 `SING_BOX_VERSION`）。
+
+---
 
 ## 邮件后端配置
 
-本项目推荐对接 [dreamhunter2333/cloudflare_temp_email](https://github.com/dreamhunter2333/cloudflare_temp_email)。
+推荐对接 [dreamhunter2333/cloudflare_temp_email](https://github.com/dreamhunter2333/cloudflare_temp_email)。
 
-请先按它的官方文档部署好 Cloudflare 临时邮箱服务。本 README 不重复它的部署教程，只说明本项目要填哪些值：
+请先按其官方文档部署 Worker/API。本 README 只列本项目必填项：
 
-| 配置项              | 填写内容                                                              |
-| ------------------- | --------------------------------------------------------------------- |
-| `MAIL_API_BASE`   | cloudflare_temp_email 的后端 Worker/API 根地址                        |
-| `MAIL_ADMIN_AUTH` | cloudflare_temp_email 的网站 admin 密码，会作为 `x-admin-auth` 使用 |
-| `MAIL_DOMAIN`     | 已在 cloudflare_temp_email 中配置并可收信的域名                       |
+| 配置项 | 填写内容 |
+|--------|----------|
+| `MAIL_API_BASE` | cloudflare_temp_email 后端 Worker/API 根地址 |
+| `MAIL_ADMIN_AUTH` | 网站 admin 密码（`x-admin-auth`） |
+| `MAIL_DOMAIN` | 已配置并可收信的域名 |
 
-调用关系很简单：本项目会请求 `MAIL_API_BASE + /admin/new_address` 创建邮箱，再用返回的 `jwt` 轮询邮件并提取验证码。
+调用关系：请求 `MAIL_API_BASE + /admin/new_address` 创建邮箱，用返回的 `jwt` 轮询邮件并提取验证码。  
+`register/config.example.json` 中还可配置 `cloudflare_auth_mode`（`x-admin-auth` / `bearer` / `none` 等）。
 
-## 常用路径
-
-| 用途                           | 路径                                  |
-| ------------------------------ | ------------------------------------- |
-| 容器内注册脚本（运行目录）     | `/app/register`                     |
-| 宿主机脚本挂载（热更新源）     | `./register` → `/opt/register-host` |
-| 镜像种子（防空挂载恢复）       | `/opt/register-seed`                |
-| Python 入口                    | `/app/register/runner.py`           |
-| 容器内数据目录                 | `/data`                             |
-| 宿主机数据目录（GHCR compose） | `./data`                            |
-| 宿主机数据目录（本地 build）   | `docker/data`                       |
-| SSO 输出                       | `./data/sso` 或 `docker/data/sso` |
+---
 
 ## 本地开发
 
@@ -132,23 +279,77 @@ npm run server:build
 npm run server:dev
 ```
 
-本地运行 Python 注册入口：
+本地跑 Python 注册入口：
 
 ```bash
 python -m pip install -r register/requirements.txt
 python register/runner.py --count 1
 ```
 
+前端为 Vite + React；后端 Express（`server/src`）。WebSocket 推送运行状态与账号事件。
+
+侧边栏 **BUILD_ID** 与注册机启动日志中的 `Build: xxxxxxx` 应对齐同一 short SHA，便于对照镜像/热同步版本。
+
+---
+
+## 升级与排查速查
+
+```bash
+git pull origin beta
+docker compose pull
+docker compose up -d
+# 若改了 register/ 源码：
+docker compose restart
+```
+
+| 现象 | 建议 |
+|------|------|
+| UI 无新样式 / 无 NSFW 药丸 | 确认镜像已到含 `f0826ce+` 的构建；浏览器硬刷新；必要时清缓存 |
+| 旧账号无 NSFW 标签 | 合并 `./data/account_tags.json` 与 `register/data/account_tags.json`；或开 NSFW 再 mint |
+| Turnstile 总失败 | 开 Solver profile + 设置开关；x86 通常优于 ARM |
+| Plan C CreateEmail 短 body | 属已知路径：无 castle 可继续；关注后续邮件码与 Server Action |
+| import 崩溃 `failed to solve turnstile` | 需 ≥ `e611e1c`（raise 必须在函数内，不可顶格） |
+| 版本检查 | 仅侧边栏手动「检查更新」，启动不探 GitHub |
+
+---
+
 ## 注意事项
 
-- 不要提交 `.env`、`docker/.env`、`docker/data/`、SSO token、邮件凭据或代理密钥。
-- 如果部署到公网，请设置强密码并限制访问来源。
-- 使用前请确认目标平台条款和所在地法律法规。
+- 不要提交 `.env`、`docker/.env`、`docker/data/`、`./data/` 中的 SSO / token、邮件凭据或代理密钥
+- 公网部署请使用强密码并限制访问来源
+- 使用前请确认目标平台条款与所在地法律法规
+- 本工具会控制真实浏览器会话，请注意资源占用（compose 默认 `shm_size: 1gb`）
+
+---
+
+## 目录结构（简）
+
+```text
+.
+├── docker-compose.yml          # 生产：只 pull GHCR
+├── .env.example
+├── docker/                     # Dockerfile、entrypoint、本地 build compose、solver
+├── register/                   # Python 注册机（可热同步）
+│   ├── runner.py
+│   ├── DrissionPage_example.py # Plan A/B 入口与浏览器编排
+│   ├── hybrid_register.py      # Plan C
+│   ├── browser/                # token harvest 等
+│   ├── protocol/               # gRPC-web / server action
+│   ├── account_tags.py         # NSFW 侧车
+│   └── config.example.json
+├── server/src/                 # Node 控制面、号池、设置、sso-check
+├── src/renderer/               # Web UI
+└── .github/workflows/          # multi-arch 镜像 + solver
+```
+
+---
 
 ## 致谢
 
-- 感谢 [ReinerBRO/grok-register](https://github.com/ReinerBRO/grok-register)，本项目的自动化注册思路和 Python 注册流程受其启发。
-- 感谢 [dreamhunter2333/cloudflare_temp_email](https://github.com/dreamhunter2333/cloudflare_temp_email)，本项目默认面向该邮件后端适配验证码读取流程。
+- 感谢 [ReinerBRO/grok-register](https://github.com/ReinerBRO/grok-register)，自动化注册思路与 Python 流程受其启发
+- 感谢 [dreamhunter2333/cloudflare_temp_email](https://github.com/dreamhunter2333/cloudflare_temp_email)，默认邮件后端适配对象
+
+---
 
 ## 开源协议
 
