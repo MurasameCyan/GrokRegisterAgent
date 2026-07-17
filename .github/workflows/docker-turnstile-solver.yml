@@ -1,7 +1,7 @@
 name: Docker Turnstile Solver multi-arch
 
 # Avoid docker/metadata-action (can fail with GitHub Unicorn HTML / API 5xx).
-# Tags are set explicitly; image name is fixed lowercase for GHCR.
+# Tags are set explicitly; image name follows the repo owner (fork-friendly).
 
 on:
   push:
@@ -14,8 +14,8 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  # must match root docker-compose.yml (all lowercase)
-  IMAGE: ghcr.io/murasamecyan/grok-turnstile-solver
+  # package name only; owner is resolved at runtime (lowercase for GHCR)
+  IMAGE_NAME: grok-turnstile-solver
 
 jobs:
   build-push:
@@ -27,25 +27,35 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Resolve image name
+        id: image
+        run: |
+          set -euo pipefail
+          OWNER="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          IMAGE="${{ env.REGISTRY }}/${OWNER}/${{ env.IMAGE_NAME }}"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "Resolved IMAGE=${IMAGE}"
+
       - name: Docker tags
         id: tags
         run: |
           set -euo pipefail
+          IMAGE="${{ steps.image.outputs.image }}"
           SHA_SHORT="$(echo '${{ github.sha }}' | cut -c1-7)"
-          TAGS="${{ env.IMAGE }}:sha-${SHA_SHORT}"
+          TAGS="${IMAGE}:sha-${SHA_SHORT}"
           if [ "${{ github.ref }}" = "refs/heads/beta" ]; then
-            TAGS="${TAGS},${{ env.IMAGE }}:beta,${{ env.IMAGE }}:latest"
+            TAGS="${TAGS},${IMAGE}:beta,${IMAGE}:latest"
           elif [[ "${{ github.ref }}" == refs/tags/v* ]]; then
             VER="${{ github.ref_name }}"
-            TAGS="${TAGS},${{ env.IMAGE }}:${VER}"
+            TAGS="${TAGS},${IMAGE}:${VER}"
             # v1.2.3 -> also 1.2
             MINOR="$(echo "$VER" | sed -E 's/^v([0-9]+\.[0-9]+).*/\1/')"
             if [ -n "$MINOR" ] && [ "$MINOR" != "$VER" ]; then
-              TAGS="${TAGS},${{ env.IMAGE }}:${MINOR}"
+              TAGS="${TAGS},${IMAGE}:${MINOR}"
             fi
           else
             BRANCH="$(echo '${{ github.ref_name }}' | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9._-' '-')"
-            TAGS="${TAGS},${{ env.IMAGE }}:${BRANCH}"
+            TAGS="${TAGS},${IMAGE}:${BRANCH}"
           fi
           echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
           echo "tags=${TAGS}"

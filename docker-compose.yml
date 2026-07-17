@@ -7,10 +7,14 @@
 # 可选 Solver：
 #   docker compose --profile solver pull
 #   docker compose --profile solver up -d
+#
+# 默认拉本仓库 owner 的 GHCR（fork 友好）。覆盖示例：
+#   GROK_IMAGE=ghcr.io/murasamecyan/grokregisteragent:beta
+#   SOLVER_IMAGE=ghcr.io/murasamecyan/grok-turnstile-solver:beta
 
 services:
   grok-register-agent:
-    image: ghcr.io/murasamecyan/grokregisteragent:beta
+    image: ${GROK_IMAGE:-ghcr.io/hkxiaoyao/grokregisteragent:beta}
     container_name: grok-register-agent
     restart: unless-stopped
     ports:
@@ -48,7 +52,7 @@ services:
   # multi-arch amd64/arm64；ARM 可跑，通过率通常仍低于 x86
   turnstile-solver:
     profiles: ["solver"]
-    image: ghcr.io/murasamecyan/grok-turnstile-solver:beta
+    image: ${SOLVER_IMAGE:-ghcr.io/hkxiaoyao/grok-turnstile-solver:beta}
     container_name: grok-turnstile-solver
     restart: unless-stopped
     # 仅内部网络；调试可映射 5072
