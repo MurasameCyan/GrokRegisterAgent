@@ -1222,24 +1222,43 @@ export async function pushSub2apiAuthRemoteBatch(input: {
           continue;
         }
         const url = `${base}/api/v1/admin/accounts`;
+        const proxy = resolveHttpProxy(settings);
         const res = await proxiedRequest(url, {
           method: 'POST',
           headers: {
             Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
+            Accept: 'application/json'
           },
           body,
+          proxy,
           timeoutMs: 30000
         });
         const email = String(data.email || body.name || '');
-        if (res.status >= 400) {
-          const respBody =
-            typeof res.data === 'string'
-              ? res.data
-              : res.data != null
-                ? JSON.stringify(res.data)
-                : '';
-          const msg = `HTTP ${res.status}${respBody ? `: ${respBody.slice(0, 200)}` : ''}`;
+        const respBody =
+          typeof res.data === 'string'
+            ? res.data
+            : res.data != null
+              ? JSON.stringify(res.data)
+              : '';
+        // sub2api 信封：HTTP 200 + {code:0,data} 为成功；code!=0 为业务失败
+        const envelope =
+          res.data && typeof res.data === 'object'
+            ? (res.data as { code?: unknown; message?: unknown; error?: unknown })
+            : null;
+        const bizCode =
+          envelope && envelope.code !== undefined && envelope.code !== null
+            ? Number(envelope.code)
+            : null;
+        const httpOk = res.status >= 200 && res.status < 300;
+        const bizOk = bizCode === null || bizCode === 0;
+        if (!httpOk || !bizOk) {
+          const bizMsg =
+            envelope &&
+            (String(envelope.message || envelope.error || '').trim() || '');
+          const msg = !httpOk
+            ? `HTTP ${res.status}${respBody ? `: ${respBody.slice(0, 200)}` : ''}`
+            : `sub2api code=${bizCode}${bizMsg ? `: ${bizMsg.slice(0, 180)}` : ''}`;
           results.push({
             filename: job.filename,
             email,
@@ -1317,16 +1336,34 @@ export async function testSub2apiRemoteConnectivity(input?: {
   const started = Date.now();
   const url = `${base}/api/v1/admin/accounts?page=1&page_size=1`;
   try {
+    const proxy = resolveHttpProxy(settings);
     const res = await proxiedRequest(url, {
       method: 'GET',
       headers: {
         Authorization: `Bearer ${token}`,
         Accept: 'application/json'
       },
+      proxy,
       timeoutMs: 12000
     });
     const ms = Date.now() - started;
     if (res.status >= 200 && res.status < 300) {
+      // 兼容 {code:0,data} 信封：code 非 0 视为鉴权/业务失败
+      const env =
+        res.data && typeof res.data === 'object'
+          ? (res.data as { code?: unknown; message?: unknown })
+          : null;
+      if (env && env.code !== undefined && env.code !== null && Number(env.code) !== 0) {
+        return {
+          ok: false,
+          message: `已连上 ${base}，但业务返回 code=${env.code}${
+            env.message ? `: ${String(env.message).slice(0, 80)}` : ''
+          }`,
+          ms,
+          status: res.status,
+          remoteUrl: base
+        };
+      }
       return {
         ok: true,
         message: '远程 sub2api 连通（Admin API 可用）',
@@ -1338,7 +1375,7 @@ export async function testSub2apiRemoteConnectivity(input?: {
     if (res.status === 401 || res.status === 403) {
       return {
         ok: false,
-        message: `已连上 ${base}，但 Token 被拒（HTTP ${res.status}）`,
+        message: `已连上 ${base}，但 Token 被拒（HTTP ${res.status}）。请用管理端登录后复制 Admin JWT，不是 API Key`,
         ms,
         status: res.status,
         remoteUrl: base
@@ -1347,7 +1384,7 @@ export async function testSub2apiRemoteConnectivity(input?: {
     if (res.status === 404) {
       return {
         ok: false,
-        message: 'HTTP 404：请确认地址为 sub2api 根（不要带多余路径）',
+        message: 'HTTP 404：请确认地址为 sub2api 根（不要带 /api/v1 等多余路径）',
         ms,
         status: 404,
         remoteUrl: base

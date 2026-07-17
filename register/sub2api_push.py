@@ -159,6 +159,15 @@ def push_account_body(
     url = f"{base}/api/v1/admin/accounts"
     status, resp = _http_json("POST", url, token=token.strip(), body=body, timeout=timeout)
     if 200 <= status < 300:
+        # 官方信封 {code:0, data}；code!=0 视为失败
+        if isinstance(resp, dict) and "code" in resp and resp.get("code") not in (0, "0", None):
+            err = str(resp.get("message") or resp.get("error") or resp)[:400]
+            return {
+                "ok": False,
+                "status": status,
+                "error": f"code={resp.get('code')}: {err}",
+                "url": url,
+            }
         return {"ok": True, "status": status, "data": resp, "url": url}
     err = ""
     if isinstance(resp, dict):
@@ -261,12 +270,19 @@ def test_connectivity(
     probe = f"{url}/api/v1/admin/accounts?page=1&page_size=1"
     status, resp = _http_json("GET", probe, token=tok, timeout=12.0)
     if 200 <= status < 300:
+        if isinstance(resp, dict) and "code" in resp and resp.get("code") not in (0, "0", None):
+            return {
+                "ok": False,
+                "status": status,
+                "error": f"业务 code={resp.get('code')}: {resp.get('message') or resp.get('error') or ''}",
+                "url": url,
+            }
         return {"ok": True, "status": status, "url": url}
     if status in (401, 403):
         return {
             "ok": False,
             "status": status,
-            "error": f"鉴权失败 HTTP {status}（Token 无效或非 Admin）",
+            "error": f"鉴权失败 HTTP {status}（请用管理端 Admin JWT，不是 API Key）",
             "url": url,
         }
     err = ""

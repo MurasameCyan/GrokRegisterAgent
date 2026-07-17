@@ -462,7 +462,7 @@ export interface RendererApi {
   onThemeChanged(cb: (e: ThemeState) => void): () => void;
 
   // tests
-  testMail(block: MailSettings): Promise<TestResult>;
+  testMail(block: MailSettings & { provider?: string }): Promise<TestResult>;
   /** 外置 Turnstile Solver 探活 */
   testTurnstileSolver(input?: {
     url?: string;

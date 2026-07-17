@@ -423,6 +423,7 @@ export function SettingsForm() {
           right={
             <MailConnectivityIcon
               mail={draft.mail}
+              provider={draft.mailProvider || 'cloudflare'}
               enabled={
                 Boolean(String(draft.mail?.apiBase || '').trim()) &&
                 (
@@ -431,7 +432,9 @@ export function SettingsForm() {
                         String(draft.mail?.adminAuth || '').trim() ||
                           draft.cloudflareAuthMode === 'none'
                       )
-                    : Boolean(String(draft.mail?.adminAuth || '').trim())
+                    : (draft.mailProvider || '') === 'duckmail'
+                      ? true
+                      : Boolean(String(draft.mail?.adminAuth || '').trim())
                 )
               }
             />
@@ -476,7 +479,7 @@ export function SettingsForm() {
                 provider === 'duckmail'
                   ? 'DuckMail API 根，如 https://api.duckmail.sbs'
                   : provider === 'yyds'
-                    ? 'YYDS API 根地址'
+                    ? '默认 https://maliapi.215.im/v1（可改自建）'
                     : 'Worker API 根地址，勿填前端 Pages 域名'
               }
               error={errors['mail.apiBase']}
@@ -488,22 +491,30 @@ export function SettingsForm() {
                 placeholder={
                   isCloudflare
                     ? 'https://xxx.workers.dev'
-                    : 'https://api.example.com'
+                    : provider === 'yyds'
+                      ? 'https://maliapi.215.im/v1'
+                      : provider === 'duckmail'
+                        ? 'https://api.duckmail.sbs'
+                        : 'https://api.example.com'
                 }
               />
             </Field>
             <Field
               label={
-                provider === 'duckmail' || provider === 'yyds'
-                  ? 'API Token'
-                  : '管理密码'
+                provider === 'yyds'
+                  ? 'API Key（X-API-Key）'
+                  : provider === 'duckmail'
+                    ? 'API Token（可选）'
+                    : '管理密码'
               }
               hint={
-                provider === 'duckmail' || provider === 'yyds'
-                  ? 'Bearer Token（写入 mail_admin_auth）'
-                  : draft.cloudflareAuthMode === 'none'
-                    ? '匿名模式可不填'
-                    : 'Temp Email 管理员密码 / API Key（随鉴权模式）'
+                provider === 'yyds'
+                  ? 'YYDS 控制台 API Key，请求头 X-API-Key（不是 Bearer）'
+                  : provider === 'duckmail'
+                    ? '公共 DuckMail 可不填；自建实例如需鉴权再填'
+                    : draft.cloudflareAuthMode === 'none'
+                      ? '匿名模式可不填'
+                      : 'Temp Email 管理员密码 / API Key（随鉴权模式）'
               }
               error={errors['mail.adminAuth']}
             >
@@ -587,8 +598,8 @@ export function SettingsForm() {
               label="首选域名（可选）"
               hint={
                 provider === 'yyds'
-                  ? 'YYDS 可由服务端拉域名列表；此处可选填偏好域名，不支持本机域名池轮换'
-                  : 'DuckMail 由 API 分配地址；可选填 domain 作创建偏好，不支持本机域名池'
+                  ? 'YYDS 由服务端分配域名（创建体 localPart）；此处一般留空'
+                  : 'DuckMail 可从 /domains 自动取域；可选填偏好域名'
               }
               error={errors['mail.domain']}
             >

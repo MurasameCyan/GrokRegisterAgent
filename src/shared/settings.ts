@@ -1253,8 +1253,20 @@ export function validateSettings(s: AppSettings): Record<string, string> {
       }
     }
     if (!String(mail.apiBase ?? '').trim()) errors['mail.apiBase'] = '请填写邮件后端地址';
-    if (!String(mail.adminAuth ?? '').trim())
-      errors['mail.adminAuth'] = '请填写邮件后端管理密码';
+    {
+      const provider = String(s.mailProvider || 'cloudflare').toLowerCase();
+      const isCf = provider === 'cloudflare' || provider === 'cf' || !provider;
+      const isYyds = provider === 'yyds' || provider === 'yydsmail';
+      // duckmail 公共实例可不填 token；CF 匿名模式可不填
+      const needAuth =
+        isYyds ||
+        (isCf && String(s.cloudflareAuthMode || 'x-admin-auth') !== 'none');
+      if (needAuth && !String(mail.adminAuth ?? '').trim()) {
+        errors['mail.adminAuth'] = isYyds
+          ? '请填写 YYDS API Key'
+          : '请填写邮件后端管理密码';
+      }
+    }
     if (!hasDomain({ ...s, mail })) {
       const provider = String(s.mailProvider || 'cloudflare').toLowerCase();
       const isCf = provider === 'cloudflare' || provider === 'cf' || !provider;

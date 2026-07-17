@@ -859,22 +859,168 @@ app.post('/api/test/turnstile-solver', async (req, res) => {
 
 app.post('/api/test/mail', async (req, res) => {
   try {
-    const { apiBase, adminAuth, domain } = req.body;
-    if (!apiBase || !adminAuth || !domain) {
-      return res.json({ ok: false, message: '缺少邮箱后端配置参数' });
+    const body = (req.body ?? {}) as {
+      apiBase?: string;
+      adminAuth?: string;
+      domain?: string;
+      provider?: string;
+    };
+    // 兼容：前端可能只传 MailSettings，provider 在外层
+    const provider = String(
+      body.provider ||
+        (req.body as { mailProvider?: string })?.mailProvider ||
+        ''
+    )
+      .trim()
+      .toLowerCase();
+    let apiBase = String(body.apiBase || '')
+      .trim()
+      .replace(/\/+$/, '');
+    const adminAuth = String(body.adminAuth || '').trim();
+    if (!apiBase) {
+      return res.json({ ok: false, message: '请先填写邮件后端地址' });
     }
-    
-    const response = await fetch(`${apiBase}/api/mails?limit=1`, {
-      method: 'GET'
+    for (const suffix of ['/admin/new_address', '/admin', '/api/mails', '/api']) {
+      if (apiBase.toLowerCase().endsWith(suffix)) {
+        apiBase = apiBase.slice(0, -suffix.length).replace(/\/+$/, '');
+      }
+    }
+    const started = Date.now();
+    const settings = await loadSettings();
+    const proxy = resolveHttpProxy(settings);
+
+    // ---- YYDS Mail：X-API-Key + /v1/accounts 探活（不对无效 key 真创建）----
+    if (provider === 'yyds' || provider === 'yydsmail') {
+      if (!adminAuth) {
+        return res.json({ ok: false, message: '请先填写 YYDS API Key（X-API-Key）' });
+      }
+      let base = apiBase;
+      try {
+        const u = new URL(base.includes('://') ? base : `https://${base}`);
+        const p = (u.pathname || '').replace(/\/+$/, '');
+        if (!p || p === '/') base = `${u.origin}/v1`;
+        else if (u.host.endsWith('215.im') && !p.includes('/v1')) base = `${u.origin}/v1`;
+        else base = `${u.origin}${p}`;
+      } catch {
+        /* keep */
+      }
+      base = base.replace(/\/+$/, '');
+      const url = `${base}/accounts`;
+      const resp = await proxiedRequest(url, {
+        method: 'POST',
+        headers: {
+          'X-API-Key': adminAuth,
+          'Content-Type': 'application/json',
+          Accept: 'application/json'
+        },
+        body: { localPart: `probe${Date.now().toString(36).slice(-6)}` },
+        proxy,
+        timeoutMs: 15000
+      });
+      const ms = Date.now() - started;
+      const raw =
+        typeof resp.data === 'string'
+          ? resp.data
+          : resp.data != null
+            ? JSON.stringify(resp.data)
+            : '';
+      // 成功创建也算通；鉴权失败 401；缺 key 时 403 temp_inbox_web_app_only
+      if (resp.status >= 200 && resp.status < 300) {
+        return res.json({
+          ok: true,
+          message: `YYDS Mail 连通（API Key 可用）`,
+          ms,
+          status: resp.status
+        });
+      }
+      if (resp.status === 401 || resp.status === 403) {
+        const hint = raw.includes('web_app_only')
+          ? '未识别 API Key（请确认填的是 X-API-Key，不是 Bearer）'
+          : 'API Key 被拒';
+        return res.json({
+          ok: false,
+          message: `已连上 ${base}，但 ${hint}（HTTP ${resp.status}）`,
+          ms,
+          status: resp.status
+        });
+      }
+      return res.json({
+        ok: false,
+        message: `HTTP ${resp.status}${raw ? `: ${raw.slice(0, 120)}` : ''}`,
+        ms,
+        status: resp.status
+      });
+    }
+
+    // ---- DuckMail（mail.tm）：GET /domains 即可探活 ----
+    if (provider === 'duckmail' || provider === 'duck') {
+      const url = `${apiBase}/domains`;
+      const resp = await proxiedRequest(url, {
+        method: 'GET',
+        headers: {
+          Accept: 'application/json',
+          ...(adminAuth ? { Authorization: `Bearer ${adminAuth}` } : {})
+        },
+        proxy,
+        timeoutMs: 12000
+      });
+      const ms = Date.now() - started;
+      if (resp.status >= 200 && resp.status < 300) {
+        return res.json({
+          ok: true,
+          message: 'DuckMail 连通（/domains 可用）',
+          ms,
+          status: resp.status
+        });
+      }
+      return res.json({
+        ok: false,
+        message: `HTTP ${resp.status}：请确认地址为 API 根（如 https://api.duckmail.sbs）`,
+        ms,
+        status: resp.status
+      });
+    }
+
+    // ---- Cloudflare Temp Email：GET /api/mails?limit=1 ----
+    // 匿名可 401；有管理密码时 200/401 均表示服务在线
+    if (!adminAuth && String((settings as { cloudflareAuthMode?: string }).cloudflareAuthMode || '') !== 'none') {
+      // 仍尝试探测：很多部署未登录读邮件会 401，也算通
+    }
+    const url = `${apiBase}/api/mails?limit=1`;
+    const resp = await proxiedRequest(url, {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+        ...(adminAuth ? { Authorization: `Bearer ${adminAuth}` } : {})
+      },
+      proxy,
+      timeoutMs: 12000
     });
-    
-    if (response.status === 401 || response.status === 200) {
-      return res.json({ ok: true, message: '邮箱服务器连接成功' });
-    } else {
-      return res.json({ ok: false, message: `服务器返回了异常状态码: ${response.status}` });
+    const ms = Date.now() - started;
+    if (resp.status === 401 || resp.status === 200 || resp.status === 403) {
+      return res.json({
+        ok: true,
+        message: '邮箱服务器连接成功',
+        ms,
+        status: resp.status
+      });
     }
+    if (resp.status === 404 || resp.status === 405) {
+      return res.json({
+        ok: false,
+        message: `HTTP ${resp.status}：请填 Worker API 根地址（勿填前端 Pages）`,
+        ms,
+        status: resp.status
+      });
+    }
+    return res.json({
+      ok: false,
+      message: `服务器返回了异常状态码: ${resp.status}`,
+      ms,
+      status: resp.status
+    });
   } catch (e: any) {
-    return res.json({ ok: false, message: `连接失败: ${e.message}` });
+    return res.json({ ok: false, message: `连接失败: ${e?.message || e}` });
   }
 });
 
