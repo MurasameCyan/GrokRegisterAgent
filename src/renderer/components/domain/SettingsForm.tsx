@@ -1489,17 +1489,19 @@ export function SettingsForm() {
               <div className="flex flex-wrap items-center gap-1.5">
                 {targetBtn(
                   allow,
-                  '允许推送',
+                  `${name} 允许`,
                   () => onAllow(!allow),
-                  allow ? `关闭「允许」${name}` : `开启「允许」${name}（可手动推/填连接）`
+                  allow
+                    ? `关闭「${name} 允许」`
+                    : `开启「${name} 允许」（可手动推/填连接）`
                 )}
                 {targetBtn(
                   auto,
-                  '自动推送',
+                  `${name} 自动`,
                   () => onAuto(!auto),
                   auto
-                    ? `关闭「自动」${name}`
-                    : `开启「自动」${name}（注册成功后推送，会同时开允许）`
+                    ? `关闭「${name} 自动」`
+                    : `开启「${name} 自动」（注册成功后推送，会同时开允许）`
                 )}
               </div>
             );
