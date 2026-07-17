@@ -52,6 +52,8 @@ export default function App() {
   const pushToast = useToastStore((s) => s.push);
   const applyEvent = useRunStore((s) => s.applyEvent);
   const setStatus = useRunStore((s) => s.setStatus);
+  const setJobs = useRunStore((s) => s.setJobs);
+  const setFocusRunId = useRunStore((s) => s.setFocusRunId);
   const applyAccount = useAccountsStore((s) => s.applyAccount);
   const reloadSettings = useSettingsStore((s) => s.reload);
   /** 仅本地 BUILD_ID 展示；远程对比结果必须用户点击后才写入 */
@@ -115,32 +117,49 @@ export default function App() {
   useEffect(() => {
     if (!auth.authenticated) return;
     let active = true;
+    let off: (() => void) | undefined;
 
-    void window.api
-      .getStatus()
-      .then((nextStatus) => {
-        if (active) setStatus(nextStatus);
-      })
-      .catch((err) => {
+    // 先 hydrate 任务终态快照，再订 WebSocket；避免重放 progress 时 jobs 仍为空导致 0→100% 重播
+    void (async () => {
+      try {
+        const [nextStatus, jobsRes] = await Promise.all([
+          window.api.getStatus(),
+          window.api.listRegisterJobs()
+        ]);
+        if (!active) return;
+        setStatus(nextStatus);
+        setJobs(jobsRes.jobs, jobsRes.active);
+        if (jobsRes.focus) setFocusRunId(jobsRes.focus);
+      } catch (err) {
+        if (!active) return;
         pushToast({
           tone: 'danger',
           title: '读取状态失败',
           description: err instanceof Error ? err.message : String(err)
         });
-      });
-
-    const off = window.api.onRegisterEvent((event) => {
-      applyEvent(event);
-      if (event.type === 'account') {
-        applyAccount(event.record);
       }
-    });
+      if (!active) return;
+      off = window.api.onRegisterEvent((event) => {
+        applyEvent(event);
+        if (event.type === 'account') {
+          applyAccount(event.record);
+        }
+      });
+    })();
 
     return () => {
       active = false;
-      off();
+      off?.();
     };
-  }, [applyEvent, applyAccount, auth.authenticated, pushToast, setStatus]);
+  }, [
+    applyEvent,
+    applyAccount,
+    auth.authenticated,
+    pushToast,
+    setFocusRunId,
+    setJobs,
+    setStatus
+  ]);
 
   const logout = async () => {
     await window.api.logout().catch(() => undefined);

@@ -216,8 +216,55 @@ export class RegisterBot extends EventEmitter {
     return resolveRegisterRuntime({ registerDir: configured })?.registerDir ?? null;
   }
 
+  /**
+   * WebSocket 重连回放。对已结束任务：
+   * - 丢弃 started / 中间 progress / success / failed（避免 0→100% 重播）
+   * - 在 exit 前注入一次终态计数快照
+   * - 保留日志与 exit
+   * 活跃任务仍全量回放。
+   */
   getReplay(): RunEvent[] {
-    return this.replayBuffer.slice();
+    const finishedIds = new Set<string>();
+    for (const j of this.jobs.values()) {
+      if (!isActivePhase(j.status.phase)) finishedIds.add(j.runId);
+    }
+    // buffer 内若已有 exit 也视为结束（job 可能尚未 prune）
+    for (const ev of this.replayBuffer) {
+      if (ev.type === 'exit') finishedIds.add(ev.runId);
+    }
+
+    const out: RunEvent[] = [];
+    const finalSnapshotEmitted = new Set<string>();
+
+    for (const ev of this.replayBuffer) {
+      const rid = (ev as { runId?: string }).runId;
+      if (rid && finishedIds.has(rid)) {
+        if (
+          ev.type === 'started' ||
+          ev.type === 'progress' ||
+          ev.type === 'success' ||
+          ev.type === 'failed'
+        ) {
+          continue;
+        }
+        if (ev.type === 'exit') {
+          if (!finalSnapshotEmitted.has(rid)) {
+            const job = this.jobs.get(rid);
+            const success = job?.status.success ?? 0;
+            const failed = job?.status.failed ?? 0;
+            const total = job?.status.total ?? 0;
+            if (total > 0 || success > 0 || failed > 0) {
+              out.push({ type: 'success', runId: rid, success, failed, total });
+            }
+            finalSnapshotEmitted.add(rid);
+          }
+          out.push(ev);
+          continue;
+        }
+      }
+      out.push(ev);
+    }
+    return out;
   }
 
   private resolveFocusJob(): Job | null {

@@ -49,10 +49,11 @@ export function LiveProgressBar({
       aria-valuemin={0}
       aria-valuemax={100}
     >
-      {/* 主进度 */}
+      {/* 主进度：仅运行中做宽度过渡，避免已完成任务挂载时 0→终值「重播」动画 */}
       <div
         className={cn(
-          'relative h-full rounded-full transition-[width] duration-500 ease-out',
+          'relative h-full rounded-full',
+          active && 'transition-[width] duration-500 ease-out',
           fill,
           active && pct > 0 && pct < 100 && 'live-progress-breathe',
           barClassName

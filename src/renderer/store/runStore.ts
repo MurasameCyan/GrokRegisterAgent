@@ -111,8 +111,19 @@ export const useRunStore = create<RunState>((set) => ({
         });
       };
 
+      /** 已结束任务：WS 重放不得回退 phase / 清零进度（刷新时会先 listJobs 再重放） */
+      const existingJob = (runId: string) => jobs.find((j) => j.runId === runId);
+      const isTerminalJob = (runId: string) => {
+        const j = existingJob(runId);
+        return !!j && !isActive(j.phase);
+      };
+
       switch (event.type) {
         case 'started': {
+          // 同 runId 若已是 done/error/killed，忽略重放的 started（否则成功/失败被清零并重播进度条）
+          if (isTerminalJob(event.runId)) {
+            break;
+          }
           focusRunId = event.runId;
           status = {
             ...EMPTY_STATUS,
@@ -166,6 +177,10 @@ export const useRunStore = create<RunState>((set) => ({
           break;
         }
         case 'progress':
+          // 终态任务：不改 phase，也不用中间 progress 驱动条动画
+          if (isTerminalJob(event.runId)) {
+            break;
+          }
           if (!focus || event.runId === focus || event.runId === status.runId) {
             status = { ...status, current: event.current, total: event.total };
           }
@@ -177,6 +192,18 @@ export const useRunStore = create<RunState>((set) => ({
           });
           break;
         case 'success':
+          if (isTerminalJob(event.runId)) {
+            // 终态：只允许抬高计数（防乱序），绝不改 phase
+            const j = existingJob(event.runId)!;
+            const success = Math.max(j.success, event.success);
+            const failed = Math.max(j.failed, event.failed);
+            const total = Math.max(j.total, event.total);
+            touchJob({ runId: event.runId, success, failed, total });
+            if (!focus || event.runId === focus || event.runId === status.runId) {
+              status = { ...status, success, failed, total };
+            }
+            break;
+          }
           if (!focus || event.runId === focus || event.runId === status.runId) {
             status = {
               ...status,
@@ -193,6 +220,17 @@ export const useRunStore = create<RunState>((set) => ({
           });
           break;
         case 'failed':
+          if (isTerminalJob(event.runId)) {
+            const j = existingJob(event.runId)!;
+            const success = Math.max(j.success, event.success);
+            const failed = Math.max(j.failed, event.failed);
+            const total = Math.max(j.total, event.total);
+            touchJob({ runId: event.runId, success, failed, total });
+            if (!focus || event.runId === focus || event.runId === status.runId) {
+              status = { ...status, success, failed, total };
+            }
+            break;
+          }
           if (!focus || event.runId === focus || event.runId === status.runId) {
             status = {
               ...status,
