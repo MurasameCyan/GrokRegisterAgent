@@ -1258,7 +1258,7 @@ export function SettingsForm() {
               />
               <ToggleRow
                 label="自动转换 sub2api"
-                hint="mint 成功后写 data/sub2api/；默认关"
+                hint="mint 成功后写 data/sub2api/（platform=grok + xai 标签，可官方导入）；默认关"
                 checked={!!draft.sub2apiExportEnabled}
                 onChange={(v) => update('sub2apiExportEnabled', v)}
               />
