@@ -30,6 +30,9 @@ function asMailProvider(v: unknown, fallback: MailProvider): MailProvider {
     .toLowerCase();
   if (s === 'duckmail' || s === 'duck') return 'duckmail';
   if (s === 'yyds' || s === 'yydsmail') return 'yyds';
+  if (s === 'gptmail' || s === 'gpt' || s === 'chatgpt_mail' || s === 'chatgpt-mail') {
+    return 'gptmail';
+  }
   if (
     s === 'cloudflare' ||
     s === 'cf' ||

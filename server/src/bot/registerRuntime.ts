@@ -131,6 +131,13 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
     config.mail_provider = 'duckmail';
   } else if (mailProvider === 'yyds' || mailProvider === 'yydsmail') {
     config.mail_provider = 'yyds';
+  } else if (
+    mailProvider === 'gptmail' ||
+    mailProvider === 'gpt' ||
+    mailProvider === 'chatgpt_mail' ||
+    mailProvider === 'chatgpt-mail'
+  ) {
+    config.mail_provider = 'gptmail';
   } else {
     config.mail_provider = 'cloudflare';
   }

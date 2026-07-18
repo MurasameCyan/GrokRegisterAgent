@@ -16,8 +16,8 @@ export type ThemeMode = 'system' | 'light' | 'dark';
 /** 池轮换策略 */
 export type PoolMode = 'round_robin' | 'random';
 
-/** 临时邮箱后端：cloudflare_temp_email / DuckMail / YYDS */
-export type MailProvider = 'cloudflare' | 'duckmail' | 'yyds';
+/** 临时邮箱后端：cloudflare_temp_email / DuckMail / YYDS / GPTMail */
+export type MailProvider = 'cloudflare' | 'duckmail' | 'yyds' | 'gptmail';
 
 /**
  * 注册主路径：
@@ -71,7 +71,7 @@ export interface AppSettings {
   mail: MailSettings;
   /**
    * 临时邮箱提供方。写入 Python config：mail_provider
-   * cloudflare（默认）| duckmail | yyds
+   * cloudflare（默认）| duckmail | yyds | gptmail
    */
   mailProvider: MailProvider;
   /**
@@ -1214,7 +1214,7 @@ function hasDomain(s: AppSettings): boolean {
     return parseStringList(s.mailDomains).length > 0;
   }
   if (isCf) return !!String(s?.mail?.domain ?? '').trim();
-  // duckmail / yyds：域名可选（由 API 分配）
+  // duckmail / yyds / gptmail：域名可选（由 API 分配）
   return true;
 }
 
@@ -1260,14 +1260,21 @@ export function validateSettings(s: AppSettings): Record<string, string> {
       const provider = String(s.mailProvider || 'cloudflare').toLowerCase();
       const isCf = provider === 'cloudflare' || provider === 'cf' || !provider;
       const isYyds = provider === 'yyds' || provider === 'yydsmail';
-      // duckmail 公共实例可不填 token；CF 匿名模式可不填
+      const isGptmail =
+        provider === 'gptmail' ||
+        provider === 'gpt' ||
+        provider === 'chatgpt_mail';
+      // duckmail 公共实例可不填 token；CF 匿名模式可不填；yyds/gptmail 需 X-API-Key
       const needAuth =
         isYyds ||
+        isGptmail ||
         (isCf && String(s.cloudflareAuthMode || 'x-admin-auth') !== 'none');
       if (needAuth && !String(mail.adminAuth ?? '').trim()) {
         errors['mail.adminAuth'] = isYyds
           ? '请填写 YYDS API Key'
-          : '请填写邮件后端管理密码';
+          : isGptmail
+            ? '请填写 GPTMail API Key（X-API-Key）'
+            : '请填写邮件后端管理密码';
       }
     }
     if (!hasDomain({ ...s, mail })) {

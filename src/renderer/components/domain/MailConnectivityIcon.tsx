@@ -21,7 +21,7 @@ export function MailConnectivityIcon({
   mail: MailSettings;
   /** false 时显示黄点，不发起请求 */
   enabled: boolean;
-  /** cloudflare | duckmail | yyds —— 决定探活协议 */
+  /** cloudflare | duckmail | yyds | gptmail —— 决定探活协议 */
   provider?: string;
 }) {
   const [tone, setTone] = useState<Tone>('idle');

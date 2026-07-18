@@ -95,6 +95,8 @@ def _mail_provider() -> str:
         return "duckmail"
     if p in ("yyds", "yydsmail"):
         return "yyds"
+    if p in ("gptmail", "gpt", "chatgpt_mail", "chatgpt-mail"):
+        return "gptmail"
     return p or "cloudflare"
 
 
@@ -110,6 +112,9 @@ def get_email_and_token() -> Tuple[Optional[str], Optional[str]]:
         return email, token
     if provider == "yyds":
         email, token = _create_yyds()
+        return email, token
+    if provider == "gptmail":
+        email, token = _create_gptmail()
         return email, token
     email, _password, jwt = create_temp_email()
     if email and jwt:
@@ -307,6 +312,101 @@ def _create_yyds() -> Tuple[Optional[str], Optional[str]]:
         except Exception as e:
             last_err = f"{e} | {url}"
     raise Exception(f"yyds 创建失败: {last_err}")
+
+
+
+
+def _normalize_gptmail_base(raw: str) -> str:
+    """GPTMail site root: https://mail.chatgpt.org.uk (no /api path)."""
+    base = (raw or "").strip().rstrip("/")
+    if not base:
+        return ""
+    for suffix in (
+        "/api/generate-email",
+        "/api/emails",
+        "/api/email",
+        "/api/stats",
+        "/api",
+    ):
+        if base.lower().endswith(suffix):
+            base = base[: -len(suffix)].rstrip("/")
+    try:
+        from urllib.parse import urlparse
+
+        p = urlparse(base if "://" in base else f"https://{base}")
+        path = (p.path or "").rstrip("/")
+        if path in ("", "/") or path.startswith("/api"):
+            base = f"{p.scheme}://{p.netloc}"
+        else:
+            base = f"{p.scheme}://{p.netloc}{path}"
+    except Exception:
+        pass
+    return base.rstrip("/")
+
+
+def _create_gptmail() -> Tuple[Optional[str], Optional[str]]:
+    """
+    GPTMail (mail.chatgpt.org.uk):
+      create: POST {base}/api/generate-email  header X-API-Key  body {prefix?, domain?}
+      list:   GET  {base}/api/emails?email=   header X-API-Key
+      detail: GET  {base}/api/email/{id}      header X-API-Key
+    Returns (email, api_key). Poll reuses api_key as X-API-Key (not Bearer).
+    config: mail_api_base default https://mail.chatgpt.org.uk, mail_admin_auth = API Key
+    """
+    _reload_mail_conf()
+    base = _normalize_gptmail_base(MAIL_API_BASE or "https://mail.chatgpt.org.uk")
+    api_key = MAIL_ADMIN_AUTH.strip()
+    if len(api_key) >= 7 and api_key[:7].lower() == "bearer ":
+        api_key = api_key[7:].strip()
+    if not base:
+        raise Exception("gptmail: mail_api_base unset (e.g. https://mail.chatgpt.org.uk)")
+    if not api_key:
+        raise Exception("gptmail: mail_admin_auth unset (GPTMail X-API-Key)")
+    domain = (MAIL_DOMAIN or "").strip().lstrip("@")
+    session, use_cffi = _create_session()
+    headers = {
+        "X-API-Key": api_key,
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    url = f"{base}/api/generate-email"
+    last_err = ""
+    for attempt in range(3):
+        prefix = _generate_local_part()
+        body: Dict[str, Any] = {"prefix": prefix}
+        if domain:
+            body["domain"] = domain
+        try:
+            res = _do_request(
+                session, use_cffi, "post", url, json=body, headers=headers, timeout=25
+            )
+            if res.status_code in (200, 201):
+                data = res.json() if res.text else {}
+                if not isinstance(data, dict):
+                    data = {}
+                if data.get("success") is False:
+                    last_err = str(data.get("error") or data.get("message") or data)[:200]
+                    if "api key" in last_err.lower() or "invalid" in last_err.lower():
+                        break
+                    raise Exception(last_err)
+                inner = data.get("data") if isinstance(data.get("data"), dict) else data
+                email = (
+                    (inner or {}).get("email")
+                    or (inner or {}).get("address")
+                    or (inner or {}).get("mail")
+                    or ""
+                )
+                if email:
+                    print(f"[*] gptmail create ok: {email}")
+                    return str(email), str(api_key)
+                last_err = f"no email in response: {data}"
+            else:
+                last_err = f"HTTP {res.status_code}: {(res.text or '')[:200]} | {url}"
+                if res.status_code in (401, 403):
+                    break
+        except Exception as e:
+            last_err = f"{e} | {url}"
+    raise Exception(f"gptmail create failed: {last_err}")
 
 
 def get_oai_code(dev_token: str, email: str, timeout: int = 30) -> Optional[str]:
@@ -586,23 +686,35 @@ def fetch_emails(jwt: str, limit: int = 20, email: str = "") -> List[Dict[str, A
     """获取邮件列表（cloudflare / duckmail mail.tm / yyds 官方路径）。"""
     _reload_mail_conf()
     provider = _mail_provider()
-    headers = {"Authorization": f"Bearer {jwt}", "Accept": "application/json"}
     session, use_cffi = _create_session()
     base = MAIL_API_BASE.rstrip("/")
     paths: List[Tuple[str, Dict[str, Any]]] = []
-    if provider == "yyds":
+    if provider == "gptmail":
+        base = _normalize_gptmail_base(base or "https://mail.chatgpt.org.uk")
+        api_key = (jwt or MAIL_ADMIN_AUTH or "").strip()
+        if len(api_key) >= 7 and api_key[:7].lower() == "bearer ":
+            api_key = api_key[7:].strip()
+        headers = {"X-API-Key": api_key, "Accept": "application/json"}
+        params_g: Dict[str, Any] = {}
+        if email:
+            params_g["email"] = email
+        paths = [("/api/emails", params_g)]
+    elif provider == "yyds":
+        headers = {"Authorization": f"Bearer {jwt}", "Accept": "application/json"}
         base = _normalize_yyds_base(base or "https://maliapi.215.im/v1")
         params: Dict[str, Any] = {"limit": limit}
         if email:
             params["address"] = email
         paths = [("/messages", params)]
     elif provider == "duckmail":
-        # mail.tm：GET /messages → hydra:member
+        headers = {"Authorization": f"Bearer {jwt}", "Accept": "application/json"}
+        # mail.tm GET /messages -> hydra:member
         paths = [
             ("/messages", {"page": 1}),
             ("/messages", {"limit": limit}),
         ]
     else:
+        headers = {"Authorization": f"Bearer {jwt}", "Accept": "application/json"}
         paths = [("/api/mails", {"limit": limit, "offset": 0})]
     for path, params in paths:
         try:
@@ -633,6 +745,7 @@ def fetch_emails(jwt: str, limit: int = 20, email: str = "") -> List[Dict[str, A
                 "results",
                 "messages",
                 "mails",
+                "emails",
                 "data",
                 "items",
                 "list",
@@ -654,19 +767,28 @@ def fetch_email_detail(jwt: str, msg_id: Any, email: str = "") -> Optional[Dict]
     """获取单封邮件详情（含正文）。"""
     _reload_mail_conf()
     provider = _mail_provider()
-    headers = {"Authorization": f"Bearer {jwt}", "Accept": "application/json"}
     session, use_cffi = _create_session()
     base = MAIL_API_BASE.rstrip("/")
     paths: List[str] = []
     params: Dict[str, Any] = {}
-    if provider == "yyds":
+    if provider == "gptmail":
+        base = _normalize_gptmail_base(base or "https://mail.chatgpt.org.uk")
+        api_key = (jwt or MAIL_ADMIN_AUTH or "").strip()
+        if len(api_key) >= 7 and api_key[:7].lower() == "bearer ":
+            api_key = api_key[7:].strip()
+        headers = {"X-API-Key": api_key, "Accept": "application/json"}
+        paths = [f"/api/email/{msg_id}"]
+    elif provider == "yyds":
+        headers = {"Authorization": f"Bearer {jwt}", "Accept": "application/json"}
         base = _normalize_yyds_base(base or "https://maliapi.215.im/v1")
         paths = [f"/messages/{msg_id}"]
         if email:
             params["address"] = email
     elif provider == "duckmail":
+        headers = {"Authorization": f"Bearer {jwt}", "Accept": "application/json"}
         paths = [f"/messages/{msg_id}"]
     else:
+        headers = {"Authorization": f"Bearer {jwt}", "Accept": "application/json"}
         paths = [f"/api/mail/{msg_id}", f"/api/mails/{msg_id}"]
     for path in paths:
         try:

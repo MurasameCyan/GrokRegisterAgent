@@ -994,6 +994,106 @@ app.post('/api/test/mail', async (req, res) => {
       }
     }
 
+    // ---- GPTMail：X-API-Key + /api/generate-email | /api/emails ----
+    if (
+      provider === 'gptmail' ||
+      provider === 'gpt' ||
+      provider === 'chatgpt_mail' ||
+      provider === 'chatgpt-mail'
+    ) {
+      let gptKey = adminAuth;
+      if (gptKey.length >= 7 && gptKey.slice(0, 7).toLowerCase() === 'bearer ') {
+        gptKey = gptKey.slice(7).trim();
+      }
+      if (!gptKey) {
+        return res.json({ ok: false, message: '请先填写 GPTMail API Key（X-API-Key）' });
+      }
+      let base = apiBase;
+      try {
+        const u = new URL(base.includes('://') ? base : `https://${base}`);
+        const p = (u.pathname || '').replace(/\/+$/, '');
+        if (!p || p === '/' || p === '/api' || p.startsWith('/api/')) {
+          base = u.origin;
+        } else {
+          base = `${u.origin}${p}`;
+        }
+      } catch {
+        /* keep */
+      }
+      base = base.replace(/\/+$/, '');
+      const url = `${base}/api/stats`;
+      try {
+        const resp = await requestWithProxyFallback(url, {
+          method: 'GET',
+          headers: {
+            'X-API-Key': gptKey,
+            Accept: 'application/json'
+          },
+          proxy,
+          timeoutMs: 15000
+        });
+        const ms = Date.now() - started;
+        const raw =
+          typeof resp.data === 'string'
+            ? resp.data
+            : resp.data != null
+              ? JSON.stringify(resp.data)
+              : '';
+        const biz =
+          resp.data && typeof resp.data === 'object'
+            ? (resp.data as { success?: unknown; error?: unknown })
+            : null;
+        if (biz && biz.success === false) {
+          return res.json({
+            ok: false,
+            message: `已连上 ${base}，但 ${String(biz.error || '业务拒绝').slice(0, 120)}（HTTP ${resp.status}${resp.via === 'proxy' ? ' · 经代理' : ''}）`,
+            ms,
+            status: resp.status
+          });
+        }
+        if (resp.status >= 200 && resp.status < 300) {
+          return res.json({
+            ok: true,
+            message: `GPTMail 连通（API Key 可用${resp.via === 'proxy' ? ' · 经代理' : ''}）`,
+            ms,
+            status: resp.status
+          });
+        }
+        if (looksLikeCloudflareChallenge(resp.status, resp.data)) {
+          return res.json({
+            ok: false,
+            message:
+              `已到 ${base}，但被 Cloudflare 挑战拦截（HTTP ${resp.status}）。` +
+              (proxy
+                ? ' 直连与代理均未绕过，请检查 Sing-Box 节点。'
+                : ' 请开启代理模式（Sing-Box）后重试。'),
+            ms,
+            status: resp.status
+          });
+        }
+        if (resp.status === 401 || resp.status === 403) {
+          return res.json({
+            ok: false,
+            message: `已连上 ${base}，但 API Key 被拒（HTTP ${resp.status}）。请确认 X-API-Key 正确。`,
+            ms,
+            status: resp.status
+          });
+        }
+        return res.json({
+          ok: false,
+          message: `HTTP ${resp.status}${raw ? `: ${raw.slice(0, 120)}` : ''}`,
+          ms,
+          status: resp.status
+        });
+      } catch (e: any) {
+        return res.json({
+          ok: false,
+          message: `连接失败: ${errorMessage(e)}`,
+          ms: Date.now() - started
+        });
+      }
+    }
+
     // ---- DuckMail（mail.tm）：GET /domains ----
     if (provider === 'duckmail' || provider === 'duck') {
       const url = `${apiBase}/domains`;
