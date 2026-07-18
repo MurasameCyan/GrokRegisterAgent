@@ -33,6 +33,27 @@ export function normalizeSub2apiAdminSecret(raw: string): string {
 }
 
 /**
+ * 规范化 sub2api 服务根地址：去尾斜杠，剥掉误粘贴的 /api/v1 等路径。
+ * 探活/推送会再拼 `/api/v1/admin/accounts`，双写路径会导致 404。
+ */
+export function normalizeSub2apiBaseUrl(raw: string): string {
+  let base = String(raw || '').trim().replace(/\/+$/, '');
+  if (!base) return '';
+  const suffixes = [
+    '/api/v1/admin/accounts',
+    '/api/v1/admin',
+    '/api/v1',
+    '/api'
+  ];
+  for (const suffix of suffixes) {
+    if (base.toLowerCase().endsWith(suffix)) {
+      base = base.slice(0, -suffix.length).replace(/\/+$/, '');
+    }
+  }
+  return base;
+}
+
+/**
  * Wei-Shaw/sub2api Admin 鉴权（admin_auth.go）：
  * - Admin API Key（如 admin-...）→ x-api-key
  * - 管理员 JWT（三段 base64url）→ Authorization: Bearer <jwt>
@@ -1104,11 +1125,9 @@ export async function pushSub2apiAuthRemoteBatch(input: {
   results: CpaAuthBatchResultItem[];
 }> {
   const settings = await loadSettings();
-  const base = String(
-    (settings as { sub2apiRemoteUrl?: string }).sub2apiRemoteUrl || ''
-  )
-    .trim()
-    .replace(/\/+$/, '');
+  const base = normalizeSub2apiBaseUrl(
+    String((settings as { sub2apiRemoteUrl?: string }).sub2apiRemoteUrl || '')
+  );
   const token = normalizeSub2apiAdminSecret(
     String((settings as { sub2apiAdminToken?: string }).sub2apiAdminToken || '')
   );
@@ -1350,11 +1369,11 @@ export async function testSub2apiRemoteConnectivity(input?: {
   remoteUrl?: string;
 }> {
   const settings = await loadSettings();
-  const base = String(
-    input?.url ?? (settings as { sub2apiRemoteUrl?: string }).sub2apiRemoteUrl ?? ''
-  )
-    .trim()
-    .replace(/\/+$/, '');
+  const base = normalizeSub2apiBaseUrl(
+    String(
+      input?.url ?? (settings as { sub2apiRemoteUrl?: string }).sub2apiRemoteUrl ?? ''
+    )
+  );
   const token = normalizeSub2apiAdminSecret(
     String(
       input?.token ??

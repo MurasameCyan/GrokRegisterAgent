@@ -2642,7 +2642,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                 <th className="w-[4.5rem] px-3 py-2.5 font-medium">SSO</th>
                 <th className="w-10 px-2 py-2.5 text-center font-medium">Type</th>
                 <th className="w-[3.25rem] px-3 py-2.5 font-medium">xai</th>
-                <th className="w-[3.5rem] px-2 py-2.5 font-medium">NSFW</th>
+                <th className="w-[3.5rem] px-2 py-2.5 font-medium">Nsfw</th>
                 {/* ZDR 列已隐藏
                 <th className="w-[3.5rem] px-2 py-2.5 font-medium">ZDR</th>
                 */}
