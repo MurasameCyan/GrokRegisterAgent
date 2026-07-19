@@ -2408,6 +2408,86 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                 {batchBusy === 'refresh401' ? '取消' : '死者苏生'}
               </Button>
               <Button
+                variant={batchBusy === 'backfill' ? 'danger' : 'secondary'}
+                size="sm"
+                className="min-w-[5.5rem] justify-center"
+                disabled={
+                  (Boolean(busy) && batchBusy !== 'backfill') ||
+                  (batchBusy !== 'backfill' && items.length === 0)
+                }
+                onClick={() => {
+                  if (batchBusy === 'backfill') cancelBatch('backfill');
+                }}
+                onPointerDown={(e) => {
+                  if (batchBusy === 'backfill') return;
+                  if (e.button !== 0) return;
+                  onBackfillPointerDown();
+                }}
+                onPointerUp={(e) => {
+                  if (batchBusy === 'backfill') return;
+                  if (e.button !== 0) return;
+                  onBackfillPointerUp();
+                }}
+                onPointerLeave={onBackfillPointerLeave}
+                onPointerCancel={onBackfillPointerLeave}
+                onContextMenu={(e) => e.preventDefault()}
+                title={
+                  batchBusy === 'backfill'
+                    ? '取消回填 SSO'
+                    : '单击：仅回填无 sso 的文件（已有跳过）\n' +
+                      '长按约 0.6s：强制覆盖已有 sso（二次确认）\n' +
+                      (selected.size > 0
+                        ? `当前范围：已选 ${selected.size} 条\n`
+                        : missingSsoCount > 0
+                          ? `当前无 sso：${missingSsoCount} 条\n`
+                          : '') +
+                      '无邮箱 auth 无法靠 email 回填，需重新 mint 或手工补 sso'
+                }
+              >
+                {batchBusy === 'backfill' ? (
+                  <Ban className="h-3.5 w-3.5" />
+                ) : (
+                  <Link2 className="h-3.5 w-3.5" />
+                )}
+                {batchBusy === 'backfill' ? '取消' : '回填SSO'}
+              </Button>
+            </div>
+
+            {/* 导出 | 推送 CPA/S2A | 删除 */}
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="mr-0.5 hidden text-[10px] font-semibold tracking-wide text-primary sm:inline">
+                导出/推送
+              </span>
+              <Button
+                variant={batchBusy === 'export' ? 'danger' : 'secondary'}
+                size="sm"
+                className="min-w-[5.75rem] justify-center"
+                onClick={() => {
+                  if (batchBusy === 'export') cancelBatch('export');
+                  else void exportBatch();
+                }}
+                disabled={
+                  (Boolean(busy) && batchBusy !== 'export') ||
+                  (batchBusy !== 'export' && filteredItems.length === 0)
+                }
+                title={
+                  batchBusy === 'export'
+                    ? '取消导出'
+                    : selected.size > 0
+                      ? `导出已选 ${selected.size} 条`
+                      : hasActiveFilter
+                        ? `导出筛选 ${filteredItems.length} 条`
+                        : '导出全部 JSON'
+                }
+              >
+                {batchBusy === 'export' ? (
+                  <Ban className="h-3.5 w-3.5" />
+                ) : (
+                  <FileDown className="h-3.5 w-3.5" />
+                )}
+                {batchBusy === 'export' ? '取消' : '导出'}
+              </Button>
+              <Button
                 size="sm"
                 className="min-w-[5rem] justify-center tabular-nums"
                 {...batchBtnProps('push', () => void pushRemoteBatch())}
@@ -2465,86 +2545,6 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                   <CloudUpload className="h-3.5 w-3.5" />
                 )}
                 {batchBusy === 'pushS2a' ? '取消' : '推送 S2A'}
-              </Button>
-              <Button
-                variant={batchBusy === 'backfill' ? 'danger' : 'secondary'}
-                size="sm"
-                className="min-w-[5.5rem] justify-center"
-                disabled={
-                  (Boolean(busy) && batchBusy !== 'backfill') ||
-                  (batchBusy !== 'backfill' && items.length === 0)
-                }
-                onClick={() => {
-                  if (batchBusy === 'backfill') cancelBatch('backfill');
-                }}
-                onPointerDown={(e) => {
-                  if (batchBusy === 'backfill') return;
-                  if (e.button !== 0) return;
-                  onBackfillPointerDown();
-                }}
-                onPointerUp={(e) => {
-                  if (batchBusy === 'backfill') return;
-                  if (e.button !== 0) return;
-                  onBackfillPointerUp();
-                }}
-                onPointerLeave={onBackfillPointerLeave}
-                onPointerCancel={onBackfillPointerLeave}
-                onContextMenu={(e) => e.preventDefault()}
-                title={
-                  batchBusy === 'backfill'
-                    ? '取消回填 SSO'
-                    : '单击：仅回填无 sso 的文件（已有跳过）\n' +
-                      '长按约 0.6s：强制覆盖已有 sso（二次确认）\n' +
-                      (selected.size > 0
-                        ? `当前范围：已选 ${selected.size} 条\n`
-                        : missingSsoCount > 0
-                          ? `当前无 sso：${missingSsoCount} 条\n`
-                          : '') +
-                      '无邮箱 auth 无法靠 email 回填，需重新 mint 或手工补 sso'
-                }
-              >
-                {batchBusy === 'backfill' ? (
-                  <Ban className="h-3.5 w-3.5" />
-                ) : (
-                  <Link2 className="h-3.5 w-3.5" />
-                )}
-                {batchBusy === 'backfill' ? '取消' : '回填SSO'}
-              </Button>
-            </div>
-
-            {/* 导出 | 删除 */}
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className="mr-0.5 hidden text-[10px] font-semibold tracking-wide text-primary sm:inline">
-                导入导出
-              </span>
-              <Button
-                variant={batchBusy === 'export' ? 'danger' : 'secondary'}
-                size="sm"
-                className="min-w-[5.75rem] justify-center"
-                onClick={() => {
-                  if (batchBusy === 'export') cancelBatch('export');
-                  else void exportBatch();
-                }}
-                disabled={
-                  (Boolean(busy) && batchBusy !== 'export') ||
-                  (batchBusy !== 'export' && filteredItems.length === 0)
-                }
-                title={
-                  batchBusy === 'export'
-                    ? '取消导出'
-                    : selected.size > 0
-                      ? `导出已选 ${selected.size} 条`
-                      : hasActiveFilter
-                        ? `导出筛选 ${filteredItems.length} 条`
-                        : '导出全部 JSON'
-                }
-              >
-                {batchBusy === 'export' ? (
-                  <Ban className="h-3.5 w-3.5" />
-                ) : (
-                  <FileDown className="h-3.5 w-3.5" />
-                )}
-                {batchBusy === 'export' ? '取消' : '导出'}
               </Button>
               <span className="mx-0.5 hidden h-4 w-px bg-border sm:inline-block" aria-hidden />
               <Button
