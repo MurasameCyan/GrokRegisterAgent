@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import {
+import { Search,
   Bot,
   CheckSquare,
   CloudUpload,
@@ -187,6 +187,7 @@ export function PoolPage() {
   const [authFilter, setAuthFilter] = useState<AuthFilter>(() => loadAuthFilter());
   const [aliveFilter, setAliveFilter] = useState<AliveFilter>(() => loadAliveFilter());
   const [ssoFilter, setSsoFilter] = useState<SsoFilter>(() => loadSsoFilter());
+  const [searchQuery, setSearchQuery] = useState('');
 
   const reloadAuthEmails = async () => {
     try {
@@ -447,6 +448,21 @@ export function PoolPage() {
     if (aliveFilter === 'unchecked') list = list.filter((a) => aliveStatusOf(a) === 'unchecked');
     else if (aliveFilter === 'alive') list = list.filter((a) => aliveStatusOf(a) === 'alive');
     else if (aliveFilter === 'dead') list = list.filter((a) => aliveStatusOf(a) === 'dead');
+    const q = searchQuery.trim().toLowerCase();
+    if (q) {
+      list = list.filter((a) => {
+        const email = String(a.email || '').toLowerCase();
+        const sso = String(a.sso || '').toLowerCase();
+        const id = String(a.id || '').toLowerCase();
+        const name = String((a as { name?: string }).name || '').toLowerCase();
+        return (
+          email.includes(q) ||
+          sso.includes(q) ||
+          id.includes(q) ||
+          name.includes(q)
+        );
+      });
+    }
     return list;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
@@ -457,7 +473,8 @@ export function PoolPage() {
     authFilter,
     aliveFilter,
     ssoFilter,
-    ssoMap
+    ssoMap,
+    searchQuery
   ]);
 
   const convertedCount = useMemo(
@@ -879,7 +896,10 @@ export function PoolPage() {
   const minting = !!mintProg?.running;
   const busy = verifying || minting || deleting || importing || pushingG2a;
   const hasActiveFilter =
-    authFilter !== 'all' || aliveFilter !== 'all' || ssoFilter !== 'all';
+    authFilter !== 'all' ||
+    aliveFilter !== 'all' ||
+    ssoFilter !== 'all' ||
+    Boolean(searchQuery.trim());
 
   const mintPct =
     mintProg && mintProg.total > 0
@@ -971,8 +991,23 @@ export function PoolPage() {
               changeSsoFilter('all');
               changeAuthFilter('all');
               changeAliveFilter('all');
+              setSearchQuery('');
             }}
           >
+            <div className="relative w-full min-w-[12rem] max-w-xs sm:w-56">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+              <input
+                type="search"
+                value={searchQuery}
+                onChange={(e) => {
+                  setSearchQuery(e.target.value);
+                  resetPage();
+                }}
+                placeholder="搜索邮箱 / SSO / ID…"
+                className="h-8 w-full rounded-full border border-border/70 bg-background/80 py-1 pl-8 pr-3 text-[12px] tracking-tight placeholder:text-muted-foreground/70 focus-visible:border-primary/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30"
+                spellCheck={false}
+              />
+            </div>
             <FilterSegmentGroup
               label="SSO"
               value={ssoFilter}

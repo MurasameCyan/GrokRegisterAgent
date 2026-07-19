@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
+import { Search,
   Activity,
   Ban,
   CheckSquare,
@@ -266,6 +266,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
   const [emailMasked, setEmailMasked] = useState(() => loadEmailPrivacyMask());
   const [metaFilter, setMetaFilter] = useState<MetaFilter>(() => loadMetaFilter());
   const [statusFilter, setStatusFilter] = useState<StatusFilter>(() => loadStatusFilter());
+  const [searchQuery, setSearchQuery] = useState('');
 
   /** 写入单行重登 stage（列表 + 进度条共用） */
   const setRowReloginStage = useCallback(
@@ -455,8 +456,23 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
     if (statusFilter !== 'all') {
       list = list.filter((i) => matchStatusFilter(i, statusFilter));
     }
+    const q = searchQuery.trim().toLowerCase();
+    if (q) {
+      list = list.filter((i) => {
+        const email = String(i.email || '').toLowerCase();
+        const fn = String(i.filename || '').toLowerCase();
+        const sub = String(i.sub || '').toLowerCase();
+        const sso = String((i as { sso?: string }).sso || '').toLowerCase();
+        return (
+          email.includes(q) ||
+          fn.includes(q) ||
+          sub.includes(q) ||
+          sso.includes(q)
+        );
+      });
+    }
     return list;
-  }, [items, metaFilter, statusFilter, matchStatusFilter]);
+  }, [items, metaFilter, statusFilter, matchStatusFilter, searchQuery]);
 
   const {
     pageSize,
@@ -1819,7 +1835,8 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
   }, [items, resolveProbe]);
   const hasActiveMetaFilter = metaFilter !== 'all';
   const hasActiveStatusFilter = statusFilter !== 'all';
-  const hasActiveFilter = hasActiveMetaFilter || hasActiveStatusFilter;
+  const hasActiveFilter =
+    (hasActiveMetaFilter || hasActiveStatusFilter) || Boolean(searchQuery.trim());
 
   /** 长按「回填SSO」进入 force 覆盖（约 650ms） */
   const backfillHoldRef = useRef<{
@@ -2174,8 +2191,23 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
             onClear={() => {
               clearMetaFilter();
               changeStatusFilter('all');
+              setSearchQuery('');
             }}
           >
+            <div className="relative w-full min-w-[12rem] max-w-xs sm:w-56">
+              <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+              <input
+                type="search"
+                value={searchQuery}
+                onChange={(e) => {
+                  setSearchQuery(e.target.value);
+                  resetPage();
+                }}
+                placeholder="搜索邮箱 / 文件名 / sub…"
+                className="h-8 w-full rounded-full border border-border/70 bg-background/80 py-1 pl-8 pr-3 text-[12px] tracking-tight placeholder:text-muted-foreground/70 focus-visible:border-primary/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30"
+                spellCheck={false}
+              />
+            </div>
             <FilterSegmentGroup
               label="标记"
               value={metaFilter}

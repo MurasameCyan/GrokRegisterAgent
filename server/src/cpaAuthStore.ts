@@ -1211,6 +1211,23 @@ export async function pushSub2apiAuthRemoteBatch(input: {
     if (data.id_token) credentials.id_token = String(data.id_token);
     if (email) credentials.email = email;
     if (data.sub) credentials.sub = String(data.sub);
+    // mint 探针 model_ids → sub2api extra + credentials（可用模型列表）
+    let modelIds: string[] = [];
+    const rawModels =
+      data.model_ids ?? data.models ?? data.available_models ?? null;
+    if (Array.isArray(rawModels)) {
+      modelIds = rawModels.map((x) => String(x || '').trim()).filter(Boolean);
+    } else if (rawModels && typeof rawModels === 'object') {
+      const m = rawModels as Record<string, unknown>;
+      const arr = (m.model_ids ?? m.ids ?? m.data) as unknown;
+      if (Array.isArray(arr)) {
+        modelIds = arr.map((x) => String(x || '').trim()).filter(Boolean);
+      }
+    }
+    if (modelIds.length > 0) {
+      credentials.models = modelIds;
+      credentials.available_models = modelIds;
+    }
     const body: Record<string, unknown> = {
       name,
       platform: 'grok',
@@ -1224,7 +1241,8 @@ export async function pushSub2apiAuthRemoteBatch(input: {
         source: 'cpa_xai',
         email,
         mint_channel: data.mint_channel,
-        has_grok_45: data.has_grok_45
+        has_grok_45: data.has_grok_45,
+        ...(modelIds.length > 0 ? { model_ids: modelIds } : {})
       }
     };
     return body;

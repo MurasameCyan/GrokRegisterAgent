@@ -207,6 +207,24 @@ def cpa_xai_to_sub2api_account(
         "priority": int(cpa.get("priority") or 0),
     }
 
+    # mint 探针写入的可用模型列表（CPA auth 上的 model_ids）→ 给 sub2api 调度/展示
+    model_ids = cpa.get("model_ids") or cpa.get("models") or cpa.get("available_models")
+    if isinstance(model_ids, dict):
+        # 偶发嵌套 { data: [...] } / { model_ids: [...] }
+        model_ids = (
+            model_ids.get("model_ids")
+            or model_ids.get("ids")
+            or model_ids.get("data")
+            or []
+        )
+    if isinstance(model_ids, list) and model_ids:
+        ids = [str(x).strip() for x in model_ids if str(x or "").strip()]
+        if ids:
+            account["extra"]["model_ids"] = ids
+            # 部分 sub2api 版本认 credentials.models / available_models
+            credentials["models"] = ids
+            credentials["available_models"] = ids
+
     # 对齐 GrokSession2CPA / sub2api 惯例：
     # - 有 refresh：不写账号级 expires_at / auto_pause（access≈6h，写了会被 pause）
     # - 无 refresh：才钉 access exp + auto_pause
