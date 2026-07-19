@@ -5,10 +5,12 @@ import {
   Github,
   KeyRound,
   LogOut,
+  Menu,
   PlayCircle,
   RefreshCcw,
   Settings2,
-  ShieldCheck
+  ShieldCheck,
+  X
 } from 'lucide-react';
 import { RegisterPage } from '@renderer/pages/RegisterPage';
 import { PoolPage } from '@renderer/pages/PoolPage';
@@ -47,6 +49,8 @@ const emptyAuth: AuthState = {
 
 export default function App() {
   const [tab, setTab] = useState<Tab>('register');
+  /** 仅手机端侧栏抽屉；lg+ 忽略 */
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [auth, setAuth] = useState<AuthState>(emptyAuth);
   const [authLoading, setAuthLoading] = useState(true);
   const pushToast = useToastStore((s) => s.push);
@@ -167,6 +171,32 @@ export default function App() {
     setTab('register');
   };
 
+  // 手机侧栏：切页关闭；切到桌面宽度时强制关
+  useEffect(() => {
+    setMobileNavOpen(false);
+  }, [tab]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !window.matchMedia) return;
+    const mq = window.matchMedia('(min-width: 1024px)');
+    const onChange = () => {
+      if (mq.matches) setMobileNavOpen(false);
+    };
+    onChange();
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, []);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    if (!mobileNavOpen) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [mobileNavOpen]);
+
   if (authLoading) {
     return <BootScreen />;
   }
@@ -180,19 +210,68 @@ export default function App() {
     );
   }
 
+  const activeTabLabel = tabs.find((x) => x.id === tab)?.label || '';
+
   return (
     <div className="app-shell">
-      <aside className="app-nav">
+      {/* 手机顶栏：汉堡 + 品牌 + 当前页（lg 隐藏，不改桌面） */}
+      <header className="app-mobile-topbar lg:hidden">
+        <button
+          type="button"
+          className="app-mobile-menu-btn"
+          aria-label={mobileNavOpen ? '关闭菜单' : '打开菜单'}
+          aria-expanded={mobileNavOpen}
+          aria-controls="app-side-nav"
+          onClick={() => setMobileNavOpen((v) => !v)}
+        >
+          {mobileNavOpen ? (
+            <X className="h-5 w-5" strokeWidth={2} aria-hidden />
+          ) : (
+            <Menu className="h-5 w-5" strokeWidth={2} aria-hidden />
+          )}
+        </button>
+        <div className="nav-logo h-9 w-9 text-[11px]" aria-hidden title="Grok Register Agent">
+          GRA
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-[14px] font-semibold tracking-tight">Grok Register</p>
+          <p className="truncate text-[11px] text-muted-foreground">{activeTabLabel}</p>
+        </div>
+      </header>
+
+      {/* 手机抽屉遮罩 */}
+      <button
+        type="button"
+        className={cn('app-nav-backdrop lg:hidden', mobileNavOpen && 'app-nav-backdrop-open')}
+        aria-label="关闭菜单"
+        tabIndex={mobileNavOpen ? 0 : -1}
+        onClick={() => setMobileNavOpen(false)}
+      />
+
+      <aside
+        id="app-side-nav"
+        className={cn('app-nav', mobileNavOpen && 'app-nav-open')}
+        aria-hidden={false}
+      >
         <div className="flex h-full flex-col">
           <div className="nav-brand">
             <div className="nav-logo" aria-hidden title="Grok Register Agent">
               GRA
             </div>
-            <div className="site-name hidden min-[380px]:flex" aria-label="Grok Register Agent">
+            <div className="site-name hidden min-[380px]:flex lg:flex" aria-label="Grok Register Agent">
               <span>Grok</span>
               <span>Register</span>
               <span>Agent</span>
             </div>
+            {/* 手机抽屉内关闭 */}
+            <button
+              type="button"
+              className="app-mobile-drawer-close lg:hidden"
+              aria-label="关闭菜单"
+              onClick={() => setMobileNavOpen(false)}
+            >
+              <X className="h-4 w-4" strokeWidth={2} aria-hidden />
+            </button>
           </div>
 
           <nav className="app-nav-links" aria-label="主导航">
@@ -200,7 +279,10 @@ export default function App() {
               <button
                 key={id}
                 type="button"
-                onClick={() => setTab(id)}
+                onClick={() => {
+                  setTab(id);
+                  setMobileNavOpen(false);
+                }}
                 className={cn('nav-link shrink-0', tab === id && 'nav-link-active')}
                 aria-current={tab === id ? 'page' : undefined}
               >
@@ -212,7 +294,8 @@ export default function App() {
             ))}
           </nav>
 
-          <div className="mt-auto hidden space-y-2.5 border-t border-border/70 p-3 lg:block">
+          {/* 桌面底栏 + 手机抽屉内完整底栏（同一套 UI） */}
+          <div className="mt-auto space-y-2.5 border-t border-border/70 p-3">
             <SidebarUpdateBar
               localBuildId={localBuildId}
               update={update}
@@ -255,25 +338,6 @@ export default function App() {
                 <span className="leading-none">退出</span>
               </button>
             </div>
-          </div>
-
-          {/* 移动端：紧凑底栏（主题 / 用户 / 退出） */}
-          <div className="flex items-center gap-2 border-t border-border px-3 py-2 lg:hidden">
-            <div className="min-w-0 flex-1">
-              <ThemeToggle />
-            </div>
-            <span className="truncate text-[12px] font-medium text-muted-foreground">
-              {auth.username}
-            </span>
-            <button
-              type="button"
-              onClick={logout}
-              className="inline-flex h-8 shrink-0 items-center gap-1 rounded-lg px-2 text-[12px] font-medium text-primary"
-              title="退出登录"
-            >
-              <LogOut className="h-3.5 w-3.5" strokeWidth={2} aria-hidden />
-              退出
-            </button>
           </div>
         </div>
       </aside>
