@@ -322,17 +322,43 @@ app.post('/api/singbox/subscription', async (req, res) => {
 });
 
 /** 按当前配置启动/重载 sing-box */
-app.post('/api/singbox/start', async (_req, res) => {
+app.post('/api/singbox/start', async (req, res) => {
   const s = await loadSettings();
-  if (!s.singBoxEnabled) {
+  const body = (req.body ?? {}) as {
+    /** 前端 draft 已开 Sing-Box 但未保存时，允许临时启用启动 */
+    force?: boolean;
+    nodes?: string;
+    selected?: string;
+  };
+  const force = body.force === true;
+  // 未保存开关时：force + 可解析节点 → 用请求体节点临时启动（不写盘）
+  if (!s.singBoxEnabled && !force) {
     res.status(400).json({
       ok: false,
-      error: '请先在设置中开启「sing-box 独立代理」并保存'
+      error: '请先切换到「Sing-Box」模式并点保存，或保存后再启动'
     });
     return;
   }
-  const status = await syncSingBoxFromSettings(s);
-  res.json({ ok: !status.lastError || status.running, ...status });
+  const effective = {
+    ...s,
+    singBoxEnabled: true,
+    singBoxNodes:
+      force && typeof body.nodes === 'string' && body.nodes.trim()
+        ? body.nodes
+        : s.singBoxNodes,
+    singBoxSelected:
+      force && typeof body.selected === 'string'
+        ? body.selected
+        : s.singBoxSelected
+  };
+  const status = await syncSingBoxFromSettings(effective);
+  res.json({
+    ok: !status.lastError || status.running,
+    ...status,
+    hint: !s.singBoxEnabled
+      ? '已用当前表单临时启动；请尽快点「保存」以持久化开关与节点'
+      : undefined
+  });
 });
 
 /** 停止 sing-box（不改 settings；下次保存若仍开启会再启） */

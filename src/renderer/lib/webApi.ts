@@ -302,7 +302,12 @@ const webApi: RendererApi = {
       mode: input?.mode,
       existing: input?.existing
     }),
-  startSingBox: () => http('POST', '/api/singbox/start'),
+  startSingBox: (opts) =>
+    http('POST', '/api/singbox/start', {
+      force: opts?.force === true,
+      nodes: opts?.nodes,
+      selected: opts?.selected
+    }),
   stopSingBox: () => http('POST', '/api/singbox/stop'),
   syncSingBox: () => http('POST', '/api/singbox/sync'),
   rotateSingBox: (reason?: string) =>

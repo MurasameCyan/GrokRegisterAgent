@@ -368,9 +368,14 @@ export function SettingsForm() {
     setSbBusy(true);
     try {
       const api = window.api;
+      // 启动：带上当前表单节点；若未保存开关也 force 临时启用
       const r =
         action === 'start'
-          ? await api.startSingBox()
+          ? await api.startSingBox({
+              force: true,
+              nodes: draft?.singBoxNodes || '',
+              selected: draft?.singBoxSelected || ''
+            })
           : action === 'stop'
             ? await api.stopSingBox()
             : await api.syncSingBox();
@@ -386,7 +391,8 @@ export function SettingsForm() {
           title: 'sing-box 运行中',
           description:
             (r.localUrl || `http://127.0.0.1:${r.port}`) +
-            (r.selectedName ? ` · ${r.selectedName}` : '')
+            (r.selectedName ? ` · ${r.selectedName}` : '') +
+            ((r as { hint?: string }).hint ? ` · ${(r as { hint?: string }).hint}` : '')
         });
       }
     } catch (err) {
@@ -730,7 +736,7 @@ export function SettingsForm() {
                     Sing-Box 内核
                   </div>
                   <p className="mt-0.5 text-[11px] leading-4 text-muted-foreground">
-                    粘贴节点链接，或填订阅 URL 点「解析并导入」
+                    分享链接或 http/https/socks4/socks5 代理；也可订阅解析导入
                   </p>
                 </div>
                 <div className="flex shrink-0 flex-wrap items-center gap-1.5">
@@ -842,14 +848,14 @@ export function SettingsForm() {
 
               <Field
                 label="节点列表"
-                hint="每行一个节点链接；也可由上方订阅解析写入。解析成功后可选下拉。注册随机 / 失败自动换节点"
+                hint="每行一条：ss/vmess/vless/trojan/hy2/tuic，或 http(s):// / socks5:// / socks4:// / host:port"
                 error={errors.singBoxNodes}
               >
                 <textarea
                   className={cn(TEXTAREA_CLASS, 'min-h-[120px] font-mono text-[13px]')}
                   value={draft.singBoxNodes || ''}
                   onChange={(e) => update('singBoxNodes', e.target.value)}
-                  placeholder="vless://...  ss://...  vmess://...  #备注可写行尾"
+                  placeholder="vless://...  socks5://127.0.0.1:1080  http://user:pass@host:8080"
                   spellCheck={false}
                 />
               </Field>

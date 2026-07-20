@@ -478,11 +478,142 @@ function parseTuic(url: string, idx: number): ParsedNode | null {
   }
 }
 
+
+/**
+ * 上游 HTTP(S) / SOCKS 代理（sing-box outbound type=http|socks）。
+ * 支持：
+ *   http://host:port
+ *   http://user:pass@host:port
+ *   https://host:port          （TLS 到代理，outbound.tls.enabled）
+ *   socks:// / socks5:// / socks5h://host:port
+ *   socks4:// / socks4a://host:port
+ *   host:port                 （默认按 socks5）
+ *   user:pass@host:port
+ * 行尾 #备注 可选
+ */
+function parseHttpOrSocks(url: string, idx: number): ParsedNode | null {
+  try {
+    let raw = String(url || '').trim();
+    if (!raw) return null;
+    let name = '';
+    // fragment 备注（非标准但方便）
+    const hash = raw.indexOf('#');
+    if (hash >= 0) {
+      name = decodeURIComponent(raw.slice(hash + 1) || '');
+      raw = raw.slice(0, hash);
+    }
+
+    let scheme = '';
+    let rest = raw;
+    const lower = raw.toLowerCase();
+    if (lower.startsWith('https://')) {
+      scheme = 'https';
+      rest = raw.slice('https://'.length);
+    } else if (lower.startsWith('http://')) {
+      scheme = 'http';
+      rest = raw.slice('http://'.length);
+    } else if (lower.startsWith('socks5h://')) {
+      scheme = 'socks5';
+      rest = raw.slice('socks5h://'.length);
+    } else if (lower.startsWith('socks5://')) {
+      scheme = 'socks5';
+      rest = raw.slice('socks5://'.length);
+    } else if (lower.startsWith('socks4a://')) {
+      scheme = 'socks4';
+      rest = raw.slice('socks4a://'.length);
+    } else if (lower.startsWith('socks4://')) {
+      scheme = 'socks4';
+      rest = raw.slice('socks4://'.length);
+    } else if (lower.startsWith('socks://')) {
+      scheme = 'socks5';
+      rest = raw.slice('socks://'.length);
+    } else {
+      // bare host:port or user:pass@host:port → socks5
+      scheme = 'socks5';
+      rest = raw;
+    }
+
+    // 去掉 path（代理 URL 一般无 path；有则忽略）
+    const slash = rest.indexOf('/');
+    if (slash >= 0) rest = rest.slice(0, slash);
+
+    let username = '';
+    let password = '';
+    let hostport = rest;
+    const at = rest.lastIndexOf('@');
+    if (at >= 0) {
+      const userinfo = rest.slice(0, at);
+      hostport = rest.slice(at + 1);
+      const colon = userinfo.indexOf(':');
+      if (colon >= 0) {
+        username = decodeURIComponent(userinfo.slice(0, colon));
+        password = decodeURIComponent(userinfo.slice(colon + 1));
+      } else {
+        username = decodeURIComponent(userinfo);
+      }
+    }
+
+    // IPv6 [addr]:port
+    let host = '';
+    let port = 0;
+    if (hostport.startsWith('[')) {
+      const end = hostport.indexOf(']');
+      if (end < 0) return null;
+      host = hostport.slice(1, end);
+      const p = hostport.slice(end + 1);
+      if (!p.startsWith(':')) return null;
+      port = Number(p.slice(1));
+    } else {
+      const colon = hostport.lastIndexOf(':');
+      if (colon < 0) return null;
+      host = hostport.slice(0, colon).trim();
+      port = Number(hostport.slice(colon + 1));
+    }
+    if (!host || !Number.isFinite(port) || port <= 0 || port > 65535) return null;
+
+    // 排除误把订阅/网页 URL 当代理（有明确 path 的 http(s) 已在上方截断；再挡常见非代理口误填）
+    // 不拦截：用户确实可能用 80/443 的 HTTP 代理
+
+    const isHttp = scheme === 'http' || scheme === 'https';
+    const type = isHttp ? 'http' : 'socks';
+    const tag = safeTag(isHttp ? 'http' : scheme === 'socks4' ? 'socks4' : 'socks', raw, idx);
+    const outbound: Record<string, unknown> = {
+      type,
+      tag,
+      server: host,
+      server_port: port
+    };
+    if (username) outbound.username = username;
+    if (password) outbound.password = password;
+    // sing-box socks version: "4" | "5"（默认 5）
+    if (type === 'socks' && scheme === 'socks4') {
+      outbound.version = '4';
+    }
+    if (scheme === 'https') {
+      outbound.tls = { enabled: true, server_name: host };
+    }
+
+    const authHint = username ? ' · auth' : '';
+    return {
+      tag,
+      name: name || `${scheme} ${host}:${port}${authHint}`,
+      type,
+      server: host,
+      port,
+      raw: url,
+      outbound
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function parseSingBoxNodeLine(line: string, idx = 0): ParsedNode | null {
   const { url } = stripNodeComment(line);
   const u = url.trim();
   if (!u) return null;
   const lower = u.toLowerCase();
+  // 分享协议
   if (lower.startsWith('ss://')) return parseSs(u, idx);
   if (lower.startsWith('vmess://')) return parseVmess(u, idx);
   if (lower.startsWith('vless://')) return parseVlessOrTrojan(u, idx, 'vless');
@@ -490,6 +621,22 @@ export function parseSingBoxNodeLine(line: string, idx = 0): ParsedNode | null {
   if (lower.startsWith('hysteria2://') || lower.startsWith('hy2://'))
     return parseHysteria2(u, idx);
   if (lower.startsWith('tuic://')) return parseTuic(u, idx);
+  // 上游 HTTP / SOCKS 代理
+  if (
+    lower.startsWith('http://') ||
+    lower.startsWith('https://') ||
+    lower.startsWith('socks://') ||
+    lower.startsWith('socks4://') ||
+    lower.startsWith('socks4a://') ||
+    lower.startsWith('socks5://') ||
+    lower.startsWith('socks5h://')
+  ) {
+    return parseHttpOrSocks(u, idx);
+  }
+  // bare host:port / user:pass@host:port（默认 socks5）
+  if (/^(?:\S+@)?(?:\[[^\]]+\]|[^:\s/]+):\d{1,5}$/.test(u.split('#')[0].trim())) {
+    return parseHttpOrSocks(u, idx);
+  }
   return null;
 }
 
@@ -530,7 +677,7 @@ export function listSingBoxNodeSummaries(text: string): SingBoxNodeSummary[] {
 
 /** 分享链接协议前缀（与 parseSingBoxNodeLine 一致） */
 const SHARE_LINK_RE =
-  /(?:^|[\s"'<>])((?:ss|vmess|vless|trojan|hysteria2|hy2|tuic):\/\/[^\s"'<>]+)/gi;
+  /(?:^|[\s"'<>])((?:ss|vmess|vless|trojan|hysteria2|hy2|tuic|https?|socks5h?|socks4a?|socks):\/\/[^\s"'<>]+)/gi;
 
 function tryBase64Decode(raw: string): string | null {
   let s = String(raw || '')
@@ -567,7 +714,9 @@ function extractShareLinksFromText(body: string): string[] {
     const u = line.trim();
     if (!u || u.startsWith('#')) continue;
     // 行内可能带备注：scheme://...#name 或 scheme://... 空格备注
-    const m = u.match(/^(ss|vmess|vless|trojan|hysteria2|hy2|tuic):\/\/\S+/i);
+    const m = u.match(
+      /^(ss|vmess|vless|trojan|hysteria2|hy2|tuic|https?|socks5h?|socks4a?|socks):\/\/\S+/i
+    );
     if (m) {
       const link = m[0].replace(/[),;]+$/, '');
       const key = link.toLowerCase();
@@ -845,6 +994,35 @@ function clashProxyToShareLink(p: Record<string, string>): string | null {
     const qs = q.length ? `?${q.join('&')}` : '';
     const user = password ? `${uuid}:${password}` : uuid;
     return `tuic://${encodeURIComponent(user)}@${server}:${port}${qs}#${encodeURIComponent(name)}`;
+  }
+
+  if (type === 'http' || type === 'https') {
+    const user = p.username || p.user || '';
+    const pass = p.password || p.pass || '';
+    const auth =
+      user && pass
+        ? `${encodeURIComponent(user)}:${encodeURIComponent(pass)}@`
+        : user
+          ? `${encodeURIComponent(user)}@`
+          : '';
+    const sch = type === 'https' || p.tls === 'true' ? 'https' : 'http';
+    return `${sch}://${auth}${server}:${port}#${encodeURIComponent(name)}`;
+  }
+
+  if (type === 'socks' || type === 'socks5' || type === 'socks4') {
+    const user = p.username || p.user || '';
+    const pass = p.password || p.pass || '';
+    const auth =
+      user && pass
+        ? `${encodeURIComponent(user)}:${encodeURIComponent(pass)}@`
+        : user
+          ? `${encodeURIComponent(user)}@`
+          : '';
+    const sch =
+      type === 'socks4' || p.version === '4' || p.version === 'socks4'
+        ? 'socks4'
+        : 'socks5';
+    return `${sch}://${auth}${server}:${port}#${encodeURIComponent(name)}`;
   }
 
   return null;
@@ -1313,7 +1491,7 @@ export async function syncSingBoxFromSettings(
     excludeTags: opts.rotate ? demotedTags : undefined
   });
   if (!node) {
-    lastError = '没有可解析的节点（支持 ss/vmess/vless/trojan/hysteria2/tuic 分享链接）';
+    lastError = '没有可解析的节点（支持 ss/vmess/vless/trojan/hysteria2/tuic 分享链接，以及 http/https/socks4/socks5 代理）';
     await stopSingBox();
     return getSingBoxStatus(settings);
   }
