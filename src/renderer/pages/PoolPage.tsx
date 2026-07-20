@@ -1680,7 +1680,7 @@ function AuthConvertedBadge({
       className="inline-flex h-5 shrink-0 items-center rounded-full bg-muted px-2 text-[10px] font-medium leading-none text-muted-foreground"
       title="未匹配：邮箱与 Auth 目录均无对应，且 SSO 哈希未命中（auth 需含 sso 字段）"
     >
-      未转
+      None
     </span>
   );
 }
