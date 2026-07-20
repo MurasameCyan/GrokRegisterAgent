@@ -15,11 +15,11 @@
 |------|------|
 | **Web 控制台** | 注册机 / SSO 号池 / Auth / 配置 四个页；启动·停止·实时日志 |
 | **注册方案 A/B/C** | Plan A 浏览器主流程、Plan B 拟人兜底、Plan C Hybrid（浏览器 harvest + 协议）；可单独开关，全开则 A→B→C 顺序兜底 |
-| **邮件后端** | 对接 `cloudflare_temp_email` 创建地址并读验证码 |
+| **邮件后端** | Cloudflare Temp Email / DuckMail / YYDS Mail / GPTMail |
 | **SSO 号池** | 本地保存账号与 SSO；注册成功可自动 SSO 验活并刷新徽章 |
 | **Auth mint** | PKCE / Device / Double 双通道；可后台延迟队列；可选 grok-4.5 校验 |
 | **NSFW 标签** | 可选 mint 后打标；侧车 `account_tags.json` 优先落在 `DATA_DIR`；UI 始终显示 `NSFW` / `NSFW×` / `NSFW—` |
-| **代理** | 设置页仅 **Sing-Box** / **直连**；mint 路径须有可用代理（勿强制 none） |
+| **代理** | 设置页仅 **Sing-Box** / **直连**；支持订阅解析、分享链接与 http(s)/socks 节点；mint 路径须有可用代理 |
 | **外置 Turnstile Solver** | 可选 compose profile；设置页开关 + 探活；多架构 amd64/arm64 |
 
 
@@ -118,6 +118,15 @@ docker logs grok-register-agent
 - 仅保留 **Sing-Box** 与 **直连**
 - Sing-Box 二进制由镜像 / Actions 附带（`register/bin/sing-box/`）
 - 状态图标：直连常绿；Sing-Box 按连通性 R/Y/G
+- **节点列表** 支持：
+  - 分享链接：`ss` / `vmess` / `vless` / `trojan` / `hysteria2` / `hy2` / `tuic`
+  - 上游代理：`http` / `https` / `socks4` / `socks4a` / `socks5` / `socks5h`（含 `host:port` 默认可按 socks5）
+- **订阅链接**（设置项 `singBoxSubscriptionUrl`，随配置保存）：
+  - 点 **「解析」** 拉取并**替换**节点列表
+  - 支持：Base64 / URL-safe Base64、明文分享链接、Clash YAML `proxies`
+  - 拉取为**直连** HTTP(S)，不经本地 Sing-Box 代理
+- 开启 Sing-Box 时**允许空节点保存**（可先开模式再填订阅/节点；无节点时启动会失败）
+- 启动可在 draft 未保存时 **force** 临时启用（持久化仍依赖「保存」）
 
 ### Turnstile
 
