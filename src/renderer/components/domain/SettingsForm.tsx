@@ -337,12 +337,9 @@ export function SettingsForm() {
         setSbSubMsg(r?.message || r?.error || '解析失败');
         return;
       }
-      // 写入节点列表；URL 已在 draft，点「保存」一并持久化
+      // 写入节点列表；URL 已在 draft
       update('singBoxNodes', r.nodesText || '');
-      setSbSubMsg(
-        (r.message || `已导入 ${(r.nodes || []).length} 个节点`) +
-          '（请保存配置以持久化）'
-      );
+      setSbSubMsg(r.message || `已导入 ${(r.nodes || []).length} 个节点`);
       void refreshSbStatus();
     } catch (err) {
       setSbSubMsg(err instanceof Error ? err.message : String(err));
@@ -801,7 +798,7 @@ export function SettingsForm() {
 
               <Field
                 label="订阅链接"
-                hint="http(s) 订阅：支持 Base64 / 明文分享链接 / Clash YAML。URL 与解析结果均随「保存」持久化"
+                hint="http(s) 订阅：支持 Base64 / 明文分享链接 / Clash YAML"
               >
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                   <Input
