@@ -16,6 +16,8 @@ import {
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
+import https from 'node:https';
+import http from 'node:http';
 import type { AppSettings } from '@shared/settings';
 import { buildSingBoxLocalProxyUrl } from '@shared/settings';
 
@@ -524,6 +526,295 @@ export function listSingBoxNodeSummaries(text: string): SingBoxNodeSummary[] {
     raw
   }));
 }
+
+
+/** 分享链接协议前缀（与 parseSingBoxNodeLine 一致） */
+const SHARE_LINK_RE =
+  /(?:^|[\s"'<>])((?:ss|vmess|vless|trojan|hysteria2|hy2|tuic):\/\/[^\s"'<>]+)/gi;
+
+function tryBase64Decode(raw: string): string | null {
+  const s = String(raw || '')
+    .trim()
+    .replace(/\s+/g, '');
+  if (!s || s.length < 8) return null;
+  // 订阅体常见标准/URL-safe Base64
+  if (!/^[A-Za-z0-9+/_=-]+$/.test(s)) return null;
+  try {
+    const buf = Buffer.from(s, 'base64');
+    if (!buf.length) return null;
+    const text = buf.toString('utf8');
+    // 解码后应含可打印字符 + 分享协议
+    if (!/[\x20-\x7e\n\r\t]{8,}/.test(text)) return null;
+    return text;
+  } catch {
+    return null;
+  }
+}
+
+function extractShareLinksFromText(body: string): string[] {
+  const text = String(body || '');
+  const found: string[] = [];
+  const seen = new Set<string>();
+
+  // 1) 明文 / 解码后：逐行
+  for (const line of text.split(/\r?\n/)) {
+    const u = line.trim();
+    if (!u || u.startsWith('#')) continue;
+    // 行内可能带备注：scheme://...#name 或 scheme://... 空格备注
+    const m = u.match(/^(ss|vmess|vless|trojan|hysteria2|hy2|tuic):\/\/\S+/i);
+    if (m) {
+      const link = m[0].replace(/[),;]+$/, '');
+      const key = link.toLowerCase();
+      if (!seen.has(key)) {
+        seen.add(key);
+        found.push(link);
+      }
+    }
+  }
+
+  // 2) 正则扫全文（YAML/JSON 嵌套）
+  SHARE_LINK_RE.lastIndex = 0;
+  let mm: RegExpExecArray | null;
+  while ((mm = SHARE_LINK_RE.exec(text)) !== null) {
+    const link = String(mm[1] || '').replace(/[),;]+$/, '');
+    const key = link.toLowerCase();
+    if (!seen.has(key) && parseSingBoxNodeLine(link, 0)) {
+      seen.add(key);
+      found.push(link);
+    }
+  }
+  return found;
+}
+
+function expandSubscriptionBody(raw: string): string[] {
+  const body = String(raw || '').trim();
+  if (!body) return [];
+  // 优先直接抽链接
+  let links = extractShareLinksFromText(body);
+  if (links.length > 0) return links;
+  // 整包 Base64
+  const decoded = tryBase64Decode(body);
+  if (decoded) {
+    links = extractShareLinksFromText(decoded);
+    if (links.length > 0) return links;
+  }
+  // 多行各自可能是 Base64 段
+  for (const line of body.split(/\r?\n/)) {
+    const d = tryBase64Decode(line.trim());
+    if (d) {
+      for (const l of extractShareLinksFromText(d)) {
+        if (!links.includes(l)) links.push(l);
+      }
+    }
+  }
+  return links;
+}
+
+function httpGetText(url: string, timeoutMs = 25000): Promise<string> {
+  return new Promise((resolvePromise, reject) => {
+    let settled = false;
+    const done = (err: Error | null, text?: string) => {
+      if (settled) return;
+      settled = true;
+      if (err) reject(err);
+      else resolvePromise(text || '');
+    };
+    try {
+      const u = new URL(url);
+      const lib = u.protocol === 'http:' ? http : https;
+      const req = lib.request(
+        u,
+        {
+          method: 'GET',
+          timeout: timeoutMs,
+          headers: {
+            // 部分订阅站按 UA 分流；用常见 Clash 客户端标识提高兼容
+            'User-Agent':
+              'clash-meta/1.18.0 GrokRegisterAgent/1.0 (+subscription-import)',
+            Accept: 'text/plain,application/octet-stream,*/*'
+          }
+        },
+        (res) => {
+          const code = res.statusCode || 0;
+          // 简单跟随 1 次重定向
+          if (
+            code >= 300 &&
+            code < 400 &&
+            res.headers.location &&
+            typeof res.headers.location === 'string'
+          ) {
+            const next = new URL(res.headers.location, u).toString();
+            res.resume();
+            httpGetText(next, timeoutMs).then(
+              (t) => done(null, t),
+              (e) => done(e instanceof Error ? e : new Error(String(e)))
+            );
+            return;
+          }
+          const chunks: Buffer[] = [];
+          res.on('data', (c) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
+          res.on('end', () => {
+            const buf = Buffer.concat(chunks);
+            if (code < 200 || code >= 300) {
+              done(
+                new Error(
+                  `HTTP ${code}: ${buf.toString('utf8').slice(0, 120) || 'empty'}`
+                )
+              );
+              return;
+            }
+            done(null, buf.toString('utf8'));
+          });
+        }
+      );
+      req.on('error', (e) => done(e));
+      req.on('timeout', () => {
+        req.destroy();
+        done(new Error(`timeout ${timeoutMs}ms`));
+      });
+      req.end();
+    } catch (e) {
+      done(e instanceof Error ? e : new Error(String(e)));
+    }
+  });
+}
+
+export type SubscriptionImportResult = {
+  ok: boolean;
+  url: string;
+  /** 抽到的分享链接（可 parse） */
+  links: string[];
+  /** 可被 sing-box 解析的节点摘要 */
+  nodes: SingBoxNodeSummary[];
+  /** 合并后的节点文本（每行一条） */
+  nodesText: string;
+  message: string;
+  error?: string;
+};
+
+/**
+ * 拉取订阅 URL → 解码/抽取分享链接 → 用现有 parse 校验。
+ * 说明：官方 sing-box 内核不提供「订阅 URL 命令」；订阅解析由客户端完成，
+ * 本函数即客户端侧解析，再交给本仓库的节点列表 / 配置生成。
+ */
+export async function fetchSubscriptionLinks(
+  urlRaw: string,
+  opts?: { timeoutMs?: number; existingText?: string; mode?: 'replace' | 'append' }
+): Promise<SubscriptionImportResult> {
+  const url = String(urlRaw || '').trim();
+  const mode = opts?.mode === 'append' ? 'append' : 'replace';
+  if (!url) {
+    return {
+      ok: false,
+      url: '',
+      links: [],
+      nodes: [],
+      nodesText: '',
+      message: '请填写订阅链接',
+      error: 'empty url'
+    };
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return {
+      ok: false,
+      url,
+      links: [],
+      nodes: [],
+      nodesText: '',
+      message: '订阅地址不是合法 URL',
+      error: 'invalid url'
+    };
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return {
+      ok: false,
+      url,
+      links: [],
+      nodes: [],
+      nodesText: '',
+      message: '仅支持 http(s) 订阅地址',
+      error: 'bad protocol'
+    };
+  }
+
+  let body: string;
+  try {
+    body = await httpGetText(url, opts?.timeoutMs ?? 25000);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return {
+      ok: false,
+      url,
+      links: [],
+      nodes: [],
+      nodesText: '',
+      message: `拉取订阅失败: ${msg}`,
+      error: msg
+    };
+  }
+
+  const links = expandSubscriptionBody(body);
+  if (links.length === 0) {
+    return {
+      ok: false,
+      url,
+      links: [],
+      nodes: [],
+      nodesText: '',
+      message:
+        '未解析到 ss/vmess/vless/trojan/hysteria2/tuic 分享链接（可能是 Clash 纯 YAML 或加密订阅）',
+      error: 'no share links'
+    };
+  }
+
+  // 校验：只保留 parse 成功的
+  const good: string[] = [];
+  for (let i = 0; i < links.length; i++) {
+    if (parseSingBoxNodeLine(links[i], i)) good.push(links[i]);
+  }
+  if (good.length === 0) {
+    return {
+      ok: false,
+      url,
+      links,
+      nodes: [],
+      nodesText: '',
+      message: `抽到 ${links.length} 条链接但均无法解析为节点`,
+      error: 'parse fail'
+    };
+  }
+
+  let nodesText = good.join('\n');
+  if (mode === 'append') {
+    const prev = String(opts?.existingText || '')
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+    const set = new Set(prev.map((l) => l.toLowerCase()));
+    const merged = [...prev];
+    for (const g of good) {
+      if (!set.has(g.toLowerCase())) {
+        set.add(g.toLowerCase());
+        merged.push(g);
+      }
+    }
+    nodesText = merged.join('\n');
+  }
+
+  const nodes = listSingBoxNodeSummaries(nodesText);
+  return {
+    ok: true,
+    url,
+    links: good,
+    nodes,
+    nodesText,
+    message: `已解析 ${good.length} 条节点` + (mode === 'append' ? '（追加去重）' : '（替换列表）')
+  };
+}
+
 
 /** 固定本地端口（不对用户开放） */
 export const SING_BOX_FIXED_PORT = 2080;

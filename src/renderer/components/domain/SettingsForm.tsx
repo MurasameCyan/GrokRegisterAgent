@@ -194,6 +194,10 @@ export function SettingsForm() {
   const [sbParsedNodes, setSbParsedNodes] = useState<
     { tag: string; name: string; type: string; server: string; port: number }[]
   >([]);
+  /** 订阅 URL 解析导入 */
+  const [sbSubUrl, setSbSubUrl] = useState('');
+  const [sbSubBusy, setSbSubBusy] = useState(false);
+  const [sbSubMsg, setSbSubMsg] = useState<string | null>(null);
 
   useEffect(() => {
     if (data && !draft) {
@@ -309,6 +313,38 @@ export function SettingsForm() {
     setDraft((prev) => (prev ? { ...prev, ...partial } : prev));
 
   /** 仅 Sing-Box / 直连；强制关闭已移除的 CF / 普通代理 */
+  const importSbSubscription = async (mode: 'replace' | 'append') => {
+    const url = sbSubUrl.trim();
+    if (!url) {
+      setSbSubMsg('请先填写订阅链接');
+      return;
+    }
+    if (typeof window.api?.importSingBoxSubscription !== 'function') {
+      setSbSubMsg('当前环境不支持订阅解析');
+      return;
+    }
+    setSbSubBusy(true);
+    setSbSubMsg(null);
+    try {
+      const r = await window.api.importSingBoxSubscription({
+        url,
+        mode,
+        existing: draft?.singBoxNodes || ''
+      });
+      if (!r?.ok) {
+        setSbSubMsg(r?.message || r?.error || '解析失败');
+        return;
+      }
+      update('singBoxNodes', r.nodesText || '');
+      setSbSubMsg(r.message || `已导入 ${(r.nodes || []).length} 个节点`);
+      void refreshSbStatus();
+    } catch (err) {
+      setSbSubMsg(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSbSubBusy(false);
+    }
+  };
+
   const setProxyMode = (mode: 'off' | 'singbox') => {
     if (mode === 'singbox') {
       patch({
@@ -694,7 +730,7 @@ export function SettingsForm() {
                     Sing-Box 内核
                   </div>
                   <p className="mt-0.5 text-[11px] leading-4 text-muted-foreground">
-                    粘贴 ss/vmess/vless/trojan/hysteria2/tuic 等节点链接
+                    粘贴节点链接，或填订阅 URL 点「解析并导入」
                   </p>
                 </div>
                 <div className="flex shrink-0 flex-wrap items-center gap-1.5">
@@ -752,8 +788,61 @@ export function SettingsForm() {
               </div>
 
               <Field
+                label="订阅链接"
+                hint="http(s) 订阅地址。服务端拉取并解码为分享链接后导入下方列表（非 sing-box 内置命令；与客户端解析订阅同理）"
+              >
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                  <Input
+                    value={sbSubUrl}
+                    onChange={(e) => setSbSubUrl(e.target.value)}
+                    placeholder="https://example.com/api/v1/client/subscribe?token=..."
+                    className="font-mono text-[13px]"
+                    spellCheck={false}
+                  />
+                  <div className="flex shrink-0 flex-wrap gap-1.5">
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="h-9"
+                      disabled={sbSubBusy || !sbSubUrl.trim()}
+                      onClick={() => void importSbSubscription('replace')}
+                      title="用订阅结果替换当前节点列表"
+                    >
+                      {sbSubBusy ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : null}
+                      解析并导入
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      className="h-9"
+                      disabled={sbSubBusy || !sbSubUrl.trim()}
+                      onClick={() => void importSbSubscription('append')}
+                      title="追加到现有列表（按链接去重）"
+                    >
+                      追加
+                    </Button>
+                  </div>
+                </div>
+                {sbSubMsg && (
+                  <p
+                    className={cn(
+                      'mt-1.5 text-[11px] leading-4',
+                      sbSubMsg.includes('失败') || sbSubMsg.includes('未')
+                        ? 'text-danger'
+                        : 'text-muted-foreground'
+                    )}
+                  >
+                    {sbSubMsg}
+                  </p>
+                )}
+              </Field>
+
+              <Field
                 label="节点列表"
-                hint="每行一个节点链接；解析成功后可选下拉。注册随机 / 失败自动换节点"
+                hint="每行一个节点链接；也可由上方订阅解析写入。解析成功后可选下拉。注册随机 / 失败自动换节点"
                 error={errors.singBoxNodes}
               >
                 <textarea

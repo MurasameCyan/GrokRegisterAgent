@@ -296,6 +296,12 @@ const webApi: RendererApi = {
   getSingBoxNodes: () => http('GET', '/api/singbox/nodes'),
   parseSingBoxNodes: (nodes: string) =>
     http('POST', '/api/singbox/parse', { nodes }),
+  importSingBoxSubscription: (input) =>
+    http('POST', '/api/singbox/subscription', {
+      url: input?.url,
+      mode: input?.mode,
+      existing: input?.existing
+    }),
   startSingBox: () => http('POST', '/api/singbox/start'),
   stopSingBox: () => http('POST', '/api/singbox/stop'),
   syncSingBox: () => http('POST', '/api/singbox/sync'),

@@ -545,6 +545,20 @@ export interface RendererApi {
   parseSingBoxNodes(
     nodes: string
   ): Promise<{ nodes: SingBoxNodeSummary[]; parseable: number }>;
+  /** 拉取订阅 URL 并解析为节点分享链接（不写盘） */
+  importSingBoxSubscription(input: {
+    url: string;
+    mode?: 'replace' | 'append';
+    existing?: string;
+  }): Promise<{
+    ok: boolean;
+    url: string;
+    links: string[];
+    nodes: SingBoxNodeSummary[];
+    nodesText: string;
+    message: string;
+    error?: string;
+  }>;
   /** 按已保存配置启动/重载 sing-box */
   startSingBox(): Promise<SingBoxStatus & { ok?: boolean; error?: string }>;
   /** 停止 sing-box 进程 */

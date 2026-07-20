@@ -34,6 +34,7 @@ import {
   stopCfwp
 } from './cfwpManager.js';
 import {
+  fetchSubscriptionLinks,
   getSingBoxStatus,
   listSingBoxNodeSummaries,
   parseSingBoxNodes,
@@ -289,6 +290,35 @@ app.post('/api/singbox/parse', async (req, res) => {
   const text = String((req.body as { nodes?: string })?.nodes ?? '');
   const nodes = listSingBoxNodeSummaries(text);
   res.json({ nodes, parseable: parseSingBoxNodes(text).length });
+});
+
+/**
+ * 拉取订阅 URL，解码为分享链接并解析节点（不写盘；前端把 nodesText 写回 draft）。
+ * 非 sing-box 内置订阅命令：内核本身不解析订阅 URL，由本服务端做客户端侧解析。
+ */
+app.post('/api/singbox/subscription', async (req, res) => {
+  try {
+    const body = (req.body ?? {}) as {
+      url?: string;
+      mode?: 'replace' | 'append';
+      existing?: string;
+    };
+    const result = await fetchSubscriptionLinks(String(body.url || ''), {
+      mode: body.mode === 'append' ? 'append' : 'replace',
+      existingText: String(body.existing || '')
+    });
+    res.json(result);
+  } catch (e: any) {
+    res.status(500).json({
+      ok: false,
+      url: '',
+      links: [],
+      nodes: [],
+      nodesText: '',
+      message: errorMessage(e),
+      error: errorMessage(e)
+    });
+  }
 });
 
 /** 按当前配置启动/重载 sing-box */
