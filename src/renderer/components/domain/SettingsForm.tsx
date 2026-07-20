@@ -315,7 +315,7 @@ export function SettingsForm() {
     setDraft((prev) => (prev ? { ...prev, ...partial } : prev));
 
   /** 仅 Sing-Box / 直连；强制关闭已移除的 CF / 普通代理 */
-  const importSbSubscription = async (mode: 'replace' | 'append') => {
+  const importSbSubscription = async () => {
     const url = String(draft?.singBoxSubscriptionUrl || '').trim();
     if (!url) {
       setSbSubMsg('请先填写订阅链接');
@@ -330,7 +330,7 @@ export function SettingsForm() {
     try {
       const r = await window.api.importSingBoxSubscription({
         url,
-        mode,
+        mode: 'replace',
         existing: draft?.singBoxNodes || ''
       });
       if (!r?.ok) {
@@ -819,26 +819,13 @@ export function SettingsForm() {
                       disabled={
                         sbSubBusy || !String(draft.singBoxSubscriptionUrl || '').trim()
                       }
-                      onClick={() => void importSbSubscription('replace')}
-                      title="用订阅结果替换当前节点列表"
+                      onClick={() => void importSbSubscription()}
+                      title="拉取订阅并替换当前节点列表"
                     >
                       {sbSubBusy ? (
                         <Loader2 className="h-3.5 w-3.5 animate-spin" />
                       ) : null}
-                      解析并导入
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="secondary"
-                      className="h-9"
-                      disabled={
-                        sbSubBusy || !String(draft.singBoxSubscriptionUrl || '').trim()
-                      }
-                      onClick={() => void importSbSubscription('append')}
-                      title="追加到现有列表（按链接去重）"
-                    >
-                      追加
+                      解析
                     </Button>
                   </div>
                 </div>

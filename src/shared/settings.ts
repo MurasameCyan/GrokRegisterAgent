@@ -1304,16 +1304,7 @@ export function validateSettings(s: AppSettings): Record<string, string> {
     ) {
       errors.proxyProbeConcurrency = '测活并发须在 1 到 20 之间';
     }
-    // 仅 sing-box / 直连
-    if (s.singBoxEnabled) {
-      const nodes = String(s.singBoxNodes || '')
-        .split(/\r?\n/)
-        .map((l) => l.trim())
-        .filter((l) => l && !l.startsWith('#'));
-      if (nodes.length === 0) {
-        errors.singBoxNodes = '已开启 sing-box，请粘贴至少一个节点分享链接';
-      }
-    }
+    // sing-box 允许空节点列表保存（可先开模式再填订阅/节点）
   } catch (err) {
     errors._form = `配置校验异常: ${err instanceof Error ? err.message : String(err)}`;
   }
