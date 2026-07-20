@@ -76,6 +76,9 @@ function upsertJob(
       total: patch.total ?? 0,
       success: patch.success ?? 0,
       failed: patch.failed ?? 0,
+      planASuccess: patch.planASuccess ?? 0,
+      planBSuccess: patch.planBSuccess ?? 0,
+      planCSuccess: patch.planCSuccess ?? 0,
       errorMessage: patch.errorMessage ?? null,
       focused: patch.focused ?? false
     };
@@ -214,16 +217,58 @@ export const useRunStore = create<RunState>((set) => ({
             phase: 'running'
           });
           break;
-        case 'success':
+        case 'success': {
+          const pa = Number((event as { planASuccess?: number }).planASuccess);
+          const pb = Number((event as { planBSuccess?: number }).planBSuccess);
+          const pc = Number((event as { planCSuccess?: number }).planCSuccess);
+          const planPatch = {
+            planASuccess: Number.isFinite(pa) ? pa : undefined,
+            planBSuccess: Number.isFinite(pb) ? pb : undefined,
+            planCSuccess: Number.isFinite(pc) ? pc : undefined
+          };
           if (isTerminalJob(event.runId)) {
             // 终态：只允许抬高计数（防乱序），绝不改 phase
             const j = existingJob(event.runId)!;
             const success = Math.max(j.success, event.success);
             const failed = Math.max(j.failed, event.failed);
             const total = Math.max(j.total, event.total);
-            touchJob({ runId: event.runId, success, failed, total });
+            touchJob({
+              runId: event.runId,
+              success,
+              failed,
+              total,
+              planASuccess: Math.max(
+                Number(j.planASuccess) || 0,
+                Number.isFinite(pa) ? pa : 0
+              ),
+              planBSuccess: Math.max(
+                Number(j.planBSuccess) || 0,
+                Number.isFinite(pb) ? pb : 0
+              ),
+              planCSuccess: Math.max(
+                Number(j.planCSuccess) || 0,
+                Number.isFinite(pc) ? pc : 0
+              )
+            });
             if (!focus || event.runId === focus || event.runId === status.runId) {
-              status = { ...status, success, failed, total };
+              status = {
+                ...status,
+                success,
+                failed,
+                total,
+                planASuccess: Math.max(
+                  Number(status.planASuccess) || 0,
+                  Number.isFinite(pa) ? pa : 0
+                ),
+                planBSuccess: Math.max(
+                  Number(status.planBSuccess) || 0,
+                  Number.isFinite(pb) ? pb : 0
+                ),
+                planCSuccess: Math.max(
+                  Number(status.planCSuccess) || 0,
+                  Number.isFinite(pc) ? pc : 0
+                )
+              };
             }
             break;
           }
@@ -232,16 +277,29 @@ export const useRunStore = create<RunState>((set) => ({
               ...status,
               success: event.success,
               failed: event.failed,
-              total: event.total
+              total: event.total,
+              ...(Number.isFinite(pa) ? { planASuccess: pa } : {}),
+              ...(Number.isFinite(pb) ? { planBSuccess: pb } : {}),
+              ...(Number.isFinite(pc) ? { planCSuccess: pc } : {})
             };
           }
           touchJob({
             runId: event.runId,
             success: event.success,
             failed: event.failed,
-            total: event.total
+            total: event.total,
+            ...(planPatch.planASuccess !== undefined
+              ? { planASuccess: planPatch.planASuccess }
+              : {}),
+            ...(planPatch.planBSuccess !== undefined
+              ? { planBSuccess: planPatch.planBSuccess }
+              : {}),
+            ...(planPatch.planCSuccess !== undefined
+              ? { planCSuccess: planPatch.planCSuccess }
+              : {})
           });
           break;
+        }
         case 'failed':
           if (isTerminalJob(event.runId)) {
             const j = existingJob(event.runId)!;

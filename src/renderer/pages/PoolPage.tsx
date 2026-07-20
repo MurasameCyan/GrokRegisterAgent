@@ -25,6 +25,7 @@ import { PaginationBar } from '@renderer/components/ui/PaginationBar';
 import { AccountDetailDrawer } from '@renderer/components/domain/AccountDetailDrawer';
 import { BotFlagBadge } from '@renderer/components/domain/BotFlagBadge';
 import { NsfwBadge } from '@renderer/components/domain/NsfwBadge';
+import { PushChannelBadge } from '@renderer/components/domain/PushChannelBadge';
 import { ZdrBadge } from '@renderer/components/domain/ZdrBadge';
 import { useClientPagination } from '@renderer/hooks/useClientPagination';
 import { useAccountsStore } from '@renderer/store/accountsStore';
@@ -47,6 +48,7 @@ const PAGE_SIZE_KEY = 'gra-pool-page-size';
 const AUTH_FILTER_KEY = 'gra-pool-auth-filter';
 const ALIVE_FILTER_KEY = 'gra-pool-alive-filter';
 const SSO_FILTER_KEY = 'gra-pool-sso-filter';
+const G2A_FILTER_KEY = 'gra-pool-g2a-filter';
 const MINT_CHUNK = 5;
 
 /** Auth 转换筛选 */
@@ -55,6 +57,7 @@ type AuthFilter = 'all' | 'unconverted' | 'converted';
 type AliveFilter = 'all' | 'unchecked' | 'alive' | 'dead';
 /** 是否含 SSO 筛选（分页/列表基于此） */
 type SsoFilter = 'all' | 'has_sso' | 'no_sso';
+type G2aFilter = 'all' | 'pushed' | 'not_pushed';
 
 function loadAuthFilter(): AuthFilter {
   try {
@@ -70,6 +73,16 @@ function loadAliveFilter(): AliveFilter {
   try {
     const v = localStorage.getItem(ALIVE_FILTER_KEY);
     if (v === 'unchecked' || v === 'alive' || v === 'dead' || v === 'all') return v;
+  } catch {
+    /* ignore */
+  }
+  return 'all';
+}
+
+function loadG2aFilter(): G2aFilter {
+  try {
+    const v = localStorage.getItem(G2A_FILTER_KEY);
+    if (v === 'pushed' || v === 'not_pushed' || v === 'all') return v;
   } catch {
     /* ignore */
   }
@@ -187,6 +200,7 @@ export function PoolPage() {
   const [authFilter, setAuthFilter] = useState<AuthFilter>(() => loadAuthFilter());
   const [aliveFilter, setAliveFilter] = useState<AliveFilter>(() => loadAliveFilter());
   const [ssoFilter, setSsoFilter] = useState<SsoFilter>(() => loadSsoFilter());
+  const [g2aFilter, setG2aFilter] = useState<G2aFilter>(() => loadG2aFilter());
   const [searchQuery, setSearchQuery] = useState('');
 
   const reloadAuthEmails = async () => {
@@ -448,6 +462,8 @@ export function PoolPage() {
     if (aliveFilter === 'unchecked') list = list.filter((a) => aliveStatusOf(a) === 'unchecked');
     else if (aliveFilter === 'alive') list = list.filter((a) => aliveStatusOf(a) === 'alive');
     else if (aliveFilter === 'dead') list = list.filter((a) => aliveStatusOf(a) === 'dead');
+    if (g2aFilter === 'pushed') list = list.filter((a) => a.pushedG2a === true);
+    else if (g2aFilter === 'not_pushed') list = list.filter((a) => a.pushedG2a !== true);
     const q = searchQuery.trim().toLowerCase();
     if (q) {
       list = list.filter((a) => {
@@ -473,6 +489,7 @@ export function PoolPage() {
     authFilter,
     aliveFilter,
     ssoFilter,
+    g2aFilter,
     ssoMap,
     searchQuery
   ]);
@@ -524,6 +541,16 @@ export function PoolPage() {
     resetPage();
     try {
       localStorage.setItem(ALIVE_FILTER_KEY, f);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const changeG2aFilter = (f: G2aFilter) => {
+    setG2aFilter(f);
+    resetPage();
+    try {
+      localStorage.setItem(G2A_FILTER_KEY, f);
     } catch {
       /* ignore */
     }
@@ -895,10 +922,16 @@ export function PoolPage() {
   const openAccount = accounts.find((a) => a.id === openId) ?? null;
   const minting = !!mintProg?.running;
   const busy = verifying || minting || deleting || importing || pushingG2a;
+  const g2aPushedCount = useMemo(
+    () => accounts.filter((a) => a.pushedG2a === true).length,
+    [accounts]
+  );
+
   const hasActiveFilter =
     authFilter !== 'all' ||
     aliveFilter !== 'all' ||
     ssoFilter !== 'all' ||
+    g2aFilter !== 'all' ||
     Boolean(searchQuery.trim());
 
   const mintPct =
@@ -991,6 +1024,7 @@ export function PoolPage() {
               changeSsoFilter('all');
               changeAuthFilter('all');
               changeAliveFilter('all');
+              changeG2aFilter('all');
               setSearchQuery('');
             }}
           >
@@ -1018,7 +1052,24 @@ export function PoolPage() {
                 { id: 'no_sso', label: '无SSO', count: noSsoCount, title: '无 SSO 的账号' }
               ]}
             />
-            <FilterSegmentGroup
+                        <FilterSegmentGroup
+              label="G2A"
+              value={g2aFilter}
+              onChange={changeG2aFilter}
+              options={[
+                { id: 'all', label: '全部', count: accounts.length, title: '不限制 G2A 推送' },
+                { id: 'pushed', label: '已推', count: g2aPushedCount, title: '已推送 grok2api', tone: 'ok' },
+                {
+                  id: 'not_pushed',
+                  label: '未推',
+                  count: accounts.length - g2aPushedCount,
+                  title: '尚未推送 G2A',
+                  tone: 'muted'
+                }
+              ]}
+            />
+
+<FilterSegmentGroup
               label="Auth"
               value={authFilter}
               onChange={changeAuthFilter}
@@ -1223,6 +1274,7 @@ export function PoolPage() {
                   changeSsoFilter('all');
                   changeAuthFilter('all');
                   changeAliveFilter('all');
+              changeG2aFilter('all');
                 }}
               >
                 清空筛选
@@ -1462,6 +1514,11 @@ function AccountCard({
                   : 'none')
               }
               error={account.nsfwError}
+            />
+            <PushChannelBadge
+              channel="G2A"
+              pushed={account.pushedG2a === true}
+              at={account.pushedG2aAt}
             />
             <span
               className="inline-flex"

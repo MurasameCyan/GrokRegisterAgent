@@ -117,6 +117,12 @@ export interface CpaAuthItem {
   zdrError?: string | null;
   /** closed | open | none */
   zdrStatus?: 'closed' | 'open' | 'none';
+  /** 已成功推送到远程 CPA */
+  pushedCpa?: boolean;
+  pushedCpaAt?: string | null;
+  /** 已成功推送到 sub2api (S2A) */
+  pushedS2a?: boolean;
+  pushedS2aAt?: string | null;
 }
 
 /** 规范化 SSO cookie / JWT 文本后做 SHA-256 hex */
@@ -131,6 +137,39 @@ export function hashSsoToken(sso: string): string | null {
   const token = normalizeSsoToken(sso);
   if (!token || token.length < 8) return null;
   return createHash('sha256').update(token, 'utf8').digest('hex');
+}
+
+
+
+/** 在 auth JSON 上写入推送成功标记（CPA / S2A） */
+async function stampAuthPushFlags(
+  jobs: { path?: string; filename?: string }[],
+  flags: { pushedCpa?: boolean; pushedS2a?: boolean }
+): Promise<void> {
+  const now = new Date().toISOString();
+  for (const job of jobs) {
+    const fp = String(job.path || '').trim();
+    if (!fp || !existsSync(fp)) continue;
+    try {
+      const raw = await fsp.readFile(fp, 'utf-8');
+      const data = JSON.parse(raw) as Record<string, unknown>;
+      if (flags.pushedCpa) {
+        data.pushed_cpa = true;
+        data.pushedCpa = true;
+        data.pushed_cpa_at = now;
+        data.pushedCpaAt = now;
+      }
+      if (flags.pushedS2a) {
+        data.pushed_s2a = true;
+        data.pushedS2a = true;
+        data.pushed_s2a_at = now;
+        data.pushedS2aAt = now;
+      }
+      await fsp.writeFile(fp, JSON.stringify(data, null, 2), 'utf-8');
+    } catch {
+      /* ignore single file */
+    }
+  }
 }
 
 function extractSsoFromAuthData(data: Record<string, unknown>): string {
@@ -451,6 +490,20 @@ export async function listCpaAuth(): Promise<{ dir: string; items: CpaAuthItem[]
       const poolHasPassword = emailStr
         ? Boolean(poolPw.get(emailStr.trim().toLowerCase()))
         : false;
+      const pushedCpa =
+        data.pushed_cpa === true ||
+        data.pushedCpa === true ||
+        data.remote_pushed_cpa === true;
+      const pushedCpaAt = String(
+        data.pushed_cpa_at || data.pushedCpaAt || ''
+      ).trim() || null;
+      const pushedS2a =
+        data.pushed_s2a === true ||
+        data.pushedS2a === true ||
+        data.remote_pushed_s2a === true;
+      const pushedS2aAt = String(
+        data.pushed_s2a_at || data.pushedS2aAt || ''
+      ).trim() || null;
       // NSFW：侧车 account_tags（DATA_DIR 持久）优先；auth JSON 作回退
       // 重 mint 可能冲掉 auth 内字段，侧车才是真相源
       let nsfwEnabled: boolean | null = null;
@@ -529,6 +582,10 @@ export async function listCpaAuth(): Promise<{ dir: string; items: CpaAuthItem[]
         nsfwAt,
         nsfwError,
         nsfwStatus,
+          pushedCpa,
+          pushedCpaAt,
+          pushedS2a,
+          pushedS2aAt,
         zdrClosed,
         zdrAttempted,
         zdrAt,
@@ -1096,6 +1153,20 @@ export async function pushCpaAuthRemoteBatch(input: {
   }
 
   await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  // 成功项写入 auth JSON 推送标记
+  try {
+    const okJobs = results
+      .filter((r) => r.ok)
+      .map((r) => {
+        const fn = String(r.filename || '');
+        const full = jobs.find((j) => j.filename === fn)?.path || '';
+        return { path: full, filename: fn };
+      })
+      .filter((j) => j.path);
+    if (okJobs.length) await stampAuthPushFlags(okJobs, { pushedCpa: true });
+  } catch {
+    /* non-fatal */
+  }
   const ok = results.filter((r) => r.ok).length;
   return {
     total: results.length,
@@ -1361,6 +1432,19 @@ export async function pushSub2apiAuthRemoteBatch(input: {
   }
 
   await Promise.all(Array.from({ length: concurrency }, () => worker()));
+  try {
+    const okJobs = results
+      .filter((r) => r.ok)
+      .map((r) => {
+        const fn = String(r.filename || '');
+        const full = jobs.find((j) => j.filename === fn)?.path || '';
+        return { path: full, filename: fn };
+      })
+      .filter((j) => j.path);
+    if (okJobs.length) await stampAuthPushFlags(okJobs, { pushedS2a: true });
+  } catch {
+    /* non-fatal */
+  }
   const ok = results.filter((r) => r.ok).length;
   return {
     total: results.length,

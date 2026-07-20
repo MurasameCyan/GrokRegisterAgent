@@ -17,6 +17,9 @@ export interface RegisterJobSummary {
   total: number;
   success: number;
   failed: number;
+  planASuccess: number;
+  planBSuccess: number;
+  planCSuccess: number;
   errorMessage: string | null;
   focused: boolean;
 }
@@ -145,6 +148,12 @@ export interface CpaAuthItem {
   zdrError?: string | null;
   /** closed | open | none */
   zdrStatus?: 'closed' | 'open' | 'none';
+  /** 已成功推送到远程 CPA 时为 true（仅成功显示 CPA tag） */
+  pushedCpa?: boolean;
+  pushedCpaAt?: string | null;
+  /** 已成功推送到 sub2api (S2A) 时为 true */
+  pushedS2a?: boolean;
+  pushedS2aAt?: string | null;
 }
 
 export interface CpaAuthListResult {

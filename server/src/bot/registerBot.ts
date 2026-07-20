@@ -30,6 +30,9 @@ export interface RegisterJobSummary {
   total: number;
   success: number;
   failed: number;
+  planASuccess: number;
+  planBSuccess: number;
+  planCSuccess: number;
   errorMessage: string | null;
   focused: boolean;
 }
@@ -183,6 +186,9 @@ export class RegisterBot extends EventEmitter {
         total: j.status.total,
         success: j.status.success,
         failed: j.status.failed,
+        planASuccess: Number(j.status.planASuccess) || 0,
+        planBSuccess: Number(j.status.planBSuccess) || 0,
+        planCSuccess: Number(j.status.planCSuccess) || 0,
         errorMessage: j.status.errorMessage,
         focused: j.runId === focus || (!focus && j === this.resolveFocusJob())
       }))
@@ -718,12 +724,24 @@ export class RegisterBot extends EventEmitter {
       !msg.includes('跳过');
     if (isRoundSuccess) {
       job.status.success++;
+      // 解析「✔ 第 N 轮成功（Plan A|B|C）」
+      let plan: 'a' | 'b' | 'c' = 'a';
+      if (/\(\s*Plan\s*C\s*\)/i.test(msg) || /Plan\s*C/.test(msg)) plan = 'c';
+      else if (/\(\s*Plan\s*B\s*\)/i.test(msg) || /Plan\s*B/.test(msg)) plan = 'b';
+      else plan = 'a';
+      if (plan === 'c') job.status.planCSuccess = (Number(job.status.planCSuccess) || 0) + 1;
+      else if (plan === 'b') job.status.planBSuccess = (Number(job.status.planBSuccess) || 0) + 1;
+      else job.status.planASuccess = (Number(job.status.planASuccess) || 0) + 1;
       this.push({
         type: 'success',
         runId,
         success: job.status.success,
         failed: job.status.failed,
-        total
+        total,
+        plan,
+        planASuccess: Number(job.status.planASuccess) || 0,
+        planBSuccess: Number(job.status.planBSuccess) || 0,
+        planCSuccess: Number(job.status.planCSuccess) || 0
       });
       this.recordAccount(job);
     }

@@ -28,6 +28,10 @@ export interface RunStatus {
   success: number;
   /** 注册失败数 */
   failed: number;
+  /** 当前队列中 Plan A/B/C 成功次数（会话内） */
+  planASuccess: number;
+  planBSuccess: number;
+  planCSuccess: number;
   /** 错误摘要，仅 phase==='error' 时有值 */
   errorMessage: string | null;
 }
@@ -59,6 +63,9 @@ export interface AccountRecord {
   createdAt: string;
   /** 最近一次 SSO 验活结果（可选，服务端持久化） */
   ssoCheck?: AccountSsoCheck;
+  /** 已成功推送到 grok2api（G2A）时为 true；未推送不展示 tag */
+  pushedG2a?: boolean;
+  pushedG2aAt?: string;
   /** NSFW 侧车：true 已开 / false 失败 / null 未尝试 */
   nsfwEnabled?: boolean | null;
   nsfwAttempted?: boolean;
@@ -91,7 +98,17 @@ export type RunEvent =
   | { type: 'stdout'; runId: string; level: LogLevel; text: string; ts: number }
   | { type: 'stderr'; runId: string; text: string; ts: number }
   | { type: 'progress'; runId: string; current: number; total: number }
-  | { type: 'success'; runId: string; success: number; failed: number; total: number }
+  | {
+      type: 'success';
+      runId: string;
+      success: number;
+      failed: number;
+      total: number;
+      planASuccess?: number;
+      planBSuccess?: number;
+      planCSuccess?: number;
+      plan?: 'a' | 'b' | 'c';
+    }
   | { type: 'failed'; runId: string; success: number; failed: number; total: number }
   | { type: 'sso'; runId: string; token: string }
   | { type: 'account'; runId: string; record: AccountRecord }
@@ -133,5 +150,8 @@ export const EMPTY_STATUS: RunStatus = {
   total: 0,
   success: 0,
   failed: 0,
+  planASuccess: 0,
+  planBSuccess: 0,
+  planCSuccess: 0,
   errorMessage: null
 };

@@ -356,6 +356,46 @@ export async function listAccounts(): Promise<AccountRecord[]> {
   } catch {
     /* tags optional */
   }
+
+  // 叠加 delivery_jobs.json 中 sso_g2 success → pushedG2a（自动推送历史）
+  try {
+    const dataDir = String(process.env.DATA_DIR || '/data').trim() || '/data';
+    const candidates = [
+      join(dataDir, 'delivery_jobs.json'),
+      resolve(process.cwd(), 'register', 'data', 'delivery_jobs.json'),
+      resolve(process.cwd(), 'data', 'delivery_jobs.json')
+    ];
+    let emails = new Set<string>();
+    for (const fp of candidates) {
+      if (!existsSync(fp)) continue;
+      try {
+        const raw = JSON.parse(await fsp.readFile(fp, 'utf-8')) as {
+          jobs?: { channel?: string; status?: string; email?: string }[];
+        };
+        for (const j of raw.jobs || []) {
+          if (j?.channel === 'sso_g2' && j?.status === 'success' && j.email) {
+            emails.add(String(j.email).trim().toLowerCase());
+          }
+        }
+        if (emails.size) break;
+      } catch {
+        /* next */
+      }
+    }
+    if (emails.size) {
+      withTags = withTags.map((a) => {
+        if (a.pushedG2a === true) return a;
+        const em = String(a.email || '').trim().toLowerCase();
+        if (em && emails.has(em)) {
+          return { ...a, pushedG2a: true };
+        }
+        return a;
+      });
+    }
+  } catch {
+    /* optional */
+  }
+
   return withTags.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
@@ -557,3 +597,30 @@ export async function applyAccountSsoChecks(
   }
   return { updated, emailsFilled };
 }
+
+
+/** 标记号池账号已成功推送 G2A（按 id 或 email） */
+export async function markAccountsPushedG2a(input: {
+  ids?: string[];
+  emails?: string[];
+}): Promise<number> {
+  const idSet = new Set((input.ids || []).map((x) => String(x || '').trim()).filter(Boolean));
+  const emailSet = new Set(
+    (input.emails || []).map((x) => String(x || '').trim().toLowerCase()).filter(Boolean)
+  );
+  if (idSet.size === 0 && emailSet.size === 0) return 0;
+  const all = await readAll();
+  const now = new Date().toISOString();
+  let n = 0;
+  const next = all.map((a) => {
+    const hit =
+      (a.id && idSet.has(a.id)) ||
+      (a.email && emailSet.has(String(a.email).trim().toLowerCase()));
+    if (!hit || a.pushedG2a === true) return a;
+    n++;
+    return { ...a, pushedG2a: true, pushedG2aAt: now };
+  });
+  if (n > 0) await writeAll(next);
+  return n;
+}
+

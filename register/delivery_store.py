@@ -193,6 +193,49 @@ def mark_failed(job_id: str, error: str, *, retry_after_sec: float = 60) -> Opti
     )
 
 
+
+
+def has_success_for_email(channel: str, email: str) -> bool:
+    em = str(email or '').strip().lower()
+    ch = str(channel or '').strip()
+    if not em or not ch:
+        return False
+    p = store_path()
+    with _lock:
+        data = _load(p)
+        for j in data.get('jobs') or []:
+            if not isinstance(j, dict):
+                continue
+            if str(j.get('channel') or '') != ch:
+                continue
+            if str(j.get('status') or '') != 'success':
+                continue
+            if str(j.get('email') or '').strip().lower() == em:
+                return True
+    return False
+
+
+def success_emails_for_channel(channel: str) -> set:
+    ch = str(channel or '').strip()
+    out = set()
+    if not ch:
+        return out
+    p = store_path()
+    with _lock:
+        data = _load(p)
+        for j in data.get('jobs') or []:
+            if not isinstance(j, dict):
+                continue
+            if str(j.get('channel') or '') != ch:
+                continue
+            if str(j.get('status') or '') != 'success':
+                continue
+            em = str(j.get('email') or '').strip().lower()
+            if em:
+                out.add(em)
+    return out
+
+
 # ── 后台补传 worker ──────────────────────────────────────────
 _retry_thread: Optional[threading.Thread] = None
 _retry_stop = threading.Event()

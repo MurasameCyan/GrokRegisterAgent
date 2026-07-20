@@ -210,6 +210,20 @@ except Exception as e:
     Array.from({ length: Math.min(concurrency, items.length) }, () => worker())
   );
 
+  // 持久化 G2A 成功标记 → 号池列表展示 tag
+  try {
+    const { markAccountsPushedG2a } = await import('./accountStore.js');
+    const ids = results.filter((r) => r.ok && r.id).map((r) => String(r.id));
+    const emails = results
+      .filter((r) => r.ok && r.email)
+      .map((r) => String(r.email));
+    if (ids.length || emails.length) {
+      await markAccountsPushedG2a({ ids, emails });
+    }
+  } catch {
+    /* non-fatal */
+  }
+
   return {
     total: items.length,
     ok,

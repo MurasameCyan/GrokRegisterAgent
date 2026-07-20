@@ -23,6 +23,7 @@ import { Switch } from '@renderer/components/ui/Switch';
 import { PaginationBar } from '@renderer/components/ui/PaginationBar';
 import { BotFlagBadge } from '@renderer/components/domain/BotFlagBadge';
 import { NsfwBadge } from '@renderer/components/domain/NsfwBadge';
+import { PushChannelBadge } from '@renderer/components/domain/PushChannelBadge';
 import { ZdrBadge } from '@renderer/components/domain/ZdrBadge';
 import { useClientPagination } from '@renderer/hooks/useClientPagination';
 import { useToastStore } from '@renderer/store/toastStore';
@@ -111,7 +112,7 @@ const META_FILTER_KEY = 'gra-auth-meta-filter';
 const STATUS_FILTER_KEY = 'gra-auth-status-filter';
 
 /** 行内标记筛选：全部 / 无sso / 无邮箱 / 待补全 */
-type MetaFilter = 'all' | 'no_sso' | 'no_email' | 'need_fill';
+type MetaFilter = 'all' | 'no_sso' | 'no_email' | 'need_fill' | 'pushed_cpa' | 'pushed_s2a' | 'not_pushed';
 
 /** 状态列（HTTP）筛选：全部 / 未测 / 200 / 401 / 403 / 其它错误 */
 type StatusFilter = 'all' | 'unprobed' | '200' | '401' | '403' | 'other_err';
@@ -119,6 +120,17 @@ type StatusFilter = 'all' | 'unprobed' | '200' | '401' | '403' | 'other_err';
 function loadMetaFilter(): MetaFilter {
   try {
     const v = localStorage.getItem(META_FILTER_KEY);
+    if (
+      v === 'pushed_cpa' ||
+      v === 'pushed_s2a' ||
+      v === 'not_pushed' ||
+      v === 'no_sso' ||
+      v === 'no_email' ||
+      v === 'need_fill' ||
+      v === 'all'
+    ) {
+      return v as MetaFilter;
+    }
     if (v === 'no_sso' || v === 'no_email' || v === 'need_fill' || v === 'all') return v;
   } catch {
     /* ignore */
@@ -453,6 +465,10 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
     else if (metaFilter === 'no_email') list = list.filter((i) => !hasEmail(i));
     else if (metaFilter === 'need_fill')
       list = list.filter((i) => !hasSso(i) || !hasEmail(i));
+    else if (metaFilter === 'pushed_cpa') list = list.filter((i) => i.pushedCpa === true);
+    else if (metaFilter === 'pushed_s2a') list = list.filter((i) => i.pushedS2a === true);
+    else if (metaFilter === 'not_pushed')
+      list = list.filter((i) => i.pushedCpa !== true && i.pushedS2a !== true);
     if (statusFilter !== 'all') {
       list = list.filter((i) => matchStatusFilter(i, statusFilter));
     }
@@ -1796,6 +1812,18 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
 
   const progPct =
     prog && prog.total > 0 ? Math.min(100, Math.round((prog.done / prog.total) * 100)) : 0;
+  const pushedCpaCount = useMemo(
+    () => items.filter((i) => i.pushedCpa === true).length,
+    [items]
+  );
+  const pushedS2aCount = useMemo(
+    () => items.filter((i) => i.pushedS2a === true).length,
+    [items]
+  );
+  const notPushedCount = useMemo(
+    () => items.filter((i) => i.pushedCpa !== true && i.pushedS2a !== true).length,
+    [items]
+  );
   const missingSsoCount = useMemo(
     () => items.filter((i) => !i.hasSso).length,
     [items]
@@ -2216,7 +2244,10 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                 { id: 'all', label: '全部', count: items.length, title: '不限制标记' },
                 { id: 'no_sso', label: '无SSO', count: missingSsoCount, title: '无 sso 字段，可回填', tone: 'warn' },
                 { id: 'no_email', label: '无邮箱', count: noEmailAuthCount, title: '无邮箱，无法 email 回填', tone: 'warn' },
-                { id: 'need_fill', label: '待补全', count: needFillCount, title: '无 sso 或无邮箱' }
+                { id: 'need_fill', label: '待补全', count: needFillCount, title: '无 sso 或无邮箱' },
+                { id: 'pushed_cpa', label: 'CPA', count: pushedCpaCount, title: '已推送远程 CPA', tone: 'ok' },
+                { id: 'pushed_s2a', label: 'S2A', count: pushedS2aCount, title: '已推送 sub2api', tone: 'ok' },
+                { id: 'not_pushed', label: '未推', count: notPushedCount, title: 'CPA/S2A 均未推送', tone: 'muted' }
               ]}
             />
             <FilterSegmentGroup
@@ -2800,17 +2831,29 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                       )}
                     </td>
                     <td className="w-[3.5rem] min-w-[3.5rem] px-2 py-2.5">
-                      <NsfwBadge
-                        status={
-                          item.nsfwStatus ??
-                          (item.nsfwAttempted
-                            ? item.nsfwEnabled
-                              ? 'ok'
-                              : 'fail'
-                            : 'none')
-                        }
-                        error={item.nsfwError}
-                      />
+                      <div className="inline-flex flex-wrap items-center gap-1">
+                        <NsfwBadge
+                          status={
+                            item.nsfwStatus ??
+                            (item.nsfwAttempted
+                              ? item.nsfwEnabled
+                                ? 'ok'
+                                : 'fail'
+                              : 'none')
+                          }
+                          error={item.nsfwError}
+                        />
+                        <PushChannelBadge
+                          channel="CPA"
+                          pushed={item.pushedCpa === true}
+                          at={item.pushedCpaAt}
+                        />
+                        <PushChannelBadge
+                          channel="S2A"
+                          pushed={item.pushedS2a === true}
+                          at={item.pushedS2aAt}
+                        />
+                      </div>
                     </td>
                     {/* ZDR 列已隐藏
                     <td className="w-[3.5rem] min-w-[3.5rem] px-2 py-2.5">
