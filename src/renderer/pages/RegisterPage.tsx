@@ -53,13 +53,37 @@ export function RegisterPage({ onOpenSettings }: { onOpenSettings(): void }) {
           ? 'warn'
           : 'primary';
 
-  const ready = useMemo(
-    () =>
-      !!settings?.mail.apiBase &&
-      !!settings?.mail.adminAuth &&
-      !!(settings?.mail.domain || settings?.mailDomains?.trim()),
-    [settings]
-  );
+  // 与 validateSettings/hasDomain 对齐：
+  // - Cloudflare：需 apiBase +（非匿名则需 adminAuth）+ 域名或域名池
+  // - duckmail：apiBase 即可（token 可选）
+  // - yyds / gptmail：apiBase + X-API-Key；域名由服务端分配，不强制域名池
+  const ready = useMemo(() => {
+    if (!settings) return false;
+    const provider = String(settings.mailProvider || 'cloudflare').toLowerCase();
+    const apiBase = String(settings.mail?.apiBase || '').trim();
+    const adminAuth = String(settings.mail?.adminAuth || '').trim();
+    if (!apiBase) return false;
+
+    const isCf =
+      provider === 'cloudflare' || provider === 'cf' || provider === '' || !provider;
+    const isDuck = provider === 'duckmail' || provider === 'duck';
+    const isYyds = provider === 'yyds' || provider === 'yydsmail';
+    const isGpt =
+      provider === 'gptmail' || provider === 'gpt' || provider === 'chatgpt_mail';
+
+    if (isDuck) return true;
+    if (isYyds || isGpt) return Boolean(adminAuth);
+
+    // Cloudflare
+    const authOk =
+      String(settings.cloudflareAuthMode || 'x-admin-auth') === 'none' ||
+      Boolean(adminAuth);
+    if (!authOk) return false;
+    if (settings.mailDomainPoolEnabled) {
+      return Boolean(String(settings.mailDomains || '').trim());
+    }
+    return Boolean(String(settings.mail?.domain || '').trim());
+  }, [settings]);
 
   const start = async () => {
     try {
@@ -177,7 +201,11 @@ export function RegisterPage({ onOpenSettings }: { onOpenSettings(): void }) {
               <div className="rounded-xl bg-warn/10 p-4 text-[13px] leading-5 text-warn">
                 <div className="flex items-start gap-2">
                   <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" />
-                  <span>启动前请到「配置」页补齐邮箱后端与域名（或域名池）。</span>
+                  <span>
+                    启动前请到「配置」页补齐邮件设置：Cloudflare 需域名/域名池；YYDS /
+                    GPTMail 只需 API 地址与 X-API-Key（域名由服务端分配）；DuckMail
+                    填 API 地址即可。
+                  </span>
                 </div>
                 <Button className="mt-3" variant="secondary" size="sm" onClick={onOpenSettings}>
                   打开配置
