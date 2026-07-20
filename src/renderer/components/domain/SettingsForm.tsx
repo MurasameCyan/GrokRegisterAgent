@@ -64,6 +64,9 @@ function normalizeSettingsDraft(raw: AppSettings | null | undefined): AppSetting
     cfProxyEnabled: false,
     singBoxEnabled: !!r.singBoxEnabled,
     singBoxNodes: String(r.singBoxNodes ?? DEFAULT_SETTINGS.singBoxNodes),
+    singBoxSubscriptionUrl: String(
+      r.singBoxSubscriptionUrl ?? DEFAULT_SETTINGS.singBoxSubscriptionUrl ?? ''
+    ),
     singBoxSelected: String(
       r.singBoxSelected || DEFAULT_SETTINGS.singBoxSelected || '__random__'
     ),
@@ -194,8 +197,7 @@ export function SettingsForm() {
   const [sbParsedNodes, setSbParsedNodes] = useState<
     { tag: string; name: string; type: string; server: string; port: number }[]
   >([]);
-  /** 订阅 URL 解析导入 */
-  const [sbSubUrl, setSbSubUrl] = useState('');
+  /** 订阅 URL 解析导入（URL 落在 draft.singBoxSubscriptionUrl，随配置保存） */
   const [sbSubBusy, setSbSubBusy] = useState(false);
   const [sbSubMsg, setSbSubMsg] = useState<string | null>(null);
 
@@ -314,7 +316,7 @@ export function SettingsForm() {
 
   /** 仅 Sing-Box / 直连；强制关闭已移除的 CF / 普通代理 */
   const importSbSubscription = async (mode: 'replace' | 'append') => {
-    const url = sbSubUrl.trim();
+    const url = String(draft?.singBoxSubscriptionUrl || '').trim();
     if (!url) {
       setSbSubMsg('请先填写订阅链接');
       return;
@@ -335,8 +337,12 @@ export function SettingsForm() {
         setSbSubMsg(r?.message || r?.error || '解析失败');
         return;
       }
+      // 写入节点列表；URL 已在 draft，点「保存」一并持久化
       update('singBoxNodes', r.nodesText || '');
-      setSbSubMsg(r.message || `已导入 ${(r.nodes || []).length} 个节点`);
+      setSbSubMsg(
+        (r.message || `已导入 ${(r.nodes || []).length} 个节点`) +
+          '（请保存配置以持久化）'
+      );
       void refreshSbStatus();
     } catch (err) {
       setSbSubMsg(err instanceof Error ? err.message : String(err));
@@ -795,12 +801,12 @@ export function SettingsForm() {
 
               <Field
                 label="订阅链接"
-                hint="http(s) 订阅：支持 Base64 节点列表、明文分享链接、Clash YAML proxies。解析后写入下方列表（需再保存）"
+                hint="http(s) 订阅：支持 Base64 / 明文分享链接 / Clash YAML。URL 与解析结果均随「保存」持久化"
               >
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                   <Input
-                    value={sbSubUrl}
-                    onChange={(e) => setSbSubUrl(e.target.value)}
+                    value={draft.singBoxSubscriptionUrl || ''}
+                    onChange={(e) => update('singBoxSubscriptionUrl', e.target.value)}
                     placeholder="https://example.com/api/v1/client/subscribe?token=..."
                     className="font-mono text-[13px]"
                     spellCheck={false}
@@ -810,7 +816,9 @@ export function SettingsForm() {
                       type="button"
                       size="sm"
                       className="h-9"
-                      disabled={sbSubBusy || !sbSubUrl.trim()}
+                      disabled={
+                        sbSubBusy || !String(draft.singBoxSubscriptionUrl || '').trim()
+                      }
                       onClick={() => void importSbSubscription('replace')}
                       title="用订阅结果替换当前节点列表"
                     >
@@ -824,7 +832,9 @@ export function SettingsForm() {
                       size="sm"
                       variant="secondary"
                       className="h-9"
-                      disabled={sbSubBusy || !sbSubUrl.trim()}
+                      disabled={
+                        sbSubBusy || !String(draft.singBoxSubscriptionUrl || '').trim()
+                      }
                       onClick={() => void importSbSubscription('append')}
                       title="追加到现有列表（按链接去重）"
                     >

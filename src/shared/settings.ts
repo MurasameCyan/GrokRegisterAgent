@@ -147,6 +147,10 @@ export interface AppSettings {
    */
   singBoxNodes: string;
   /**
+   * 订阅 URL（仅客户端拉取解析用，随配置持久化；不参与 sing-box 启动）。
+   */
+  singBoxSubscriptionUrl: string;
+  /**
    * 选用节点：解析后的 tag；`__random__` 或空 = 随机（注册启动重抽 / 失败降级轮换）。
    */
   singBoxSelected: string;
@@ -377,6 +381,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   cfProxyLocalScheme: 'socks5',
   singBoxEnabled: false,
   singBoxNodes: '',
+  singBoxSubscriptionUrl: '',
   singBoxSelected: '__random__',
   singBoxPort: 2080,
   proxyProbeConcurrency: 8,

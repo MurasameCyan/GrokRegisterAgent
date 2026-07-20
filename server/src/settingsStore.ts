@@ -220,6 +220,10 @@ function merge(partial: unknown): AppSettings {
       typeof (p as AppSettings).singBoxNodes === 'string'
         ? (p as AppSettings).singBoxNodes
         : DEFAULT_SETTINGS.singBoxNodes,
+    singBoxSubscriptionUrl:
+      typeof (p as AppSettings).singBoxSubscriptionUrl === 'string'
+        ? String((p as AppSettings).singBoxSubscriptionUrl).trim()
+        : DEFAULT_SETTINGS.singBoxSubscriptionUrl,
     singBoxSelected: (() => {
       const v =
         typeof (p as AppSettings).singBoxSelected === 'string'
