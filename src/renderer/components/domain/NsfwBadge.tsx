@@ -1,6 +1,6 @@
 import { cn } from '@renderer/lib/cn';
 
-/** NSFW 开启结果 tag：绿=已开 / 黄=尝试失败 / 灰胶囊=未尝试（始终可见） */
+/** NSFW tag：仅成功开启时显示；失败 / 未尝试不显示 */
 export function NsfwBadge({
   status,
   error,
@@ -17,41 +17,17 @@ export function NsfwBadge({
   else if (status === 'none' || status == null || status === '') s = 'none';
   else s = 'none';
 
-  if (s === 'ok') {
-    return (
-      <span
-        title="Nsfw 已开启 (always_show_nsfw_content)"
-        className={cn(
-          'inline-flex h-5 items-center rounded-full bg-emerald-500/15 px-2 text-[10px] font-medium leading-none text-emerald-600 dark:text-emerald-400',
-          className
-        )}
-      >
-        Nsfw
-      </span>
-    );
-  }
-  if (s === 'fail') {
-    return (
-      <span
-        title={error ? `Nsfw 未开启: ${error}` : 'Nsfw 尝试开启失败（不影响授权）'}
-        className={cn(
-          'inline-flex h-5 items-center rounded-full bg-amber-500/15 px-2 text-[10px] font-medium leading-none text-amber-700 dark:text-amber-400',
-          className
-        )}
-      >
-        Nsfw×
-      </span>
-    );
-  }
+  if (s !== 'ok') return null;
+
   return (
     <span
-      title="未尝试开启 Nsfw（设置开启 Nsfw 并完成 Auth 后会写 tag）"
+      title={error ? `Nsfw 已开启 · ${error}` : 'Nsfw 已开启 (always_show_nsfw_content)'}
       className={cn(
-        'inline-flex h-5 items-center rounded-full bg-muted px-2 text-[10px] font-medium leading-none text-muted-foreground',
+        'inline-flex h-5 items-center rounded-full bg-emerald-500/15 px-2 text-[10px] font-medium leading-none text-emerald-600 dark:text-emerald-400',
         className
       )}
     >
-      Nsfw—
+      Nsfw
     </span>
   );
 }
