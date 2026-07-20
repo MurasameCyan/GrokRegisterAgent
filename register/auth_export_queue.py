@@ -300,6 +300,12 @@ def _run_sso_push_g2(
                 mark_success(job_id)
             except Exception:
                 pass
+        try:
+            from delivery_store import mark_accounts_pushed_g2a
+
+            mark_accounts_pushed_g2a(email=email or "", sso=sso or "")
+        except Exception:
+            pass
         return {"attempted": True, "ok": True, "mode": up.get("mode"), "result": up}
     except Exception as e:
         log(f"[auth-queue] ✘ SSO→grok2api 失败: {e}")
@@ -560,6 +566,18 @@ def _maybe_nsfw_and_sub2api(
                 f"[auth-queue] ✔ Auth→sub2api 推送 OK "
                 f"ok={pr.get('ok_count')} fail={pr.get('failed')}"
             )
+            try:
+                from delivery_store import stamp_auth_file_push_flags
+
+                paths_s2 = []
+                if mint_result.get("path"):
+                    paths_s2.append(str(mint_result["path"]))
+                for pth in mint_result.get("paths") or []:
+                    if pth and str(pth) not in paths_s2:
+                        paths_s2.append(str(pth))
+                stamp_auth_file_push_flags(paths_s2, pushed_s2a=True)
+            except Exception:
+                pass
         elif pr and not pr.get("skipped") and not pr.get("ok"):
             log(
                 f"[auth-queue] ✘ Auth→sub2api 推送失败 "
@@ -649,6 +667,12 @@ def _run_mint_and_auth_push(
                             mark_success(cpa_job_id)
                         except Exception:
                             pass
+                    try:
+                        from delivery_store import stamp_auth_file_push_flags
+
+                        stamp_auth_file_push_flags(paths, pushed_cpa=True)
+                    except Exception:
+                        pass
                 elif remote and not remote.get("ok"):
                     log(f"[auth-queue] ✘ Auth→CPA 推送失败: {remote.get('error')}")
                     if cpa_job_id:

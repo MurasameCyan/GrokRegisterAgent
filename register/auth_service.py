@@ -401,6 +401,12 @@ def _write_and_probe_one(
                 name = upload_cpa_auth_remote(r_url, r_key, payload)
                 log(f"[auth] channel={channel} CPA 远程推送 OK → {name}")
                 remote_result = {"ok": True, "url": r_url, "name": name}
+                try:
+                    from delivery_store import stamp_auth_file_push_flags
+
+                    stamp_auth_file_push_flags([path], pushed_cpa=True)
+                except Exception:
+                    pass
             except Exception as e:
                 log(f"[auth] channel={channel} CPA 远程推送失败: {e}")
                 remote_result = {"ok": False, "error": str(e), "url": r_url}

@@ -247,6 +247,12 @@ def push_cpa_file(
     r["name"] = body.get("name")
     if r.get("ok"):
         log(f"[sub2api] push OK name={body.get('name')} -> {url}")
+        try:
+            from delivery_store import stamp_auth_file_push_flags
+
+            stamp_auth_file_push_flags([cpa_path], pushed_s2a=True)
+        except Exception:
+            pass
     else:
         log(f"[sub2api] push FAIL name={body.get('name')}: {r.get('error')}")
     return r
