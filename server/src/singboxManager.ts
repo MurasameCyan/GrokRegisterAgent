@@ -301,16 +301,19 @@ function parseVlessOrTrojan(url: string, idx: number, kind: 'vless' | 'trojan'):
     };
     if (kind === 'vless') {
       outbound.uuid = user;
-      outbound.flow = params.flow || undefined;
-      outbound.packet_encoding = params.packetEncoding || undefined;
+      if (params.flow) outbound.flow = params.flow;
+      // packetEncoding / packet_encoding → sing-box packet_encoding
+      const pe = params.packetEncoding || params.packet_encoding || params['packet-encoding'];
+      if (pe) outbound.packet_encoding = pe;
     } else {
       outbound.password = user;
     }
     const security = (params.security || '').toLowerCase();
+    const sni = params.sni || params.peer || params.servername || host;
     if (security === 'tls' || security === 'reality') {
       const tls: Record<string, unknown> = {
         enabled: true,
-        server_name: params.sni || params.peer || host,
+        server_name: sni,
         insecure: params.allowInsecure === '1' || params.insecure === '1'
       };
       if (params.fp) tls.utls = { enabled: true, fingerprint: params.fp };
@@ -325,11 +328,14 @@ function parseVlessOrTrojan(url: string, idx: number, kind: 'vless' | 'trojan'):
       outbound.tls = tls;
     }
     const net = (params.type || params.network || 'tcp').toLowerCase();
+    // CF VLESS-WS：缺 host 时用 sni 作 Host（否则 Cloudflare 回 403）
+    const wsHost = params.host || params.Host || (net === 'ws' || net === 'http' ? sni : '');
+    const wsPath = params.path || '/';
     if (net === 'ws') {
       outbound.transport = {
         type: 'ws',
-        path: params.path || '/',
-        headers: params.host ? { Host: params.host } : undefined
+        path: wsPath,
+        headers: wsHost ? { Host: wsHost } : undefined
       };
     } else if (net === 'grpc') {
       outbound.transport = {
@@ -339,8 +345,8 @@ function parseVlessOrTrojan(url: string, idx: number, kind: 'vless' | 'trojan'):
     } else if (net === 'http') {
       outbound.transport = {
         type: 'http',
-        host: params.host ? [params.host] : undefined,
-        path: params.path || '/'
+        host: wsHost ? [wsHost] : undefined,
+        path: wsPath
       };
     }
     return {
@@ -745,7 +751,7 @@ function extractShareLinksFromText(body: string): string[] {
  * Clash YAML proxies 列表 → 分享链接（无 yaml 依赖的轻量解析）。
  * 支持 block 列表与 flow map：`- { name: a, type: ss, ... }`
  */
-function parseClashProxiesToShareLinks(yamlText: string): string[] {
+export function parseClashProxiesToShareLinks(yamlText: string): string[] {
   const text = String(yamlText || '').replace(/^\uFEFF/, '');
   if (!/^\s*proxies\s*:/m.test(text) && !/\nproxies\s*:/m.test(text)) {
     // 有的文件顶层就是 proxies，有的夹在 config 里
@@ -774,16 +780,22 @@ function parseClashProxiesToShareLinks(yamlText: string): string[] {
   }
 
   // —— block style under proxies:
+  // 支持嵌套 ws-opts.path / ws-opts.headers.Host（CF VLESS 必需）
   const lines = text.split(/\r?\n/);
   let inProxies = false;
   let proxiesIndent = 0;
   let cur: Record<string, string> | null = null;
   let itemIndent = -1;
+  /** 0=item 字段, 1=ws-opts/opts, 2=headers under opts */
+  let nest = 0;
+  let nestIndent = -1;
 
   const flush = () => {
     if (cur && Object.keys(cur).length) pushLink(clashProxyToShareLink(cur));
     cur = null;
     itemIndent = -1;
+    nest = 0;
+    nestIndent = -1;
   };
 
   for (const rawLine of lines) {
@@ -821,6 +833,8 @@ function parseClashProxiesToShareLinks(yamlText: string): string[] {
       flush();
       cur = {};
       itemIndent = indent;
+      nest = 0;
+      nestIndent = -1;
       // `- { ... }` 已在 flow 处理；block: `- name: xx` 或 `-`
       const rest = trimmed.replace(/^-\s*/, '');
       if (rest.startsWith('{')) {
@@ -832,19 +846,98 @@ function parseClashProxiesToShareLinks(yamlText: string): string[] {
         }
       } else if (rest.includes(':')) {
         const { k, v } = splitYamlKv(rest);
-        if (k) cur[k] = v;
+        if (k) applyClashProxyField(cur, k, v, 0);
       }
       continue;
     }
 
-    // item 字段
+    // item / 嵌套字段
     if (cur && itemIndent >= 0 && indent > itemIndent) {
+      // 回退嵌套层
+      if (nest > 0 && indent <= nestIndent) {
+        if (nest === 2) {
+          nest = 1;
+          nestIndent = itemIndent + 2;
+        } else {
+          nest = 0;
+          nestIndent = -1;
+        }
+        if (nest > 0 && indent <= nestIndent) {
+          nest = 0;
+          nestIndent = -1;
+        }
+      }
       const { k, v } = splitYamlKv(trimmed);
-      if (k) cur[k] = v;
+      if (!k) continue;
+      const kl = k.toLowerCase();
+      if (nest === 0 && (kl === 'ws-opts' || kl === 'opts' || kl === 'ws_opts')) {
+        nest = 1;
+        nestIndent = indent;
+        // 同行内联 map: ws-opts: { path: /, headers: { Host: x } }
+        if (v && v.includes(':')) {
+          const inline = parseClashFlowMap(v.replace(/^\{/, '').replace(/\}$/, ''));
+          if (inline) {
+            for (const [ik, iv] of Object.entries(inline)) {
+              applyClashProxyField(cur, ik, iv, 1);
+            }
+          }
+        }
+        continue;
+      }
+      if (nest === 1 && (kl === 'headers' || kl === 'header')) {
+        nest = 2;
+        nestIndent = indent;
+        if (v && v.includes(':')) {
+          const inline = parseClashFlowMap(v.replace(/^\{/, '').replace(/\}$/, ''));
+          if (inline) {
+            for (const [ik, iv] of Object.entries(inline)) {
+              applyClashProxyField(cur, ik, iv, 2);
+            }
+          }
+        }
+        continue;
+      }
+      applyClashProxyField(cur, k, v, nest);
     }
   }
   flush();
   return links;
+}
+
+/** 把 Clash 字段摊平到 proxy map（含嵌套 ws-opts 语义） */
+function applyClashProxyField(
+  cur: Record<string, string>,
+  k: string,
+  v: string,
+  nest: number
+): void {
+  const kl = k.toLowerCase();
+  if (nest === 2) {
+    // headers.Host → host
+    if (kl === 'host') {
+      cur.host = v;
+      return;
+    }
+    cur[`header-${kl}`] = v;
+    return;
+  }
+  if (nest === 1) {
+    if (kl === 'path') {
+      cur.path = v;
+      cur['ws-path'] = v;
+      return;
+    }
+    if (kl === 'host') {
+      cur.host = v;
+      return;
+    }
+    cur[kl] = v;
+    return;
+  }
+  // reality-opts 等扁平别名
+  if (kl === 'public-key' || kl === 'public_key') cur.pbk = v;
+  if (kl === 'short-id' || kl === 'short_id') cur.sid = v;
+  cur[kl] = v;
 }
 
 function splitYamlKv(line: string): { k: string; v: string } {
@@ -946,28 +1039,66 @@ function clashProxyToShareLink(p: Record<string, string>): string | null {
     const uuid = p.uuid || p.id || '';
     if (!uuid) return null;
     const network = (p.network || p.net || 'tcp').toLowerCase();
+    const sni = p.sni || p.servername || p['server-name'] || '';
+    // CF / 机场常见：tls 布尔 或 security: tls|reality
+    let security = String(p.security || '').toLowerCase();
+    if (!security || security === 'none') {
+      if (p.tls === 'true' || p.tls === 'tls' || p.tls === '1') security = 'tls';
+      else if (p.reality === 'true' || p['reality-opts'] || p.pbk) security = 'reality';
+      else security = 'none';
+    }
+    const host =
+      p.host ||
+      p['ws-headers-host'] ||
+      p['header-host'] ||
+      (network === 'ws' || network === 'http' ? sni : '') ||
+      '';
+    const path =
+      p.path ||
+      p['ws-path'] ||
+      (network === 'ws' || network === 'http' || network === 'grpc' ? '/' : '');
+    add('encryption', p.encryption || 'none');
     add('type', network);
-    add('security', p.tls === 'true' || p.tls === 'tls' ? 'tls' : p.security || 'none');
-    add('sni', p.sni || p.servername || p.host);
-    add('path', p.path || p['ws-path']);
-    add('host', p.host);
-    add('fp', p['client-fingerprint'] || p.fp);
+    add('security', security);
+    add('sni', sni || host);
+    if (path) add('path', path);
+    if (host) add('host', host);
+    add('fp', p['client-fingerprint'] || p.fp || p.fingerprint);
     add('flow', p.flow);
-    add('serviceName', p['grpc-service-name'] || p.servicename);
+    add('serviceName', p['grpc-service-name'] || p.servicename || p['service-name']);
+    add('pbk', p.pbk || p['public-key'] || p.public_key);
+    add('sid', p.sid || p['short-id'] || p.short_id);
+    // 多数现代 VLESS 订阅带 xudp；有则保留，无则 ws 默认 xudp
+    const pe =
+      p.packetencoding ||
+      p['packet-encoding'] ||
+      p.packet_encoding ||
+      p.packetEncoding ||
+      (network === 'ws' ? 'xudp' : '');
+    add('packetEncoding', pe);
     const qs = q.length ? `?${q.join('&')}` : '';
-    return `vless://${encodeURIComponent(uuid)}@${server}:${port}${qs}#${encodeURIComponent(name)}`;
+    // uuid 保持原样（勿过度 encode，兼容客户端）
+    return `vless://${uuid}@${server}:${port}${qs}#${encodeURIComponent(name)}`;
   }
 
   if (type === 'trojan') {
     const password = p.password || '';
     if (!password) return null;
     const network = (p.network || 'tcp').toLowerCase();
+    const sni = p.sni || p.servername || p['server-name'] || '';
+    const host =
+      p.host ||
+      p['ws-headers-host'] ||
+      p['header-host'] ||
+      (network === 'ws' || network === 'http' ? sni : '') ||
+      '';
+    const path = p.path || p['ws-path'] || (network === 'ws' || network === 'http' ? '/' : '');
     add('type', network);
     add('security', 'tls');
-    add('sni', p.sni || p.servername || p.host);
-    add('path', p.path || p['ws-path']);
-    add('host', p.host);
-    add('fp', p['client-fingerprint'] || p.fp);
+    add('sni', sni || host);
+    if (path) add('path', path);
+    if (host) add('host', host);
+    add('fp', p['client-fingerprint'] || p.fp || p.fingerprint);
     const qs = q.length ? `?${q.join('&')}` : '';
     return `trojan://${encodeURIComponent(password)}@${server}:${port}${qs}#${encodeURIComponent(name)}`;
   }
