@@ -484,6 +484,85 @@ function parseTuic(url: string, idx: number): ParsedNode | null {
   }
 }
 
+/**
+ * anytls://password@host:port?params#name
+ * 对齐 sing-box 1.13 outbound type=anytls（TLS 必选）。
+ * 常见 query: sni / peer / fp / insecure / allowInsecure / alpn
+ * 可选: idleSessionCheckInterval / idleSessionTimeout / minIdleSession
+ */
+function parseAnytls(url: string, idx: number): ParsedNode | null {
+  try {
+    let body = url.slice('anytls://'.length);
+    let name = '';
+    const hash = body.indexOf('#');
+    if (hash >= 0) {
+      name = decodeURIComponent(body.slice(hash + 1) || '');
+      body = body.slice(0, hash);
+    }
+    let query = '';
+    const q = body.indexOf('?');
+    if (q >= 0) {
+      query = body.slice(q + 1);
+      body = body.slice(0, q);
+    }
+    const at = body.lastIndexOf('@');
+    if (at < 0) return null;
+    const password = decodeURIComponent(body.slice(0, at));
+    const hostport = body.slice(at + 1);
+    const colon = hostport.lastIndexOf(':');
+    if (colon < 0) return null;
+    const host = hostport.slice(0, colon);
+    const port = Number(hostport.slice(colon + 1));
+    if (!host || !port || !password) return null;
+    const params = parseQuery(query);
+    const tag = safeTag('anytls', url, idx);
+    const sni = params.sni || params.peer || params.servername || host;
+    const tls: Record<string, unknown> = {
+      enabled: true,
+      server_name: sni,
+      insecure: params.allowInsecure === '1' || params.insecure === '1'
+    };
+    if (params.fp) tls.utls = { enabled: true, fingerprint: params.fp };
+    if (params.alpn) tls.alpn = String(params.alpn).split(',');
+    const outbound: Record<string, unknown> = {
+      type: 'anytls',
+      tag,
+      server: host,
+      server_port: port,
+      password,
+      tls
+    };
+    // 可选会话调优（时长字符串，如 30s；数值则当秒）
+    const idleCheck =
+      params.idleSessionCheckInterval ||
+      params.idle_session_check_interval ||
+      params['idle-session-check-interval'];
+    const idleTimeout =
+      params.idleSessionTimeout ||
+      params.idle_session_timeout ||
+      params['idle-session-timeout'];
+    const minIdle =
+      params.minIdleSession || params.min_idle_session || params['min-idle-session'];
+    if (idleCheck) outbound.idle_session_check_interval = idleCheck;
+    if (idleTimeout) outbound.idle_session_timeout = idleTimeout;
+    if (minIdle != null && minIdle !== '') {
+      const n = Number(minIdle);
+      outbound.min_idle_session = Number.isFinite(n) ? n : minIdle;
+    }
+    return {
+      tag,
+      name: name || `anytls ${host}:${port}`,
+      type: 'anytls',
+      server: host,
+      port,
+      raw: url,
+      outbound
+    };
+  } catch {
+    return null;
+  }
+}
+
 
 /**
  * 上游 HTTP(S) / SOCKS 代理（sing-box outbound type=http|socks）。
@@ -627,6 +706,7 @@ export function parseSingBoxNodeLine(line: string, idx = 0): ParsedNode | null {
   if (lower.startsWith('hysteria2://') || lower.startsWith('hy2://'))
     return parseHysteria2(u, idx);
   if (lower.startsWith('tuic://')) return parseTuic(u, idx);
+  if (lower.startsWith('anytls://')) return parseAnytls(u, idx);
   // 上游 HTTP / SOCKS 代理
   if (
     lower.startsWith('http://') ||
@@ -683,7 +763,7 @@ export function listSingBoxNodeSummaries(text: string): SingBoxNodeSummary[] {
 
 /** 分享链接协议前缀（与 parseSingBoxNodeLine 一致） */
 const SHARE_LINK_RE =
-  /(?:^|[\s"'<>])((?:ss|vmess|vless|trojan|hysteria2|hy2|tuic|https?|socks5h?|socks4a?|socks):\/\/[^\s"'<>]+)/gi;
+  /(?:^|[\s"'<>])((?:ss|vmess|vless|trojan|hysteria2|hy2|tuic|anytls|https?|socks5h?|socks4a?|socks):\/\/[^\s"'<>]+)/gi;
 
 function tryBase64Decode(raw: string): string | null {
   let s = String(raw || '')
@@ -721,7 +801,7 @@ function extractShareLinksFromText(body: string): string[] {
     if (!u || u.startsWith('#')) continue;
     // 行内可能带备注：scheme://...#name 或 scheme://... 空格备注
     const m = u.match(
-      /^(ss|vmess|vless|trojan|hysteria2|hy2|tuic|https?|socks5h?|socks4a?|socks):\/\/\S+/i
+      /^(ss|vmess|vless|trojan|hysteria2|hy2|tuic|anytls|https?|socks5h?|socks4a?|socks):\/\/\S+/i
     );
     if (m) {
       const link = m[0].replace(/[),;]+$/, '');
@@ -755,7 +835,7 @@ export function parseClashProxiesToShareLinks(yamlText: string): string[] {
   const text = String(yamlText || '').replace(/^\uFEFF/, '');
   if (!/^\s*proxies\s*:/m.test(text) && !/\nproxies\s*:/m.test(text)) {
     // 有的文件顶层就是 proxies，有的夹在 config 里
-    if (!/type:\s*(ss|ssr|vmess|vless|trojan|hysteria2|hy2|tuic)\b/i.test(text)) {
+    if (!/type:\s*(ss|ssr|vmess|vless|trojan|hysteria2|hy2|tuic|anytls)\b/i.test(text)) {
       return [];
     }
   }
@@ -1127,6 +1207,29 @@ function clashProxyToShareLink(p: Record<string, string>): string | null {
     return `tuic://${encodeURIComponent(user)}@${server}:${port}${qs}#${encodeURIComponent(name)}`;
   }
 
+  if (type === 'anytls') {
+    const password = p.password || p.pass || '';
+    if (!password) return null;
+    const sni = p.sni || p.servername || p['server-name'] || '';
+    add('sni', sni);
+    add('fp', p['client-fingerprint'] || p.fp || p.fingerprint);
+    add('alpn', p.alpn);
+    if (p['skip-cert-verify'] === 'true' || p.insecure === 'true' || p.insecure === '1') {
+      add('insecure', '1');
+    }
+    add(
+      'idleSessionCheckInterval',
+      p['idle-session-check-interval'] || p.idle_session_check_interval
+    );
+    add(
+      'idleSessionTimeout',
+      p['idle-session-timeout'] || p.idle_session_timeout
+    );
+    add('minIdleSession', p['min-idle-session'] || p.min_idle_session);
+    const qs = q.length ? `?${q.join('&')}` : '';
+    return `anytls://${encodeURIComponent(password)}@${server}:${port}${qs}#${encodeURIComponent(name)}`;
+  }
+
   if (type === 'http' || type === 'https') {
     const user = p.username || p.user || '';
     const pass = p.password || p.pass || '';
@@ -1352,7 +1455,7 @@ export async function fetchSubscriptionLinks(
       nodes: [],
       nodesText: '',
       message:
-        '未解析到节点：支持 Base64 分享列表、明文链接、Clash YAML proxies（ss/vmess/vless/trojan/hysteria2/tuic）；加密订阅或不支持的类型会失败',
+        '未解析到节点：支持 Base64 分享列表、明文链接、Clash YAML proxies（ss/vmess/vless/trojan/hysteria2/tuic/anytls）；加密订阅或不支持的类型会失败',
       error: 'no share links'
     };
   }
@@ -1622,7 +1725,7 @@ export async function syncSingBoxFromSettings(
     excludeTags: opts.rotate ? demotedTags : undefined
   });
   if (!node) {
-    lastError = '没有可解析的节点（支持 ss/vmess/vless/trojan/hysteria2/tuic 分享链接，以及 http/https/socks4/socks5 代理）';
+    lastError = '没有可解析的节点（支持 ss/vmess/vless/trojan/hysteria2/tuic/anytls 分享链接，以及 http/https/socks4/socks5 代理）';
     await stopSingBox();
     return getSingBoxStatus(settings);
   }

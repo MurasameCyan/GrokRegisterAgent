@@ -119,7 +119,7 @@ docker logs grok-register-agent
 - Sing-Box 二进制由镜像 / Actions 附带（`register/bin/sing-box/`）
 - 状态图标：直连常绿；Sing-Box 按连通性 R/Y/G
 - **节点列表** 支持：
-  - 分享链接：`ss` / `vmess` / `vless` / `trojan` / `hysteria2` / `hy2` / `tuic`
+  - 分享链接：`ss` / `vmess` / `vless` / `trojan` / `hysteria2` / `hy2` / `tuic` / `anytls`
   - 上游代理：`http` / `https` / `socks4` / `socks4a` / `socks5` / `socks5h`（含 `host:port` 默认可按 socks5）
 - **订阅链接**（设置项 `singBoxSubscriptionUrl`，随配置保存）：
   - 点 **「解析」** 拉取并**替换**节点列表

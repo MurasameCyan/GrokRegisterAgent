@@ -842,7 +842,7 @@ export function SettingsForm() {
 
               <Field
                 label="节点列表"
-                hint="每行一条：ss/vmess/vless/trojan/hy2/tuic，或 http(s):// / socks5:// / socks4:// / host:port"
+                hint="每行一条：ss/vmess/vless/trojan/hy2/tuic/anytls，或 http(s):// / socks5:// / socks4:// / host:port"
                 error={errors.singBoxNodes}
               >
                 <textarea
