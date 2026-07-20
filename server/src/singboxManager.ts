@@ -533,18 +533,24 @@ const SHARE_LINK_RE =
   /(?:^|[\s"'<>])((?:ss|vmess|vless|trojan|hysteria2|hy2|tuic):\/\/[^\s"'<>]+)/gi;
 
 function tryBase64Decode(raw: string): string | null {
-  const s = String(raw || '')
+  let s = String(raw || '')
     .trim()
+    // 去 BOM / 空白 / 换行
+    .replace(/^\uFEFF/, '')
     .replace(/\s+/g, '');
   if (!s || s.length < 8) return null;
-  // 订阅体常见标准/URL-safe Base64
-  if (!/^[A-Za-z0-9+/_=-]+$/.test(s)) return null;
+  // 标准 + URL-safe Base64
+  if (!/^[A-Za-z0-9+/_\-=]+$/.test(s)) return null;
+  // URL-safe → 标准
+  s = s.replace(/-/g, '+').replace(/_/g, '/');
+  const pad = s.length % 4;
+  if (pad) s += '='.repeat(4 - pad);
   try {
     const buf = Buffer.from(s, 'base64');
     if (!buf.length) return null;
     const text = buf.toString('utf8');
-    // 解码后应含可打印字符 + 分享协议
-    if (!/[\x20-\x7e\n\r\t]{8,}/.test(text)) return null;
+    // 解码后应多为可打印字符（分享链接或 YAML）
+    if (!/[\x09\x0a\x0d\x20-\x7e\u4e00-\u9fff]{8,}/.test(text)) return null;
     return text;
   } catch {
     return null;
@@ -586,26 +592,298 @@ function extractShareLinksFromText(body: string): string[] {
   return found;
 }
 
-function expandSubscriptionBody(raw: string): string[] {
-  const body = String(raw || '').trim();
-  if (!body) return [];
-  // 优先直接抽链接
-  let links = extractShareLinksFromText(body);
-  if (links.length > 0) return links;
-  // 整包 Base64
-  const decoded = tryBase64Decode(body);
-  if (decoded) {
-    links = extractShareLinksFromText(decoded);
-    if (links.length > 0) return links;
+/**
+ * Clash YAML proxies 列表 → 分享链接（无 yaml 依赖的轻量解析）。
+ * 支持 block 列表与 flow map：`- { name: a, type: ss, ... }`
+ */
+function parseClashProxiesToShareLinks(yamlText: string): string[] {
+  const text = String(yamlText || '').replace(/^\uFEFF/, '');
+  if (!/^\s*proxies\s*:/m.test(text) && !/\nproxies\s*:/m.test(text)) {
+    // 有的文件顶层就是 proxies，有的夹在 config 里
+    if (!/type:\s*(ss|ssr|vmess|vless|trojan|hysteria2|hy2|tuic)\b/i.test(text)) {
+      return [];
+    }
   }
-  // 多行各自可能是 Base64 段
-  for (const line of body.split(/\r?\n/)) {
-    const d = tryBase64Decode(line.trim());
-    if (d) {
-      for (const l of extractShareLinksFromText(d)) {
-        if (!links.includes(l)) links.push(l);
+
+  const links: string[] = [];
+  const seen = new Set<string>();
+  const pushLink = (link: string | null) => {
+    if (!link) return;
+    const k = link.toLowerCase();
+    if (seen.has(k)) return;
+    if (!parseSingBoxNodeLine(link, 0)) return;
+    seen.add(k);
+    links.push(link);
+  };
+
+  // —— flow style: - { name: x, type: ss, ... }
+  const flowRe = /-\s*\{([^{}]+)\}/g;
+  let fm: RegExpExecArray | null;
+  while ((fm = flowRe.exec(text)) !== null) {
+    const obj = parseClashFlowMap(fm[1] || '');
+    if (obj) pushLink(clashProxyToShareLink(obj));
+  }
+
+  // —— block style under proxies:
+  const lines = text.split(/\r?\n/);
+  let inProxies = false;
+  let proxiesIndent = 0;
+  let cur: Record<string, string> | null = null;
+  let itemIndent = -1;
+
+  const flush = () => {
+    if (cur && Object.keys(cur).length) pushLink(clashProxyToShareLink(cur));
+    cur = null;
+    itemIndent = -1;
+  };
+
+  for (const rawLine of lines) {
+    if (!rawLine.trim() || /^\s*#/.test(rawLine)) continue;
+    const indent = rawLine.match(/^\s*/)?.[0].length ?? 0;
+    const trimmed = rawLine.trim();
+
+    if (/^proxies\s*:/.test(trimmed)) {
+      flush();
+      inProxies = true;
+      proxiesIndent = indent;
+      continue;
+    }
+
+    // 离开 proxies 段（同级或更外的新 key）
+    if (inProxies && indent <= proxiesIndent && !trimmed.startsWith('-') && /:\s*/.test(trimmed)) {
+      // 例如 proxy-groups: / rules:
+      if (!trimmed.startsWith('#')) {
+        flush();
+        inProxies = false;
       }
     }
+
+    if (!inProxies) {
+      // 无 proxies 头时：见到 list item 且含 type: 也尝试
+      if (/^-\s+/.test(trimmed) && /type\s*:/.test(text.slice(text.indexOf(rawLine), text.indexOf(rawLine) + 400))) {
+        // fallthrough only when whole file looks like proxy dump
+      } else {
+        continue;
+      }
+    }
+
+    // 新 list item
+    if (/^-\s+/.test(trimmed) || /^-\s*$/.test(trimmed)) {
+      flush();
+      cur = {};
+      itemIndent = indent;
+      // `- { ... }` 已在 flow 处理；block: `- name: xx` 或 `-`
+      const rest = trimmed.replace(/^-\s*/, '');
+      if (rest.startsWith('{')) {
+        const inner = rest.replace(/^\{/, '').replace(/\}$/, '');
+        const obj = parseClashFlowMap(inner);
+        if (obj) {
+          pushLink(clashProxyToShareLink(obj));
+          cur = null;
+        }
+      } else if (rest.includes(':')) {
+        const { k, v } = splitYamlKv(rest);
+        if (k) cur[k] = v;
+      }
+      continue;
+    }
+
+    // item 字段
+    if (cur && itemIndent >= 0 && indent > itemIndent) {
+      const { k, v } = splitYamlKv(trimmed);
+      if (k) cur[k] = v;
+    }
+  }
+  flush();
+  return links;
+}
+
+function splitYamlKv(line: string): { k: string; v: string } {
+  const m = line.match(/^([^:#]+):\s*(.*)$/);
+  if (!m) return { k: '', v: '' };
+  let v = (m[2] || '').trim();
+  // 去引号
+  if (
+    (v.startsWith('"') && v.endsWith('"')) ||
+    (v.startsWith("'") && v.endsWith("'"))
+  ) {
+    v = v.slice(1, -1);
+  }
+  return { k: m[1].trim().toLowerCase(), v };
+}
+
+function parseClashFlowMap(inner: string): Record<string, string> | null {
+  const obj: Record<string, string> = {};
+  // 简易逗号分割，忽略引号内逗号
+  let buf = '';
+  let q: '"' | "'" | null = null;
+  const parts: string[] = [];
+  for (let i = 0; i < inner.length; i++) {
+    const ch = inner[i];
+    if (q) {
+      buf += ch;
+      if (ch === q && inner[i - 1] !== '\\\\') q = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      q = ch;
+      buf += ch;
+      continue;
+    }
+    if (ch === ',') {
+      parts.push(buf.trim());
+      buf = '';
+      continue;
+    }
+    buf += ch;
+  }
+  if (buf.trim()) parts.push(buf.trim());
+  for (const p of parts) {
+    const { k, v } = splitYamlKv(p);
+    if (k) obj[k] = v;
+  }
+  return Object.keys(obj).length ? obj : null;
+}
+
+function clashProxyToShareLink(p: Record<string, string>): string | null {
+  const type = String(p.type || '').toLowerCase();
+  const server = String(p.server || p.servername || '').trim();
+  const port = String(p.port || '').trim();
+  const name = String(p.name || p.ps || `${server}:${port}`).trim() || 'node';
+  if (!server || !port) return null;
+
+  const q: string[] = [];
+  const add = (k: string, v: string | undefined) => {
+    if (v == null || v === '') return;
+    q.push(`${encodeURIComponent(k)}=${encodeURIComponent(v)}`);
+  };
+
+  if (type === 'ss' || type === 'shadowsocks') {
+    const method = p.cipher || p.method || 'aes-256-gcm';
+    const password = p.password || '';
+    if (!password) return null;
+    const userinfo = Buffer.from(`${method}:${password}`, 'utf8').toString('base64');
+    return `ss://${userinfo}@${server}:${port}#${encodeURIComponent(name)}`;
+  }
+
+  if (type === 'vmess') {
+    const uuid = p.uuid || p.id || '';
+    if (!uuid) return null;
+    const net = (p.network || p.net || 'tcp').toLowerCase();
+    const tls = String(p.tls || '').toLowerCase();
+    const obj: Record<string, unknown> = {
+      v: '2',
+      ps: name,
+      add: server,
+      port: Number(port) || port,
+      id: uuid,
+      aid: Number(p.alterid || p.alterId || p.aid || 0),
+      scy: p.cipher || p.security || 'auto',
+      net,
+      type: p.type_header || 'none',
+      host: p.host || p['ws-opts'] || '',
+      path: p.path || '/',
+      tls: tls === 'true' || tls === 'tls' ? 'tls' : '',
+      sni: p.sni || p.servername || p.host || ''
+    };
+    // ws path / host 常见字段
+    if (p['ws-path']) obj.path = p['ws-path'];
+    if (p['ws-headers-host']) obj.host = p['ws-headers-host'];
+    const b64 = Buffer.from(JSON.stringify(obj), 'utf8').toString('base64');
+    return `vmess://${b64}`;
+  }
+
+  if (type === 'vless') {
+    const uuid = p.uuid || p.id || '';
+    if (!uuid) return null;
+    const network = (p.network || p.net || 'tcp').toLowerCase();
+    add('type', network);
+    add('security', p.tls === 'true' || p.tls === 'tls' ? 'tls' : p.security || 'none');
+    add('sni', p.sni || p.servername || p.host);
+    add('path', p.path || p['ws-path']);
+    add('host', p.host);
+    add('fp', p['client-fingerprint'] || p.fp);
+    add('flow', p.flow);
+    add('serviceName', p['grpc-service-name'] || p.servicename);
+    const qs = q.length ? `?${q.join('&')}` : '';
+    return `vless://${encodeURIComponent(uuid)}@${server}:${port}${qs}#${encodeURIComponent(name)}`;
+  }
+
+  if (type === 'trojan') {
+    const password = p.password || '';
+    if (!password) return null;
+    const network = (p.network || 'tcp').toLowerCase();
+    add('type', network);
+    add('security', 'tls');
+    add('sni', p.sni || p.servername || p.host);
+    add('path', p.path || p['ws-path']);
+    add('host', p.host);
+    add('fp', p['client-fingerprint'] || p.fp);
+    const qs = q.length ? `?${q.join('&')}` : '';
+    return `trojan://${encodeURIComponent(password)}@${server}:${port}${qs}#${encodeURIComponent(name)}`;
+  }
+
+  if (type === 'hysteria2' || type === 'hy2') {
+    const password = p.password || p.auth || '';
+    if (!password) return null;
+    add('sni', p.sni || p.servername);
+    add('insecure', p['skip-cert-verify'] === 'true' ? '1' : undefined);
+    add('obfs', p.obfs);
+    add('obfs-password', p['obfs-password'] || p.obfsPassword);
+    const qs = q.length ? `?${q.join('&')}` : '';
+    return `hysteria2://${encodeURIComponent(password)}@${server}:${port}${qs}#${encodeURIComponent(name)}`;
+  }
+
+  if (type === 'tuic') {
+    const uuid = p.uuid || '';
+    const password = p.password || '';
+    if (!uuid) return null;
+    add('sni', p.sni || p.servername);
+    add('congestion_control', p['congestion-controller'] || p.congestion_control);
+    add('udp_relay_mode', p['udp-relay-mode']);
+    add('alpn', p.alpn);
+    const qs = q.length ? `?${q.join('&')}` : '';
+    const user = password ? `${uuid}:${password}` : uuid;
+    return `tuic://${encodeURIComponent(user)}@${server}:${port}${qs}#${encodeURIComponent(name)}`;
+  }
+
+  return null;
+}
+
+function expandSubscriptionBody(raw: string): string[] {
+  const body0 = String(raw || '').replace(/^\uFEFF/, '').trim();
+  if (!body0) return [];
+
+  const merge = (into: string[], extra: string[]) => {
+    for (const x of extra) {
+      if (!into.includes(x)) into.push(x);
+    }
+    return into;
+  };
+
+  // 1) 明文分享链接
+  let links = extractShareLinksFromText(body0);
+  if (links.length > 0) return links;
+
+  // 2) Clash YAML proxies（明文）
+  links = merge(links, parseClashProxiesToShareLinks(body0));
+  if (links.length > 0) return links;
+
+  // 3) 整包 Base64（标准 / URL-safe）→ 再抽链接或 Clash
+  const decoded = tryBase64Decode(body0);
+  if (decoded) {
+    links = merge(links, extractShareLinksFromText(decoded));
+    if (links.length > 0) return links;
+    links = merge(links, parseClashProxiesToShareLinks(decoded));
+    if (links.length > 0) return links;
+  }
+
+  // 4) 多行各自可能是 Base64 段
+  for (const line of body0.split(/\r?\n/)) {
+    const d = tryBase64Decode(line.trim());
+    if (!d) continue;
+    links = merge(links, extractShareLinksFromText(d));
+    links = merge(links, parseClashProxiesToShareLinks(d));
   }
   return links;
 }
@@ -765,7 +1043,7 @@ export async function fetchSubscriptionLinks(
       nodes: [],
       nodesText: '',
       message:
-        '未解析到 ss/vmess/vless/trojan/hysteria2/tuic 分享链接（可能是 Clash 纯 YAML 或加密订阅）',
+        '未解析到节点：支持 Base64 分享列表、明文链接、Clash YAML proxies（ss/vmess/vless/trojan/hysteria2/tuic）；加密订阅或不支持的类型会失败',
       error: 'no share links'
     };
   }

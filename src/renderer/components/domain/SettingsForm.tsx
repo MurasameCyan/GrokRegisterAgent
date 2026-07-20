@@ -789,7 +789,7 @@ export function SettingsForm() {
 
               <Field
                 label="订阅链接"
-                hint="http(s) 订阅地址。服务端拉取并解码为分享链接后导入下方列表（非 sing-box 内置命令；与客户端解析订阅同理）"
+                hint="http(s) 订阅：支持 Base64 节点列表、明文分享链接、Clash YAML proxies。解析后写入下方列表（需再保存）"
               >
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                   <Input
