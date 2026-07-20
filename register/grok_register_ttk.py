@@ -122,12 +122,10 @@ def build_profile():
 
 
 def get_email_and_token():
-    """返回 (email, mail_token/jwt)。"""
-    from email_register import create_temp_email
+    """返回 (email, mail_token/jwt)。按 config.mail_provider 分流（duckmail/yyds/gptmail/cf）。"""
+    from email_register import get_email_and_token as _get
 
-    email, password, jwt = create_temp_email()
-    # create_temp_email -> (email, password, jwt) 或变体
-    if isinstance(email, tuple):
-        # 防御
-        return email
-    return str(email), str(jwt or password or "")
+    email, tok = _get()
+    if not email:
+        raise RuntimeError("create email failed: empty address")
+    return str(email), str(tok or "")

@@ -74,16 +74,26 @@ def _build_profile() -> tuple[str, str, str]:
 
 
 def _get_email_and_token() -> tuple[str, str]:
+    """按 mail_provider 创建邮箱（duckmail/yyds/gptmail/cloudflare），勿硬编码 CF。"""
+    last_err: Exception | None = None
     try:
-        from grok_register_ttk import get_email_and_token
+        from email_register import get_email_and_token as _get
 
-        email, tok = get_email_and_token()
-        return str(email), str(tok)
-    except Exception:
-        from email_register import create_temp_email
+        email, tok = _get()
+        if email:
+            return str(email), str(tok or "")
+        raise RuntimeError("empty email from provider")
+    except Exception as e:
+        last_err = e
+    try:
+        from grok_register_ttk import get_email_and_token as _get2
 
-        email, _pw, jwt = create_temp_email()
-        return str(email), str(jwt or "")
+        email, tok = _get2()
+        if email:
+            return str(email), str(tok or "")
+    except Exception as e:
+        last_err = e
+    raise RuntimeError(f"create email failed: {last_err}")
 
 
 def _get_mail_code(mail_token: str, email: str, log: LogFn) -> str:
