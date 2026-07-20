@@ -2694,7 +2694,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
       ) : (
         <>
         <div className="overflow-x-auto rounded-[16px] border border-border bg-card shadow-[var(--ios-shadow)]">
-          <table className="w-full min-w-[720px] text-left text-[13px]">
+          <table className="w-full min-w-[680px] text-left text-[13px]">
             <thead className="border-b border-border/70 text-[11px] uppercase tracking-wide text-muted-foreground">
               <tr>
                 <th className="w-10 px-3 py-2.5" />
@@ -2704,12 +2704,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                 </th>
                 <th className="w-[4.5rem] px-3 py-2.5 font-medium">SSO</th>
                 <th className="w-10 px-2 py-2.5 text-center font-medium">Type</th>
-                <th className="w-[3.25rem] px-3 py-2.5 font-medium">xai</th>
-                <th className="w-[3.5rem] px-2 py-2.5 font-medium">Nsfw</th>
-                {/* ZDR 列已隐藏
-                <th className="w-[3.5rem] px-2 py-2.5 font-medium">ZDR</th>
-                */}
-                <th className="w-[4.5rem] px-3 py-2.5 font-medium">bot_flag</th>
+                <th className="min-w-[8.5rem] px-2 py-2.5 font-medium">TAG</th>
                 {/* 固定窄列仅放 O/X，避免测活后邻列横向跳动 */}
                 <th className="w-10 whitespace-nowrap px-2 py-2.5 text-center font-medium">
                   测活
@@ -2821,17 +2816,17 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                         <span className="text-[11px] text-muted-foreground">—</span>
                       )}
                     </td>
-                    <td className="px-3 py-2.5">
-                      {item.xai ? (
-                        <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
-                          xai
-                        </span>
-                      ) : (
-                        <span className="text-[11px] text-muted-foreground">—</span>
-                      )}
-                    </td>
-                    <td className="w-[3.5rem] min-w-[3.5rem] px-2 py-2.5">
-                      <div className="inline-flex flex-wrap items-center gap-1">
+                    <td className="min-w-[8.5rem] max-w-[14rem] px-2 py-2.5">
+                      {/* TAG：xai · Nsfw · bot_flag · CPA/S2A（已推送才显示） */}
+                      <div className="flex flex-wrap items-center gap-1">
+                        {item.xai ? (
+                          <span
+                            className="inline-flex h-5 items-center rounded-full bg-emerald-500/15 px-2 text-[10px] font-medium leading-none text-emerald-600 dark:text-emerald-400"
+                            title="xai 标识（文件名或 type）"
+                          >
+                            xai
+                          </span>
+                        ) : null}
                         <NsfwBadge
                           status={
                             item.nsfwStatus ??
@@ -2842,6 +2837,18 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                               : 'none')
                           }
                           error={item.nsfwError}
+                        />
+                        <BotFlagBadge
+                          flag={
+                            // 0 合法；有 sso 且无 claim 时显示绿 None
+                            item.botFlagSource != null && item.botFlagSource !== ''
+                              ? item.botFlagSource
+                              : item.hasSso
+                                ? 0
+                                : item.botFlagSource
+                          }
+                          is1={item.isBotFlag1}
+                          missing="dash"
                         />
                         <PushChannelBadge
                           channel="CPA"
@@ -2854,35 +2861,6 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                           at={item.pushedS2aAt}
                         />
                       </div>
-                    </td>
-                    {/* ZDR 列已隐藏
-                    <td className="w-[3.5rem] min-w-[3.5rem] px-2 py-2.5">
-                      <ZdrBadge
-                        status={
-                          item.zdrStatus ??
-                          (item.zdrAttempted
-                            ? item.zdrClosed
-                              ? 'closed'
-                              : 'open'
-                            : 'none')
-                        }
-                        error={item.zdrError}
-                      />
-                    </td>
-                    */}
-                    <td className="w-[4.5rem] min-w-[4.5rem] px-3 py-2.5">
-                      <BotFlagBadge
-                        flag={
-                          // 0 合法；有 sso 且无 claim 时显示绿 None
-                          item.botFlagSource != null && item.botFlagSource !== ''
-                            ? item.botFlagSource
-                            : item.hasSso
-                              ? 0
-                              : item.botFlagSource
-                        }
-                        is1={item.isBotFlag1}
-                        missing="dash"
-                      />
                     </td>
                     <td className="w-10 min-w-10 max-w-10 whitespace-nowrap px-2 py-2.5 text-center">
                       {/* 仅固定 O/X 槽，按钮移至操作列，杜绝邻列位移 */}
