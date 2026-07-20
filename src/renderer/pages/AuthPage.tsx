@@ -2776,25 +2776,27 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                       {item.filename}
                     </td>
                     <td className="w-[4.5rem] min-w-[4.5rem] max-w-[4.5rem] px-3 py-2.5">
-                      {/* SSO：有=绿 / 无=黄（固定槽位防布局跳动） */}
+                      {/* SSO：O=有 / X=无（与测活 O/X 同形，固定槽位防布局跳动） */}
                       <div className="flex h-5 items-center">
                         {rowNoSso ? (
                           <span
-                            className="shrink-0 rounded-full bg-amber-500/15 px-2 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400"
+                            className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-amber-500/15 text-[12px] font-bold leading-none text-amber-600 dark:text-amber-400"
                             title={
                               rowNoEmail
                                 ? '无 SSO · 且无邮箱，无法 email 回填'
                                 : '无 SSO：可筛选后点「回填SSO」（需有邮箱）'
                             }
+                            aria-label="无 SSO"
                           >
-                            无
+                            X
                           </span>
                         ) : (
                           <span
-                            className="shrink-0 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400"
+                            className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-emerald-500/15 text-[12px] font-bold leading-none text-emerald-600 dark:text-emerald-400"
                             title="已含 SSO（SSO→Auth 转换或已回填）"
+                            aria-label="有 SSO"
                           >
-                            有
+                            O
                           </span>
                         )}
                       </div>
