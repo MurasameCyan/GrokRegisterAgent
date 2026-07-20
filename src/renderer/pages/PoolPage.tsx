@@ -907,6 +907,12 @@ export function PoolPage() {
           remoteUrl ? ` · ${remoteUrl}` : ''
         }`
       });
+      // 刷新号池以显示 G2A tag
+      try {
+        await reload();
+      } catch {
+        /* ignore */
+      }
     } catch (err) {
       push({
         tone: 'danger',
@@ -1224,6 +1230,30 @@ export function PoolPage() {
                   : hasActiveFilter
                     ? '导出筛选'
                     : '导出账号'}
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => void pushG2aFromSso()}
+                disabled={busy || filteredAccounts.length === 0 || !g2aReady}
+                title={
+                  !g2aReady
+                    ? '请在设置开启 SSO→grok2api 并填写地址/账号'
+                    : selected.size > 0
+                      ? `推送已选 SSO 到 grok2api（G2A · ${picked.filter((a) => a.sso).length}）`
+                      : hasActiveFilter
+                        ? '推送当前筛选中含 SSO 的账号到 G2A'
+                        : '推送号池 SSO 到 grok2api（G2A）'
+                }
+              >
+                <CloudUpload className={cn('h-3.5 w-3.5', pushingG2a && 'animate-pulse')} />
+                {pushingG2a
+                  ? '推送中…'
+                  : selected.size > 0
+                    ? `推送 G2A(${picked.filter((a) => a.sso).length})`
+                    : hasActiveFilter
+                      ? '推送 G2A 筛选'
+                      : '推送 G2A'}
               </Button>
               <span className="mx-0.5 hidden h-4 w-px bg-border sm:inline-block" aria-hidden />
               <Button
