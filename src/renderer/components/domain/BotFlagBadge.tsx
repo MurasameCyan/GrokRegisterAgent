@@ -5,9 +5,8 @@ export type BotFlagBadgeProps = {
   /** 服务端/解码给出的 isBotFlag1；可省略，组件会再根据 flag 判断 */
   is1?: boolean;
   /**
-   * missing：无 claim 时
-   * - dash：表格式「—」（Auth）
-   * - muted：灰胶囊 flag—（SSO 卡）
+   * 保留兼容旧调用；非 Bot 时一律不显示 tag。
+   * @deprecated ignored
    */
   missing?: 'dash' | 'muted';
   className?: string;
@@ -21,97 +20,27 @@ function isFlag1(flag: number | string | null | undefined, is1?: boolean): boole
   return false;
 }
 
-function isFlag0(flag: number | string | null | undefined): boolean {
-  // 0 是合法 claim（None），不能用 !flag / Boolean(flag)
-  if (flag === 0 || flag === '0') return true;
-  if (typeof flag === 'string' && flag.trim() === '0') return true;
-  if (typeof flag === 'number' && Number.isFinite(flag) && flag === 0) return true;
-  if (typeof flag === 'bigint' && flag === 0n) return true;
-  // 兼容文案 / 数字字符串（勿写 flag === false：类型无 boolean）
-  if (typeof flag === 'string' && /^none$/i.test(flag.trim())) return true;
-  if (flag != null && flag !== '' && Number(flag) === 0 && !Number.isNaN(Number(flag))) {
-    return true;
-  }
-  return false;
-}
-
 const pillBase =
   'inline-flex h-5 shrink-0 items-center rounded-full px-2 text-[10px] font-medium leading-none';
 
 /**
- * bot_flag_source 展示：与 xai 绿胶囊同风格
- * - 1 → 黄 Bot
- * - 0 → 绿 None
- * - 其它已知值 → 绿胶囊 + 原值
- * - 缺失 → — 或 flag—
+ * bot_flag_source 展示：
+ * - 1 / isBot → 黄 Bot
+ * - 0（None）/ 其它 / 未检测 → 不显示
  */
-export function BotFlagBadge({
-  flag,
-  is1,
-  missing = 'dash',
-  className
-}: BotFlagBadgeProps) {
-  // 先判 0/1，避免把数字 0 当成「缺失」
-  if (isFlag0(flag)) {
-    return (
-      <span
-        className={cn(
-          pillBase,
-          'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400',
-          className
-        )}
-        title="bot_flag_source=0（None）"
-      >
-        None
-      </span>
-    );
-  }
-
-  if (isFlag1(flag, is1)) {
-    return (
-      <span
-        className={cn(
-          pillBase,
-          'bg-amber-500/15 text-amber-600 dark:text-amber-400',
-          className
-        )}
-        title="bot_flag_source=1（Bot，JWT 内签发，无法抹掉）"
-      >
-        Bot
-      </span>
-    );
-  }
-
-  if (flag === undefined || flag === null || flag === '') {
-    if (missing === 'muted') {
-      return (
-        <span
-          className={cn(pillBase, 'bg-muted text-muted-foreground', className)}
-          title={
-            'flag—：无法解析 bot_flag_source。' +
-            '常见原因：无 SSO / 不是标准 JWT / JWT 无该 claim。' +
-            '与「未验」（是否请求过 grok 验活）无关。'
-          }
-        >
-          flag—
-        </span>
-      );
-    }
-    return (
-      <span className={cn('text-[11px] text-muted-foreground', className)}>—</span>
-    );
-  }
+export function BotFlagBadge({ flag, is1, className }: BotFlagBadgeProps) {
+  if (!isFlag1(flag, is1)) return null;
 
   return (
     <span
       className={cn(
         pillBase,
-        'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400',
+        'bg-amber-500/15 text-amber-600 dark:text-amber-400',
         className
       )}
-      title={`bot_flag_source=${String(flag)}`}
+      title="bot_flag_source=1（Bot，JWT 内签发，无法抹掉）"
     >
-      {String(flag)}
+      Bot
     </span>
   );
 }
