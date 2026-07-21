@@ -37,6 +37,7 @@ import {
   maskEmail,
   saveEmailPrivacyMask
 } from '@renderer/lib/maskEmail';
+import { fmtBeijingPlain } from '@renderer/lib/time';
 
 function stamp(): string {
   const d = new Date();
@@ -2705,8 +2706,8 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
               <col className="w-[9.5rem]" />
               <col className="w-11" />
               <col className="w-12" />
-              <col className="w-[7.25rem]" />
-              <col className="w-[17.5rem]" />
+              <col className="w-[10.25rem]" />
+              <col className="w-[16.25rem]" />
             </colgroup>
             <thead className="border-b border-border/70 text-[11px] text-muted-foreground">
               <tr>
@@ -2723,8 +2724,8 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                 <th className="whitespace-nowrap px-1 py-2.5 text-center font-medium">
                   状态
                 </th>
-                <th className="px-2 py-2.5 font-medium">过期</th>
-                <th className="px-2 py-2.5 font-medium">操作</th>
+                <th className="px-1.5 py-2.5 font-medium">过期</th>
+                <th className="pl-1.5 pr-2 py-2.5 font-medium">操作</th>
               </tr>
             </thead>
             <tbody>
@@ -2884,10 +2885,13 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                     <td className="whitespace-nowrap px-1 py-2.5 text-center">
                       <ProbeHttpBadge http={probeHttp} action={probeAction} />
                     </td>
-                    <td className="whitespace-nowrap px-2 py-2.5 text-[12px] tabular-nums text-muted-foreground">
-                      {item.expired || '—'}
+                    <td
+                      className="whitespace-nowrap px-1.5 py-2.5 text-[12px] tabular-nums text-muted-foreground"
+                      title={item.expired || undefined}
+                    >
+                      {item.expired ? fmtBeijingPlain(item.expired) : '—'}
                     </td>
-                    <td className="px-2 py-2.5">
+                    <td className="pl-1.5 pr-2 py-2.5">
                       <div className="inline-flex flex-row flex-wrap items-center gap-1">
                         {rowStage && (
                           <span
