@@ -2694,26 +2694,37 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
       ) : (
         <>
         <div className="overflow-x-auto rounded-[16px] border border-border bg-card shadow-[var(--ios-shadow)]">
-          <table className="w-full min-w-[680px] text-left text-[13px]">
-            <thead className="border-b border-border/70 text-[11px] uppercase tracking-wide text-muted-foreground">
+          {/* table-fixed：窄列定宽、邮箱/操作吃剩余，避免 SSO~过期 中段被撑出大空洞 */}
+          <table className="w-full min-w-[760px] table-fixed text-left text-[13px]">
+            <colgroup>
+              <col className="w-10" />
+              <col />
+              <col className="w-[6.5rem]" />
+              <col className="w-11" />
+              <col className="w-10" />
+              <col className="w-[9.5rem]" />
+              <col className="w-11" />
+              <col className="w-12" />
+              <col className="w-[7.25rem]" />
+              <col className="w-[17.5rem]" />
+            </colgroup>
+            <thead className="border-b border-border/70 text-[11px] text-muted-foreground">
               <tr>
-                <th className="w-10 px-3 py-2.5" />
-                <th className="px-3 py-2.5 font-medium">邮箱</th>
-                <th className="w-[7rem] max-w-[7rem] px-2 py-2.5 font-medium">
-                  授权
-                </th>
-                <th className="w-[4.5rem] px-3 py-2.5 font-medium">SSO</th>
-                <th className="w-10 px-2 py-2.5 text-center font-medium">Type</th>
-                <th className="min-w-[8.5rem] px-2 py-2.5 font-medium">TAG</th>
+                <th className="px-2 py-2.5" />
+                <th className="px-2 py-2.5 font-medium">邮箱</th>
+                <th className="px-1.5 py-2.5 font-medium">授权</th>
+                <th className="px-1 py-2.5 text-center font-medium">SSO</th>
+                <th className="px-1 py-2.5 text-center font-medium">Type</th>
+                <th className="px-1.5 py-2.5 font-medium">TAG</th>
                 {/* 固定窄列仅放 O/X，避免测活后邻列横向跳动 */}
-                <th className="w-10 whitespace-nowrap px-2 py-2.5 text-center font-medium">
+                <th className="whitespace-nowrap px-1 py-2.5 text-center font-medium">
                   测活
                 </th>
-                <th className="w-12 whitespace-nowrap px-2 py-2.5 text-center font-medium">
+                <th className="whitespace-nowrap px-1 py-2.5 text-center font-medium">
                   状态
                 </th>
-                <th className="px-3 py-2.5 font-medium">过期</th>
-                <th className="px-3 py-2.5 font-medium">操作</th>
+                <th className="px-2 py-2.5 font-medium">过期</th>
+                <th className="px-2 py-2.5 font-medium">操作</th>
               </tr>
             </thead>
             <tbody>
@@ -2744,7 +2755,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                       selected.has(item.filename) && 'bg-primary/5'
                     )}
                   >
-                    <td className="px-3 py-2.5">
+                    <td className="px-2 py-2.5">
                       <Switch
                         size="sm"
                         checked={selected.has(item.filename)}
@@ -2754,7 +2765,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                       />
                     </td>
                     <td
-                      className="max-w-[14rem] truncate px-3 py-2.5 font-medium"
+                      className="truncate px-2 py-2.5 font-medium"
                       title={
                         rowNoEmail
                           ? '无邮箱：email 回填无效，需重 mint 或手补 sso'
@@ -2770,14 +2781,14 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                       )}
                     </td>
                     <td
-                      className="w-[7rem] max-w-[7rem] truncate px-2 py-2.5 font-mono text-[11px] text-muted-foreground"
+                      className="truncate px-1.5 py-2.5 font-mono text-[11px] text-muted-foreground"
                       title={item.filename}
                     >
                       {item.filename}
                     </td>
-                    <td className="w-[4.5rem] min-w-[4.5rem] max-w-[4.5rem] px-3 py-2.5">
+                    <td className="px-1 py-2.5 text-center">
                       {/* SSO：O=有 / X=无（与测活 O/X 同形，固定槽位防布局跳动） */}
-                      <div className="flex h-5 items-center">
+                      <div className="flex h-5 items-center justify-center">
                         {rowNoSso ? (
                           <span
                             className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-amber-500/15 text-[12px] font-bold leading-none text-amber-600 dark:text-amber-400"
@@ -2801,7 +2812,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                         )}
                       </div>
                     </td>
-                    <td className="w-10 min-w-10 px-2 py-2.5 text-center">
+                    <td className="px-1 py-2.5 text-center">
                       {/* Type：A=PKCE / B=Device，蓝色字 */}
                       {item.mintChannel === 'A' || item.mintChannel === 'B' ? (
                         <span
@@ -2818,7 +2829,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                         <span className="text-[11px] text-muted-foreground">—</span>
                       )}
                     </td>
-                    <td className="min-w-[8.5rem] max-w-[14rem] px-2 py-2.5">
+                    <td className="px-1.5 py-2.5">
                       {/* TAG：xai · Nsfw · bot_flag · CPA/S2A（已推送才显示） */}
                       <div className="flex flex-wrap items-center gap-1">
                         {item.xai ? (
@@ -2864,19 +2875,19 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                         />
                       </div>
                     </td>
-                    <td className="w-10 min-w-10 max-w-10 whitespace-nowrap px-2 py-2.5 text-center">
+                    <td className="whitespace-nowrap px-1 py-2.5 text-center">
                       {/* 仅固定 O/X 槽，按钮移至操作列，杜绝邻列位移 */}
                       <span className="inline-flex h-5 w-5 items-center justify-center">
                         <ProbeBadge action={probeAction} />
                       </span>
                     </td>
-                    <td className="w-12 min-w-12 max-w-12 whitespace-nowrap px-2 py-2.5 text-center">
+                    <td className="whitespace-nowrap px-1 py-2.5 text-center">
                       <ProbeHttpBadge http={probeHttp} action={probeAction} />
                     </td>
-                    <td className="whitespace-nowrap px-3 py-2.5 text-[12px] text-muted-foreground">
+                    <td className="whitespace-nowrap px-2 py-2.5 text-[12px] tabular-nums text-muted-foreground">
                       {item.expired || '—'}
                     </td>
-                    <td className="px-3 py-2.5">
+                    <td className="px-2 py-2.5">
                       <div className="inline-flex flex-row flex-wrap items-center gap-1">
                         {rowStage && (
                           <span
