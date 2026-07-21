@@ -2695,19 +2695,19 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
       ) : (
         <>
         <div className="overflow-x-auto rounded-[16px] border border-border bg-card shadow-[var(--ios-shadow)]">
-          {/* table-fixed：窄列定宽；邮箱吃剩余；操作 w-0+nowrap 贴合按钮，避免右侧大空白 */}
-          <table className="w-full min-w-[760px] table-fixed text-left text-[13px]">
+          {/* table-fixed：窄列定宽；TAG w-0+nowrap 按标签数贴合；邮箱吃剩余；操作 2×2 */}
+          <table className="w-full min-w-[720px] table-fixed text-left text-[13px]">
             <colgroup>
               <col className="w-10" />
               <col />
-              <col className="w-[6.5rem]" />
+              <col className="w-[6.25rem]" />
               <col className="w-11" />
               <col className="w-10" />
-              <col className="w-[9.5rem]" />
+              <col className="w-0" />
               <col className="w-11" />
               <col className="w-12" />
-              <col className="w-[10.25rem]" />
-              <col className="w-0" />
+              <col className="w-[10rem]" />
+              <col className="w-[11.5rem]" />
             </colgroup>
             <thead className="border-b border-border/70 text-[11px] text-muted-foreground">
               <tr>
@@ -2716,7 +2716,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                 <th className="px-1.5 py-2.5 font-medium">授权</th>
                 <th className="px-1 py-2.5 text-center font-medium">SSO</th>
                 <th className="px-1 py-2.5 text-center font-medium">Type</th>
-                <th className="px-1.5 py-2.5 font-medium">TAG</th>
+                <th className="whitespace-nowrap px-1.5 py-2.5 font-medium">TAG</th>
                 {/* 固定窄列仅放 O/X，避免测活后邻列横向跳动 */}
                 <th className="whitespace-nowrap px-1 py-2.5 text-center font-medium">
                   测活
@@ -2725,9 +2725,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                   状态
                 </th>
                 <th className="px-1.5 py-2.5 font-medium">过期</th>
-                <th className="whitespace-nowrap pl-1.5 pr-2 py-2.5 font-medium">
-                  操作
-                </th>
+                <th className="px-1.5 py-2.5 font-medium">操作</th>
               </tr>
             </thead>
             <tbody>
@@ -2832,12 +2830,12 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                         <span className="text-[11px] text-muted-foreground">—</span>
                       )}
                     </td>
-                    <td className="px-1.5 py-2.5">
-                      {/* TAG：xai · Nsfw · bot_flag · CPA/S2A（已推送才显示） */}
-                      <div className="flex flex-wrap items-center gap-1">
+                    <td className="whitespace-nowrap px-1.5 py-2.5">
+                      {/* TAG 单行：xai · Nsfw · Bot · CPA/S2A（有则显示）；列宽随标签数贴合 */}
+                      <div className="inline-flex max-w-none flex-nowrap items-center gap-1">
                         {item.xai ? (
                           <span
-                            className="inline-flex h-5 items-center rounded-full bg-emerald-500/15 px-2 text-[10px] font-medium leading-none text-emerald-600 dark:text-emerald-400"
+                            className="inline-flex h-5 shrink-0 items-center rounded-full bg-emerald-500/15 px-2 text-[10px] font-medium leading-none text-emerald-600 dark:text-emerald-400"
                             title="xai 标识（文件名或 type）"
                           >
                             xai
@@ -2853,6 +2851,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                               : 'none')
                           }
                           error={item.nsfwError}
+                          className="shrink-0"
                         />
                         <BotFlagBadge
                           flag={
@@ -2865,16 +2864,19 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                           }
                           is1={item.isBotFlag1}
                           missing="dash"
+                          className="shrink-0"
                         />
                         <PushChannelBadge
                           channel="CPA"
                           pushed={item.pushedCpa === true}
                           at={item.pushedCpaAt}
+                          className="shrink-0"
                         />
                         <PushChannelBadge
                           channel="S2A"
                           pushed={item.pushedS2a === true}
                           at={item.pushedS2aAt}
+                          className="shrink-0"
                         />
                       </div>
                     </td>
@@ -2893,12 +2895,13 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                     >
                       {item.expired ? fmtBeijingPlain(item.expired) : '—'}
                     </td>
-                    <td className="whitespace-nowrap pl-1.5 pr-2 py-2.5">
-                      <div className="inline-flex flex-row flex-nowrap items-center gap-1">
+                    <td className="px-1.5 py-2 align-middle">
+                      {/* 默认两行：测活|密码重登 / 重签cli|重签api */}
+                      <div className="flex w-full flex-col gap-1">
                         {rowStage && (
                           <span
                             className={cn(
-                              'shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium tabular-nums',
+                              'inline-flex w-fit max-w-full truncate rounded-full px-2 py-0.5 text-[10px] font-medium tabular-nums',
                               rowStage === 'done'
                                 ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
                                 : rowStage === 'error'
@@ -2916,82 +2919,90 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                             {reloginStageLabel(rowStage)}
                           </span>
                         )}
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          className="h-7 shrink-0"
-                          disabled={busy}
-                          onClick={() => void probeOne(item)}
-                          title="单条 CPA 测活（结果落盘）"
-                        >
-                          <Activity
-                            className={cn('h-3.5 w-3.5', rowProbe && 'animate-pulse')}
-                          />
-                          {rowProbe ? '…' : '测活'}
-                        </Button>
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          className="h-7 shrink-0"
-                          disabled={
-                            (busy && !rowStageActive) ||
-                            rowNoEmail ||
-                            item.poolHasPassword === false ||
-                            rowStageActive
-                          }
-                          onClick={() => void reloginOne(item)}
-                          title={
-                            rowNoEmail
-                              ? '无邮箱无法密码重登'
-                              : item.poolHasPassword === false
-                                ? '号池无该邮箱密码，请先补全（避免开浏览器后失败）'
-                                : rowStage
-                                  ? `密码重登：${reloginStageLabel(rowStage)}${
-                                      rowReloginSt?.message
-                                        ? ` · ${rowReloginSt.message}`
-                                        : ''
-                                    }`
-                                  : '密码登录 → mint → 随机英文消息激活 → 更新测活/状态'
-                          }
-                        >
-                          <KeyRound
-                            className={cn(
-                              'h-3.5 w-3.5',
-                              (rowRelogin || rowStageActive) && 'animate-pulse'
-                            )}
-                          />
-                          {rowStageActive
-                            ? reloginStageLabel(rowStage)
-                            : rowRelogin
-                              ? '…'
-                              : '密码重登'}
-                        </Button>
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          className="h-7 shrink-0"
-                          disabled={busy}
-                          title="重签 cli · base=cli-chat-proxy 满额"
-                          onClick={() => void resign(item, 'cli')}
-                        >
-                          <RotateCcw
-                            className={cn('h-3.5 w-3.5', rowResign && 'animate-spin')}
-                          />
-                          {rowResign ? '…' : '重签 cli'}
-                        </Button>
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          className="h-7 shrink-0"
-                          disabled={busy}
-                          title="重签 api · base=api.x.ai 防风控·约50%额度"
-                          onClick={() => void resign(item, 'api')}
-                        >
-                          <RotateCcw
-                            className={cn('h-3.5 w-3.5', rowResign && 'animate-spin')}
-                          />
-                          {rowResign ? '…' : '重签 api'}
-                        </Button>
+                        <div className="grid w-full grid-cols-2 gap-1">
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            className="h-7 min-w-0 justify-center px-1.5"
+                            disabled={busy}
+                            onClick={() => void probeOne(item)}
+                            title="单条 CPA 测活（结果落盘）"
+                          >
+                            <Activity
+                              className={cn('h-3.5 w-3.5', rowProbe && 'animate-pulse')}
+                            />
+                            {rowProbe ? '…' : '测活'}
+                          </Button>
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            className="h-7 min-w-0 justify-center px-1.5"
+                            disabled={
+                              (busy && !rowStageActive) ||
+                              rowNoEmail ||
+                              item.poolHasPassword === false ||
+                              rowStageActive
+                            }
+                            onClick={() => void reloginOne(item)}
+                            title={
+                              rowNoEmail
+                                ? '无邮箱无法密码重登'
+                                : item.poolHasPassword === false
+                                  ? '号池无该邮箱密码，请先补全（避免开浏览器后失败）'
+                                  : rowStage
+                                    ? `密码重登：${reloginStageLabel(rowStage)}${
+                                        rowReloginSt?.message
+                                          ? ` · ${rowReloginSt.message}`
+                                          : ''
+                                      }`
+                                    : '密码登录 → mint → 随机英文消息激活 → 更新测活/状态'
+                            }
+                          >
+                            <KeyRound
+                              className={cn(
+                                'h-3.5 w-3.5',
+                                (rowRelogin || rowStageActive) && 'animate-pulse'
+                              )}
+                            />
+                            {rowStageActive
+                              ? reloginStageLabel(rowStage)
+                              : rowRelogin
+                                ? '…'
+                                : '密码重登'}
+                          </Button>
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            className="h-7 min-w-0 justify-center px-1.5"
+                            disabled={busy}
+                            title="重签 cli · base=cli-chat-proxy 满额"
+                            onClick={() => void resign(item, 'cli')}
+                          >
+                            <RotateCcw
+                              className={cn(
+                                'h-3.5 w-3.5',
+                                rowResign && 'animate-spin'
+                              )}
+                            />
+                            {rowResign ? '…' : '重签 cli'}
+                          </Button>
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            className="h-7 min-w-0 justify-center px-1.5"
+                            disabled={busy}
+                            title="重签 api · base=api.x.ai 防风控·约50%额度"
+                            onClick={() => void resign(item, 'api')}
+                          >
+                            <RotateCcw
+                              className={cn(
+                                'h-3.5 w-3.5',
+                                rowResign && 'animate-spin'
+                              )}
+                            />
+                            {rowResign ? '…' : '重签 api'}
+                          </Button>
+                        </div>
                       </div>
                     </td>
                   </tr>
