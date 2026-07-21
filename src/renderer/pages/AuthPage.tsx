@@ -2695,7 +2695,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
       ) : (
         <>
         <div className="overflow-x-auto rounded-[16px] border border-border bg-card shadow-[var(--ios-shadow)]">
-          {/* table-fixed：窄列定宽、邮箱/操作吃剩余，避免 SSO~过期 中段被撑出大空洞 */}
+          {/* table-fixed：窄列定宽；邮箱吃剩余；操作 w-0+nowrap 贴合按钮，避免右侧大空白 */}
           <table className="w-full min-w-[760px] table-fixed text-left text-[13px]">
             <colgroup>
               <col className="w-10" />
@@ -2707,7 +2707,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
               <col className="w-11" />
               <col className="w-12" />
               <col className="w-[10.25rem]" />
-              <col className="w-[16.25rem]" />
+              <col className="w-0" />
             </colgroup>
             <thead className="border-b border-border/70 text-[11px] text-muted-foreground">
               <tr>
@@ -2725,7 +2725,9 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                   状态
                 </th>
                 <th className="px-1.5 py-2.5 font-medium">过期</th>
-                <th className="pl-1.5 pr-2 py-2.5 font-medium">操作</th>
+                <th className="whitespace-nowrap pl-1.5 pr-2 py-2.5 font-medium">
+                  操作
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -2891,8 +2893,8 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                     >
                       {item.expired ? fmtBeijingPlain(item.expired) : '—'}
                     </td>
-                    <td className="pl-1.5 pr-2 py-2.5">
-                      <div className="inline-flex flex-row flex-wrap items-center gap-1">
+                    <td className="whitespace-nowrap pl-1.5 pr-2 py-2.5">
+                      <div className="inline-flex flex-row flex-nowrap items-center gap-1">
                         {rowStage && (
                           <span
                             className={cn(
