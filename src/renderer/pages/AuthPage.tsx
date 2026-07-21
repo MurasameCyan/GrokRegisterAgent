@@ -2695,37 +2695,26 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
       ) : (
         <>
         <div className="overflow-x-auto rounded-[16px] border border-border bg-card shadow-[var(--ios-shadow)]">
-          {/* table-fixed：窄列定宽；TAG w-0+nowrap 按标签数贴合；邮箱吃剩余；操作 2×2 */}
-          <table className="w-full min-w-[720px] table-fixed text-left text-[13px]">
-            <colgroup>
-              <col className="w-10" />
-              <col />
-              <col className="w-[6.25rem]" />
-              <col className="w-11" />
-              <col className="w-10" />
-              <col className="w-0" />
-              <col className="w-11" />
-              <col className="w-12" />
-              <col className="w-[10rem]" />
-              <col className="w-[11.5rem]" />
-            </colgroup>
+          {/* auto 布局：内容列 nowrap 自撑；邮箱截断吃剩余；避免 fixed+w-0 把字挤竖 */}
+          <table className="w-full min-w-[880px] text-left text-[13px]">
             <thead className="border-b border-border/70 text-[11px] text-muted-foreground">
               <tr>
-                <th className="px-2 py-2.5" />
-                <th className="px-2 py-2.5 font-medium">邮箱</th>
-                <th className="px-1.5 py-2.5 font-medium">授权</th>
-                <th className="px-1 py-2.5 text-center font-medium">SSO</th>
-                <th className="px-1 py-2.5 text-center font-medium">Type</th>
-                <th className="whitespace-nowrap px-1.5 py-2.5 font-medium">TAG</th>
-                {/* 固定窄列仅放 O/X，避免测活后邻列横向跳动 */}
-                <th className="whitespace-nowrap px-1 py-2.5 text-center font-medium">
+                <th className="w-10 px-2 py-2.5" />
+                <th className="min-w-[8rem] px-2 py-2.5 font-medium">邮箱</th>
+                <th className="w-[6.5rem] px-1.5 py-2.5 font-medium">授权</th>
+                <th className="w-11 px-1 py-2.5 text-center font-medium">SSO</th>
+                <th className="w-10 px-1 py-2.5 text-center font-medium">Type</th>
+                <th className="px-1.5 py-2.5 font-medium">TAG</th>
+                <th className="w-11 whitespace-nowrap px-1 py-2.5 text-center font-medium">
                   测活
                 </th>
-                <th className="whitespace-nowrap px-1 py-2.5 text-center font-medium">
+                <th className="w-12 whitespace-nowrap px-1 py-2.5 text-center font-medium">
                   状态
                 </th>
-                <th className="px-1.5 py-2.5 font-medium">过期</th>
-                <th className="px-1.5 py-2.5 font-medium">操作</th>
+                <th className="w-[10rem] whitespace-nowrap px-1.5 py-2.5 font-medium">
+                  过期
+                </th>
+                <th className="w-[14.5rem] px-1.5 py-2.5 font-medium">操作</th>
               </tr>
             </thead>
             <tbody>
@@ -2756,7 +2745,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                       selected.has(item.filename) && 'bg-primary/5'
                     )}
                   >
-                    <td className="px-2 py-2.5">
+                    <td className="w-10 px-2 py-2.5 align-middle">
                       <Switch
                         size="sm"
                         checked={selected.has(item.filename)}
@@ -2766,7 +2755,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                       />
                     </td>
                     <td
-                      className="truncate px-2 py-2.5 font-medium"
+                      className="max-w-[12rem] truncate px-2 py-2.5 align-middle font-medium"
                       title={
                         rowNoEmail
                           ? '无邮箱：email 回填无效，需重 mint 或手补 sso'
@@ -2782,13 +2771,13 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                       )}
                     </td>
                     <td
-                      className="truncate px-1.5 py-2.5 font-mono text-[11px] text-muted-foreground"
+                      className="w-[6.5rem] max-w-[6.5rem] truncate px-1.5 py-2.5 align-middle font-mono text-[11px] text-muted-foreground"
                       title={item.filename}
                     >
                       {item.filename}
                     </td>
-                    <td className="px-1 py-2.5 text-center">
-                      {/* SSO：O=有 / X=无（与测活 O/X 同形，固定槽位防布局跳动） */}
+                    <td className="w-11 px-1 py-2.5 text-center align-middle">
+                      {/* SSO：O=有 / X=无（与测活 O/X 同形） */}
                       <div className="flex h-5 items-center justify-center">
                         {rowNoSso ? (
                           <span
@@ -2813,8 +2802,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                         )}
                       </div>
                     </td>
-                    <td className="px-1 py-2.5 text-center">
-                      {/* Type：A=PKCE / B=Device，蓝色字 */}
+                    <td className="w-10 px-1 py-2.5 text-center align-middle">
                       {item.mintChannel === 'A' || item.mintChannel === 'B' ? (
                         <span
                           className="text-[12px] font-semibold text-blue-600 dark:text-blue-400"
@@ -2830,9 +2818,9 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                         <span className="text-[11px] text-muted-foreground">—</span>
                       )}
                     </td>
-                    <td className="whitespace-nowrap px-1.5 py-2.5">
-                      {/* TAG 单行：xai · Nsfw · Bot · CPA/S2A（有则显示）；列宽随标签数贴合 */}
-                      <div className="inline-flex max-w-none flex-nowrap items-center gap-1">
+                    <td className="px-1.5 py-2.5 align-middle">
+                      {/* TAG 单行 nowrap：列宽随可见标签自撑，绝不竖排 */}
+                      <div className="flex flex-nowrap items-center gap-1 whitespace-nowrap">
                         {item.xai ? (
                           <span
                             className="inline-flex h-5 shrink-0 items-center rounded-full bg-emerald-500/15 px-2 text-[10px] font-medium leading-none text-emerald-600 dark:text-emerald-400"
@@ -2855,7 +2843,6 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                         />
                         <BotFlagBadge
                           flag={
-                            // 0 合法；有 sso 且无 claim 时显示绿 None
                             item.botFlagSource != null && item.botFlagSource !== ''
                               ? item.botFlagSource
                               : item.hasSso
@@ -2880,24 +2867,23 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                         />
                       </div>
                     </td>
-                    <td className="whitespace-nowrap px-1 py-2.5 text-center">
-                      {/* 仅固定 O/X 槽，按钮移至操作列，杜绝邻列位移 */}
+                    <td className="w-11 whitespace-nowrap px-1 py-2.5 text-center align-middle">
                       <span className="inline-flex h-5 w-5 items-center justify-center">
                         <ProbeBadge action={probeAction} />
                       </span>
                     </td>
-                    <td className="whitespace-nowrap px-1 py-2.5 text-center">
+                    <td className="w-12 whitespace-nowrap px-1 py-2.5 text-center align-middle">
                       <ProbeHttpBadge http={probeHttp} action={probeAction} />
                     </td>
                     <td
-                      className="whitespace-nowrap px-1.5 py-2.5 text-[12px] tabular-nums text-muted-foreground"
+                      className="w-[10rem] whitespace-nowrap px-1.5 py-2.5 align-middle text-[12px] tabular-nums text-muted-foreground"
                       title={item.expired || undefined}
                     >
                       {item.expired ? fmtBeijingPlain(item.expired) : '—'}
                     </td>
-                    <td className="px-1.5 py-2 align-middle">
-                      {/* 默认两行：测活|密码重登 / 重签cli|重签api */}
-                      <div className="flex w-full flex-col gap-1">
+                    <td className="w-[14.5rem] px-1.5 py-2 align-middle">
+                      {/* 两行×两按钮：列宽足够「密码重登」横排，禁止字竖排 */}
+                      <div className="flex w-[13.75rem] flex-col gap-1">
                         {rowStage && (
                           <span
                             className={cn(
@@ -2908,7 +2894,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                                   ? 'bg-red-500/15 text-red-600 dark:text-red-400'
                                   : rowStage === 'queued'
                                     ? 'bg-slate-500/15 text-slate-600 dark:text-slate-300'
-                                    : 'bg-amber-500/15 text-amber-700 dark:text-amber-400 animate-pulse'
+                                    : 'animate-pulse bg-amber-500/15 text-amber-700 dark:text-amber-400'
                             )}
                             title={
                               rowReloginSt?.message
@@ -2923,20 +2909,25 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                           <Button
                             variant="secondary"
                             size="sm"
-                            className="h-7 min-w-0 justify-center px-1.5"
+                            className="h-7 gap-1 whitespace-nowrap px-1.5 text-[12px]"
                             disabled={busy}
                             onClick={() => void probeOne(item)}
                             title="单条 CPA 测活（结果落盘）"
                           >
                             <Activity
-                              className={cn('h-3.5 w-3.5', rowProbe && 'animate-pulse')}
+                              className={cn(
+                                'h-3.5 w-3.5 shrink-0',
+                                rowProbe && 'animate-pulse'
+                              )}
                             />
-                            {rowProbe ? '…' : '测活'}
+                            <span className="whitespace-nowrap">
+                              {rowProbe ? '…' : '测活'}
+                            </span>
                           </Button>
                           <Button
                             variant="secondary"
                             size="sm"
-                            className="h-7 min-w-0 justify-center px-1.5"
+                            className="h-7 gap-1 whitespace-nowrap px-1.5 text-[12px]"
                             disabled={
                               (busy && !rowStageActive) ||
                               rowNoEmail ||
@@ -2960,47 +2951,53 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                           >
                             <KeyRound
                               className={cn(
-                                'h-3.5 w-3.5',
+                                'h-3.5 w-3.5 shrink-0',
                                 (rowRelogin || rowStageActive) && 'animate-pulse'
                               )}
                             />
-                            {rowStageActive
-                              ? reloginStageLabel(rowStage)
-                              : rowRelogin
-                                ? '…'
-                                : '密码重登'}
+                            <span className="whitespace-nowrap">
+                              {rowStageActive
+                                ? reloginStageLabel(rowStage)
+                                : rowRelogin
+                                  ? '…'
+                                  : '密码重登'}
+                            </span>
                           </Button>
                           <Button
                             variant="secondary"
                             size="sm"
-                            className="h-7 min-w-0 justify-center px-1.5"
+                            className="h-7 gap-1 whitespace-nowrap px-1.5 text-[12px]"
                             disabled={busy}
                             title="重签 cli · base=cli-chat-proxy 满额"
                             onClick={() => void resign(item, 'cli')}
                           >
                             <RotateCcw
                               className={cn(
-                                'h-3.5 w-3.5',
+                                'h-3.5 w-3.5 shrink-0',
                                 rowResign && 'animate-spin'
                               )}
                             />
-                            {rowResign ? '…' : '重签 cli'}
+                            <span className="whitespace-nowrap">
+                              {rowResign ? '…' : '重签 cli'}
+                            </span>
                           </Button>
                           <Button
                             variant="secondary"
                             size="sm"
-                            className="h-7 min-w-0 justify-center px-1.5"
+                            className="h-7 gap-1 whitespace-nowrap px-1.5 text-[12px]"
                             disabled={busy}
                             title="重签 api · base=api.x.ai 防风控·约50%额度"
                             onClick={() => void resign(item, 'api')}
                           >
                             <RotateCcw
                               className={cn(
-                                'h-3.5 w-3.5',
+                                'h-3.5 w-3.5 shrink-0',
                                 rowResign && 'animate-spin'
                               )}
                             />
-                            {rowResign ? '…' : '重签 api'}
+                            <span className="whitespace-nowrap">
+                              {rowResign ? '…' : '重签 api'}
+                            </span>
                           </Button>
                         </div>
                       </div>
