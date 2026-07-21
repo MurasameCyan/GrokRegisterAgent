@@ -2070,11 +2070,13 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
 
   return (
     <div className="space-y-5">
-      <section className="terminal-grid">
-        <AuthMetric label="Auth 文件" value={String(items.length)} Icon={KeyRound} />
-        <AuthMetric label="xai 标识" value={String(xaiCount)} Icon={KeyRound} />
-        <AuthMetric label="无 sso" value={String(missingSsoCount)} Icon={Link2} />
-        <AuthMetric label="无邮箱" value={String(noEmailAuthCount)} Icon={KeyRound} />
+      <section className="rounded-[16px] border border-border bg-card p-2 shadow-[var(--ios-shadow)] sm:p-3">
+        <div className="grid grid-cols-4 gap-2 sm:gap-3">
+          <AuthMetric label="Auth 文件" value={String(items.length)} Icon={KeyRound} />
+          <AuthMetric label="xai 标识" value={String(xaiCount)} Icon={KeyRound} />
+          <AuthMetric label="无 sso" value={String(missingSsoCount)} Icon={Link2} />
+          <AuthMetric label="无邮箱" value={String(noEmailAuthCount)} Icon={KeyRound} />
+        </div>
       </section>
 
       {prog && (
@@ -3135,12 +3137,14 @@ function AuthMetric({
   Icon: typeof KeyRound;
 }) {
   return (
-    <div className="rounded-[16px] border border-border bg-card p-4 shadow-[var(--ios-shadow)]">
-      <div className="flex items-center justify-between gap-2">
-        <p className="text-[12px] text-muted-foreground">{label}</p>
-        <Icon className="h-4 w-4 text-muted-foreground/80" />
+    <div className="min-w-0 rounded-[12px] border border-border/70 bg-muted/40 px-2.5 py-2.5 sm:px-3 sm:py-3">
+      <div className="flex items-center justify-between gap-1.5">
+        <p className="truncate text-[11px] text-muted-foreground sm:text-[12px]">{label}</p>
+        <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground/80 sm:h-4 sm:w-4" />
       </div>
-      <p className="mt-2 text-[22px] font-semibold tracking-tight tabular-nums">{value}</p>
+      <p className="mt-1.5 truncate text-[18px] font-semibold tracking-tight tabular-nums sm:mt-2 sm:text-[22px]">
+        {value}
+      </p>
     </div>
   );
 }
