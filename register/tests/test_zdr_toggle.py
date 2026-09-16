@@ -35,15 +35,22 @@ def test_feature_url_is_update_user_feature_controls():
 
 
 def test_set_zdr_tag_and_patch_auth(tmp_path, monkeypatch):
+    """set_zdr_tag 必须把标签落到 DATA_DIR 的侧车文件，供号池/Auth 列表读取。"""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
     import account_tags as at
 
-    tag_path = tmp_path / "account_tags.json"
-    monkeypatch.setattr(at, "_PATH", tag_path)
+    # 镜像路径改指 tmp，避免测试写进仓库 register/data/
+    monkeypatch.setattr(at, "_legacy_mirror_path", lambda: tmp_path / "mirror.json")
+
     tag = at.set_zdr_tag(closed=True, email="a@b.com", sso="x" * 20, error="")
     assert tag["zdr_closed"] is True
     assert tag["zdr_attempted"] is True
-    data = json.loads(tag_path.read_text(encoding="utf-8"))
+
+    data = json.loads((tmp_path / "account_tags.json").read_text(encoding="utf-8"))
     assert data["by_email"]["a@b.com"]["zdr_closed"] is True
+    # 读路径必须能取回刚写的标签（by_email / by_sso_hash 两个索引都要命中）
+    assert at.get_tag(email="a@b.com")["zdr_closed"] is True
+    assert at.get_tag(sso="x" * 20)["zdr_closed"] is True
 
     auth = tmp_path / "auth.json"
     auth.write_text("{}", encoding="utf-8")

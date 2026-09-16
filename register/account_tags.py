@@ -19,6 +19,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from atomic_json import atomic_write_json
+
 _LOCK = threading.Lock()
 
 # 与 Node settingsStore / docker-compose DATA_DIR 默认一致
@@ -119,20 +121,24 @@ def _load() -> dict[str, Any]:
     return merged
 
 
+def _legacy_mirror_path() -> Path:
+    """DATA_DIR 之外的兼容镜像路径。
+
+    _path_candidates() 与 Node accountTags.ts 都会读它，因此 DATA_DIR 未挂载时
+    它是唯一可读源，不能省掉。独立成函数便于测试隔离（避免写进仓库）。
+    """
+    return Path(__file__).resolve().parent / "data" / "account_tags.json"
+
+
 def _save(data: dict[str, Any]) -> Path:
     """只写 DATA_DIR 持久路径；返回写入路径。"""
     path = _primary_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
-    payload = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
-    tmp.write_text(payload, encoding="utf-8")
-    tmp.replace(path)
-    # 可选：再镜像到 register/data（仅备份；失败忽略）。主源始终是 DATA_DIR。
+    atomic_write_json(path, data)
+    # 镜像同样走原子写：并发读者可能正好读这个文件，裸 write_text 会露半写内容。
     try:
-        legacy = Path(__file__).resolve().parent / "data" / "account_tags.json"
+        legacy = _legacy_mirror_path()
         if path.resolve() != legacy.resolve():
-            legacy.parent.mkdir(parents=True, exist_ok=True)
-            legacy.write_text(payload, encoding="utf-8")
+            atomic_write_json(legacy, data)
     except Exception:
         pass
     return path

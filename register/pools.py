@@ -26,6 +26,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
+from atomic_json import atomic_write_json
+
 _lock = threading.Lock()
 # 跨进程写 config.json 的文件锁：Node（writeConfigForPython）与本进程
 # （remove_proxy_from_local_pool）会并发写同一文件。共用 config.json.lock，
@@ -40,7 +42,11 @@ _proxy_idx = 0
 _loaded = False
 # 同一 IP 最小使用间隔（秒）；0 关闭
 _proxy_ip_interval_sec = 0.0
-# proxy_key -> 上次成功占用时间戳
+# proxy_key -> 上次成功占用时间戳（**仅进程内缓存**）。
+# 跨进程真相源是 _ip_state_path() 的 JSON：多个 runner 共用同一出口时，仅靠
+# 进程内存会各自计时 → 同 IP 实际频率翻倍。实测（2026-09-15）：在生产 runner
+# 之外插入第二个进程共用同一 sing-box 出口，生产出号从每 308s 稳定一个直接归零，
+# 并出现 grok.com/tos-gate 拦截与验证码 90s 不达；停掉第二进程后恢复。
 _proxy_last_used: Dict[str, float] = {}
 
 
@@ -48,22 +54,42 @@ def _config_path() -> Path:
     return Path(__file__).resolve().parent / "config.json"
 
 
-class _CrossProcConfigLock:
-    """基于 O_CREAT|O_EXCL 的跨进程锁（Node 侧用同名 .lock 协调）。
+def _ip_state_path() -> Path:
+    """同 IP 占用时间戳的跨进程状态文件。
 
-    锁文件：config.json.lock。获取失败自旋等待（含线程内 _config_lock 保证
-    单进程互斥）。超时后强制放行——宁可偶发覆盖也不永久卡死注册流程。
+    与 config.json 同目录：DATA_DIR 未必可写，而注册进程一定能写 register/。
+    可用 PROXY_IP_STATE_PATH 覆盖（测试隔离用）。
+    """
+    env = (os.environ.get("PROXY_IP_STATE_PATH") or "").strip()
+    if env:
+        return Path(env)
+    return _config_path().with_name("proxy_ip_state.json")
+
+
+class _CrossProcLock:
+    """基于 O_CREAT|O_EXCL 的跨进程锁（Node 侧对 config.json 用同名 .lock 协调）。
+
+    锁文件：<target>.lock。获取失败自旋等待（配合线程锁保证单进程互斥）。
+    超时后强制放行——宁可偶发覆盖也不永久卡死注册流程。
     过期锁（陈旧 > stale_sec）视为崩溃残留，直接接管。
     """
 
-    def __init__(self, timeout: float = 5.0, stale_sec: float = 30.0):
-        self._path = str(_config_path()) + ".lock"
+    def __init__(
+        self,
+        target: Path | None = None,
+        *,
+        thread_lock: threading.Lock | None = None,
+        timeout: float = 5.0,
+        stale_sec: float = 30.0,
+    ):
+        self._path = str(target or _config_path()) + ".lock"
+        self._thread_lock = thread_lock if thread_lock is not None else _config_lock
         self._timeout = timeout
         self._stale_sec = stale_sec
         self._fd = None
 
     def __enter__(self):
-        _config_lock.acquire()
+        self._thread_lock.acquire()
         deadline = time.time() + self._timeout
         while True:
             try:
@@ -105,23 +131,66 @@ class _CrossProcConfigLock:
             pass
         finally:
             self._fd = None
-            _config_lock.release()
+            self._thread_lock.release()
         return False
 
 
+# 兼容旧名：config.json 专用锁
+_CrossProcConfigLock = _CrossProcLock
+
+
 def _atomic_write_config(conf: dict) -> None:
-    """原子写 config.json：写临时文件后 os.replace，避免读到半写内容。"""
-    path = _config_path()
-    tmp = str(path) + f".tmp.{os.getpid()}"
-    data = json.dumps(conf, ensure_ascii=False, indent=2)
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(data)
-        f.flush()
+    """原子写 config.json（Node 侧读同一文件，禁止半写）。"""
+    atomic_write_json(_config_path(), conf, newline=False)
+
+
+# 跨进程 IP 占用状态：独立线程锁（与 config.json 锁不同文件，互不阻塞）
+_ip_state_lock = threading.Lock()
+
+
+def _load_ip_state() -> Dict[str, float]:
+    """读跨进程 IP 占用时间戳。文件缺失/损坏 → 空表（绝不阻断注册）。"""
+    try:
+        raw = json.loads(_ip_state_path().read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    used = raw.get("last_used") if isinstance(raw, dict) else None
+    if not isinstance(used, dict):
+        return {}
+    out: Dict[str, float] = {}
+    for k, v in used.items():
         try:
-            os.fsync(f.fileno())
+            out[str(k)] = float(v)
         except Exception:
-            pass
-    os.replace(tmp, str(path))
+            continue
+    return out
+
+
+def _merge_ip_state(claims: Dict[str, float]) -> Dict[str, float]:
+    """把本进程的占用时间戳并入磁盘状态并落盘，返回合并后的全量表。
+
+    每个 key 取较新值。持跨进程锁 + 原子写，避免多 runner 互相覆盖。
+    落盘失败不抛出：退化为进程内计时，绝不因状态文件问题卡死注册。
+    """
+    now = time.time()
+    interval = float(_proxy_ip_interval_sec or 0)
+    # 超过 4×interval（至少 1h）的条目早已冷却，丢弃以免文件无限增长
+    keep = max(interval * 4, 3600.0)
+    try:
+        with _CrossProcLock(
+            _ip_state_path(), thread_lock=_ip_state_lock, timeout=2.0
+        ):
+            merged = _load_ip_state()
+            for k, ts in claims.items():
+                if k and ts > merged.get(k, 0.0):
+                    merged[k] = ts
+            merged = {k: v for k, v in merged.items() if now - v <= keep}
+            atomic_write_json(
+                _ip_state_path(), {"last_used": merged}, newline=False
+            )
+            return merged
+    except Exception:
+        return dict(claims)
 
 
 _HOST_PORT_RE = re.compile(
@@ -765,8 +834,22 @@ def acquire_proxy_for_register(
     reload_pools()
     waited = 0.0
     while True:
+        # 跨进程真相源：先并入磁盘状态，避免与同出口上的其它 runner 各自计时。
+        # 放在 _lock 之外：文件 IO 不该阻塞其它线程读配置。
+        if float(_proxy_ip_interval_sec or 0) > 0:
+            try:
+                disk_used = _merge_ip_state({})
+            except Exception:
+                disk_used = {}
+        else:
+            disk_used = {}
+
         with _lock:
             interval = float(_proxy_ip_interval_sec or 0)
+            # 磁盘上更新的时间戳并入进程内表（取较新者），再做冷却判定
+            for _k, _ts in disk_used.items():
+                if _ts > _proxy_last_used.get(_k, 0.0):
+                    _proxy_last_used[_k] = _ts
             candidates: List[str] = list(_proxy_list) if _proxy_list else []
             if not candidates:
                 fb = (fallback or "").strip()
@@ -797,47 +880,63 @@ def acquire_proxy_for_register(
 
             # 1) preferred 已冷却 → 直接用
             rem_pref = remaining(preferred)
+            claimed: Optional[Tuple[str, float]] = None
+            picked: Optional[str] = None
+            sleep_sec = 0.0
+            wait_key = "-"
             if rem_pref <= 0:
                 key = proxy_identity_key(preferred)
                 if key and interval > 0:
                     _proxy_last_used[key] = now
-                return preferred, waited
+                    claimed = (key, now)
+                picked = preferred
+            else:
+                # 2) 找其它已冷却的 IP
+                ready: List[str] = []
+                soonest_wait = rem_pref
+                soonest_url = preferred
+                for url in candidates:
+                    r = remaining(url)
+                    if r <= 0:
+                        ready.append(url)
+                    elif r < soonest_wait:
+                        soonest_wait = r
+                        soonest_url = url
 
-            # 2) 找其它已冷却的 IP
-            ready: List[str] = []
-            soonest_wait = rem_pref
-            soonest_url = preferred
-            for url in candidates:
-                r = remaining(url)
-                if r <= 0:
-                    ready.append(url)
-                elif r < soonest_wait:
-                    soonest_wait = r
-                    soonest_url = url
-
-            if ready:
-                if _proxy_mode == "random":
-                    chosen = random.choice(ready)
+                if ready:
+                    if _proxy_mode == "random":
+                        chosen = random.choice(ready)
+                    else:
+                        # 尽量贴近轮换顺序：ready 中按池顺序第一个
+                        chosen = ready[0]
+                        for url in candidates:
+                            if url in ready:
+                                chosen = url
+                                break
+                    key = proxy_identity_key(chosen)
+                    if key and interval > 0:
+                        _proxy_last_used[key] = now
+                        claimed = (key, now)
+                    picked = chosen
                 else:
-                    # 尽量贴近轮换顺序：ready 中按池顺序第一个
-                    chosen = ready[0]
-                    for url in candidates:
-                        if url in ready:
-                            chosen = url
-                            break
-                key = proxy_identity_key(chosen)
-                if key and interval > 0:
-                    _proxy_last_used[key] = now
-                return chosen, waited
+                    # 3) 全部冷却中 → 暂停等待最早可用
+                    sleep_sec = min(max(soonest_wait, 0.05), 30.0)
+                    wait_key = proxy_identity_key(soonest_url) or "-"
 
-            # 3) 全部冷却中 → 暂停等待最早可用
-            sleep_sec = min(max(soonest_wait, 0.05), 30.0)
+        # 已占用到代理：锁外立即落盘，让同出口的其它 runner 立刻看到
+        if picked is not None:
+            if claimed is not None:
+                try:
+                    _merge_ip_state({claimed[0]: claimed[1]})
+                except Exception:
+                    pass
+            return picked, waited
 
         # 锁外 sleep，避免阻塞其它线程读配置
         try:
             log(
                 f"[*] IP 使用间隔未到：等待 {sleep_sec:.1f}s "
-                f"(间隔={interval:.0f}s, key={proxy_identity_key(soonest_url) or '-'})"
+                f"(间隔={interval:.0f}s, key={wait_key})"
             )
         except Exception:
             pass
@@ -847,13 +946,24 @@ def acquire_proxy_for_register(
 
 
 def mark_proxy_used(proxy_url: str) -> None:
-    """手动标记代理已用于注册（一般 acquire 内已标记）。"""
+    """手动标记代理已用于注册（一般 acquire 内已标记）。
+
+    同样落盘到跨进程状态，否则同出口上的其它 runner 看不到这次占用。
+    """
     key = proxy_identity_key(proxy_url)
     if not key:
         return
+    now = time.time()
+    should_persist = False
     with _lock:
         if _proxy_ip_interval_sec > 0:
-            _proxy_last_used[key] = time.time()
+            _proxy_last_used[key] = now
+            should_persist = True
+    if should_persist:
+        try:
+            _merge_ip_state({key: now})
+        except Exception:
+            pass
 
 
 def peek_status() -> dict:
@@ -868,5 +978,6 @@ def peek_status() -> dict:
             "proxy_idx": _proxy_idx,
             "proxy_ip_interval_sec": _proxy_ip_interval_sec,
             "proxy_last_used_n": len(_proxy_last_used),
+            "ip_state": str(_ip_state_path()),
             "config": str(_config_path()),
         }

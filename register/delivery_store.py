@@ -18,6 +18,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from atomic_json import atomic_write_json
+
 LogFn = Callable[[str], None]
 
 _ROOT = Path(__file__).resolve().parent
@@ -55,10 +57,7 @@ def _load(path: Path) -> dict[str, Any]:
 
 
 def _save(path: Path, data: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    atomic_write_json(path, data, newline=False)
 
 
 def create_job(

@@ -175,7 +175,13 @@ def _bfs_check_enabled() -> bool:
 
 
 def _bfs_skip_cpa_enabled() -> bool:
-    """命中 bfs 时不写 CPA/远程。Default False（默认只标记不拦截）。"""
+    """bfs_status=unknown（JWT 解不开）时不写 CPA/远程。Default False。
+
+    注意：FLAGGED **不再**触发跳过。全量实测证明 `bfs` claim 只在一段短上游窗口
+    内签发的 token 上出现，且命中组测活存活率不低于未命中组——它是上游开关，
+    不是按号评估的风控标记；按 FLAGGED 丢号会丢掉质量最好的一批。
+    详见 register/bfs_check.py 模块头。
+    """
     return _conf_bool(
         ("BFS_SKIP_CPA", "bfs_skip_cpa"),
         ("bfs_skip_cpa", "bfsSkipCpa"),
@@ -184,7 +190,10 @@ def _bfs_skip_cpa_enabled() -> bool:
 
 
 def _bfs_disable_cpa_enabled() -> bool:
-    """命中 bfs 仍写 CPA，但标 disabled=true。Default False。"""
+    """bfs_status=unknown 时仍写 CPA，但标 disabled=true。Default False。
+
+    同上：FLAGGED 不再触发 disabled。
+    """
     return _conf_bool(
         ("BFS_DISABLE_CPA", "bfs_disable_cpa"),
         ("bfs_disable_cpa", "bfsDisableCpa"),
@@ -675,9 +684,10 @@ def _write_and_probe_one(
         f"channel={channel}; independent OAuth grant; dual mint does not invalidate peer"
     )
 
-    # BFS claim 检测：access_token JWT payload 含 `bfs` key 即视为已标记。
-    # 与 botFlagSource / policy=deny 不是同一信号，只读解码，无法改写已签发 claim。
-    # 解不开的 token 记 unknown，绝不当 clean。
+    # BFS claim 检测：payload 含 `bfs` key 即 flagged。
+    # 实测非风险信号（仅特定上游窗口签发的 token 带此 claim，且该批存活率不低），
+    # 故 flagged 仅作溯源记录，不参与拦截；只有 unknown（JWT 解不开、无法判定）
+    # 才可按配置拦截。解不开的 token 绝不当 clean。
     bfs_info: dict[str, Any] = {}
     if _bfs_check_enabled():
         bfs_info = bfs_sidecar_fields(
@@ -689,16 +699,18 @@ def _write_and_probe_one(
         bfs_status = str(bfs_info.get("bfs_status") or "")
         if bfs_status == BFS_FLAGGED:
             log(
-                f"[auth] channel={channel} ⚠ BFS 命中 "
+                f"[auth] channel={channel} BFS 标记 "
                 f"bfs={bfs_info.get('bfs_value')!r} "
                 f"source={bfs_info.get('bfs_source') or '-'} "
                 f"email={payload.get('email') or email or '-'}"
+                f"（非风险信号：上游窗口标记，不拦截）"
             )
         elif bfs_status == BFS_UNKNOWN:
             log(f"[auth] channel={channel} BFS unknown（JWT 解不开，不判定为 clean）")
 
-        # bfs_skip_cpa：命中（或 unknown）时不落本地 auth，避免 CPA 热加载到坏号
-        skip_for_bfs = bfs_status == BFS_FLAGGED or bfs_status == BFS_UNKNOWN
+        # 仅 unknown 可拦截：无法判定的 token 不宜热加载进 CPA。
+        # FLAGGED 明确是好号，绝不跳过。
+        skip_for_bfs = bfs_status == BFS_UNKNOWN
         if skip_for_bfs and _bfs_skip_cpa_enabled():
             log(
                 f"[auth] channel={channel} ✘ bfs_skip_cpa=true，跳过 CPA 写入"
@@ -724,11 +736,12 @@ def _write_and_probe_one(
                 "error": f"bfs_skip_cpa: bfs_status={bfs_status}",
                 **bfs_info,
             }
-        # bfs_disable_cpa：仍写入但标 disabled，人工复核后可启用
-        if bfs_status == BFS_FLAGGED and _bfs_disable_cpa_enabled():
+        # bfs_disable_cpa：仅 unknown 时写入并标 disabled，人工复核后可启用
+        if bfs_status == BFS_UNKNOWN and _bfs_disable_cpa_enabled():
             payload["disabled"] = True
             log(
                 f"[auth] channel={channel} bfs_disable_cpa=true → 写入但标 disabled=true"
+                f"（bfs_status=unknown）"
             )
 
     path = write_cpa_auth(out_dir, payload, channel=channel)

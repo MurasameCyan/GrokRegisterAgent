@@ -1,14 +1,21 @@
 # -*- coding: utf-8 -*-
 """BFS claim 检测：xAI access_token JWT payload 里的 `bfs` 字段。
 
-语义（与 botFlagSource / policy=deny 不是同一信号）：
-- payload 里**只要存在 bfs key** 即视为已标记（常见值 2），哪怕值是 0 / null / ""。
+**实测结论：`bfs` 不是风险信号，命中不代表号有问题。**
+全量样本按 JWT iat 分天统计显示：该 claim 只在一段短窗口内出现，窗口内近乎
+全量覆盖且取值恒定，窗口前后均为 0 —— 属上游一次性开关，而非按号评估的风控
+标记。命中组的测活存活率不低于未命中组（403 更少，disabled 两组均为 0）。
+因此 flagged 仅作溯源标记，**禁止据此丢号或降级**。
+（完整数据与复现脚本见本机 docs/bfs-signal-findings.md，未入库。）
+
+判定语义（与 botFlagSource / policy=deny 不是同一信号）：
+- payload 里**只要存在 bfs key** 即 flagged，哪怕值是 0 / null / ""。
 - JWT 无法解码 → `unknown`，**绝不伪造为 clean**。
 - 只读解码，不验签；服务端已签发的 claim 无法改写。
 
 状态取值：
-    "flagged"  payload 含 bfs key
-    "clean"    payload 解码成功且无 bfs key
+    "flagged"  payload 含 bfs key（实测=注册于该上游窗口，非风险）
+    "clean"    payload 解码成功且无 bfs key（当前上游默认状态）
     "unknown"  没有 token / 不是 JWT / payload 解不出来
 """
 

@@ -67,3 +67,6 @@ register/_localtest/
 .issue8-diagnostics/
 CLAUDE.md.bak_*
 
+
+# 本机基础设施凭据 / 主机备注（禁止推送）
+api.txt

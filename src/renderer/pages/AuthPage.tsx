@@ -117,7 +117,11 @@ const BFS_FILTER_KEY = 'gra-auth-bfs-filter';
 /** 行内标记筛选：全部 / 无sso / 无邮箱 / 待补全 */
 type MetaFilter = 'all' | 'no_sso' | 'no_email' | 'need_fill' | 'pushed_cpa' | 'pushed_s2a' | 'not_pushed';
 
-/** BFS 筛选：全部 / 已标记 / 正常 / 未知（旧 token 解不开） */
+/**
+ * BFS 筛选：全部 / 有标记 / 无标记 / 未知（旧 token 解不开）。
+ * `bfs` 实测非风险信号（仅特定上游窗口签发的 token 带此 claim，且该批存活率
+ * 不低于未命中组），故不用 danger 语义。详见 BfsBadge.tsx。
+ */
 type BfsFilter = 'all' | 'flagged' | 'clean' | 'unknown';
 
 /** 状态列（HTTP）筛选：全部 / 未测 / 200 / 401 / 403 / 其它错误 */
@@ -2319,8 +2323,8 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
               onChange={changeBfsFilter}
               options={[
                 { id: 'all', label: '全部', count: items.length, title: '不限制 BFS' },
-                { id: 'flagged', label: '标记', count: bfsCounts.flagged, title: 'JWT payload 含 bfs key（已标记）', tone: 'danger' },
-                { id: 'clean', label: '正常', count: bfsCounts.clean, title: '解码成功且无 bfs key' },
+                { id: 'flagged', label: '有标记', count: bfsCounts.flagged, title: 'JWT payload 含 bfs key；实测非风险信号（特定上游窗口签发）' },
+                { id: 'clean', label: '无标记', count: bfsCounts.clean, title: '解码成功且无 bfs key（当前上游默认状态）' },
                 { id: 'unknown', label: '未知', count: bfsCounts.unknown, title: '旧文件无记录或 token 解不开', tone: 'muted' }
               ]}
             />
