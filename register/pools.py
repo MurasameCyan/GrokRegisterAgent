@@ -16,12 +16,14 @@ IP 间隔：acquire_proxy_for_register 在间隔未到时 sleep 等待（队列�
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import random
 import re
 import threading
 import time
+import urllib.request
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -42,12 +44,16 @@ _proxy_idx = 0
 _loaded = False
 # 同一 IP 最小使用间隔（秒）；0 关闭
 _proxy_ip_interval_sec = 0.0
-# proxy_key -> 上次成功占用时间戳（**仅进程内缓存**）。
+# proxy_key -> 上次成功占用时间戳。
 # 跨进程真相源是 _ip_state_path() 的 JSON：多个 runner 共用同一出口时，仅靠
-# 进程内存会各自计时 → 同 IP 实际频率翻倍。实测（2026-09-15）：在生产 runner
-# 之外插入第二个进程共用同一 sing-box 出口，生产出号从每 308s 稳定一个直接归零，
-# 并出现 grok.com/tos-gate 拦截与验证码 90s 不达；停掉第二进程后恢复。
+# 进程内存会各自计时 → 同 IP 实际频率翻倍。
 _proxy_last_used: Dict[str, float] = {}
+
+# Sing-Box 的 Python 入口恒为 127.0.0.1:2080，不能把这个本地地址直接当作公网 IP。
+# 优先缓存通过该入口探测到的真实公网 IP；探测失败时退回运行配置中的 route.final 节点 tag。
+_SINGBOX_IDENTITY_TTL_SEC = 30.0
+_singbox_identity_lock = threading.Lock()
+_singbox_identity_cache: Dict[str, Tuple[float, str, str]] = {}
 
 
 def _config_path() -> Path:
@@ -165,7 +171,6 @@ def _load_ip_state() -> Dict[str, float]:
             continue
     return out
 
-
 def _merge_ip_state(claims: Dict[str, float]) -> Dict[str, float]:
     """把本进程的占用时间戳并入磁盘状态并落盘，返回合并后的全量表。
 
@@ -174,13 +179,24 @@ def _merge_ip_state(claims: Dict[str, float]) -> Dict[str, float]:
     """
     now = time.time()
     interval = float(_proxy_ip_interval_sec or 0)
-    # 超过 4×interval（至少 1h）的条目早已冷却，丢弃以免文件无限增长
     keep = max(interval * 4, 3600.0)
     try:
         with _CrossProcLock(
             _ip_state_path(), thread_lock=_ip_state_lock, timeout=2.0
         ):
             merged = _load_ip_state()
+            # 迁移旧版本用本地入口作为 key 的状态；新版本按实际出口 IP / 节点 tag 计时。
+            try:
+                if _singbox_enabled_from_config():
+                    for legacy in (
+                        "127.0.0.1:2080",
+                        "localhost:2080",
+                        "::1:2080",
+                        "[::1]:2080",
+                    ):
+                        merged.pop(legacy, None)
+            except Exception:
+                pass
             for k, ts in claims.items():
                 if k and ts > merged.get(k, 0.0):
                     merged[k] = ts
@@ -191,6 +207,127 @@ def _merge_ip_state(claims: Dict[str, float]) -> Dict[str, float]:
             return merged
     except Exception:
         return dict(claims)
+
+
+def _singbox_enabled_from_config() -> bool:
+    conf = _read_config_dict()
+    raw = conf.get("singbox_enabled")
+    if isinstance(raw, bool):
+        return raw
+    return str(raw or "").strip().lower() in ("1", "true", "yes", "on", "enabled")
+
+
+def _singbox_runtime_config_path() -> Path:
+    override = (os.environ.get("SINGBOX_RUNTIME_CONFIG_PATH") or "").strip()
+    if override:
+        return Path(override)
+    return Path(os.environ.get("DATA_DIR") or "/data") / "sing-box" / "config.json"
+
+
+def _active_singbox_node_tag() -> str:
+    try:
+        raw = json.loads(_singbox_runtime_config_path().read_text(encoding="utf-8"))
+        route = raw.get("route") if isinstance(raw, dict) else None
+        return str(route.get("final") or "").strip() if isinstance(route, dict) else ""
+    except Exception:
+        return ""
+
+
+def _is_singbox_local_proxy(proxy_url: str) -> bool:
+    if not _singbox_enabled_from_config():
+        return False
+    raw = proxy_url if "://" in proxy_url else f"http://{proxy_url}"
+    try:
+        parsed = urlparse(raw.split("#", 1)[0])
+        host = (parsed.hostname or "").lower()
+        return host in ("127.0.0.1", "localhost", "::1") and parsed.port == 2080
+    except Exception:
+        return False
+
+
+def _probe_singbox_exit_ip(proxy_url: str) -> str:
+    """通过当前 Sing-Box 入口探测公网 IP；失败返回空串，不阻断注册。"""
+    handler = urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url})
+    opener = urllib.request.build_opener(handler)
+    endpoints = (
+        "https://api.ipify.org?format=json",
+        "https://www.cloudflare.com/cdn-cgi/trace",
+    )
+    for endpoint in endpoints:
+        try:
+            req = urllib.request.Request(endpoint, headers={"User-Agent": "GRA/1.0"})
+            with opener.open(req, timeout=6) as resp:
+                body = resp.read(4096).decode("utf-8", "replace")
+            candidate = ""
+            if "format=json" in endpoint:
+                try:
+                    candidate = str((json.loads(body) or {}).get("ip") or "").strip()
+                except Exception:
+                    candidate = ""
+            if not candidate:
+                match = re.search(r"(?m)^ip=([^\s]+)", body)
+                candidate = match.group(1).strip() if match else ""
+            try:
+                return str(ipaddress.ip_address(candidate))
+            except ValueError:
+                continue
+        except Exception:
+            continue
+    return ""
+
+
+def _basic_proxy_identity_key(proxy_url: str) -> str:
+    s = _strip_proxy_comment(proxy_url or "")
+    if not s:
+        return ""
+    try:
+        u = urlparse(s if "://" in s else f"http://{s}")
+        host = (u.hostname or "").strip().lower()
+        port = u.port
+        if host and port:
+            return f"{host}:{port}"
+        if host:
+            return host
+    except Exception:
+        pass
+    # 去掉凭证后的 host:port 粗解析
+    m = re.search(r"@([^:/?#]+):(\d+)", s)
+    if m:
+        return f"{m.group(1).lower()}:{m.group(2)}"
+    m2 = re.search(r"://([^:/?#]+):(\d+)", s)
+    if m2:
+        return f"{m2.group(1).lower()}:{m2.group(2)}"
+    return s
+
+
+def _singbox_proxy_identity_key(proxy_url: str) -> str:
+    node_tag = _active_singbox_node_tag()
+    now = time.time()
+    with _singbox_identity_lock:
+        cached = _singbox_identity_cache.get(proxy_url)
+        if cached and cached[1] == node_tag and now - cached[0] < _SINGBOX_IDENTITY_TTL_SEC:
+            return cached[2]
+        exit_ip = _probe_singbox_exit_ip(proxy_url)
+        if exit_ip:
+            identity = f"singbox-ip:{exit_ip}"
+        elif node_tag:
+            identity = f"singbox-node:{node_tag}"
+        else:
+            identity = _basic_proxy_identity_key(proxy_url)
+        _singbox_identity_cache[proxy_url] = (now, node_tag, identity)
+        return identity
+
+
+def proxy_identity_key(proxy_url: str) -> str:
+    """返回共享节流身份：Sing-Box 优先真实出口 IP，普通代理使用 host:port。"""
+    s = _strip_proxy_comment(proxy_url or "")
+    if not s:
+        return ""
+    if _is_singbox_local_proxy(s):
+        return _singbox_proxy_identity_key(s)
+    return _basic_proxy_identity_key(s)
+
+
 
 
 _HOST_PORT_RE = re.compile(
@@ -246,12 +383,7 @@ def is_cf_proxy_mode() -> bool:
 
 def is_singbox_proxy_mode() -> bool:
     """config.singbox_enabled：sing-box 本地 mixed（127.0.0.1:2080），节点由 Node 管理。"""
-    conf = _read_config_dict()
-    raw = conf.get("singbox_enabled")
-    if isinstance(raw, bool):
-        return raw
-    s = str(raw or "").strip().lower()
-    return s in ("1", "true", "yes", "on", "enabled")
+    return _singbox_enabled_from_config()
 
 
 def rotate_singbox_node(reason: str = "注册失败") -> bool:
@@ -626,30 +758,6 @@ def _parse_lines(raw, *, strip_proxy_hash: bool = False) -> List[str]:
     return uniq
 
 
-def proxy_identity_key(proxy_url: str) -> str:
-    """同一出口身份的稳定键：优先 host:port，解析失败则用完整 URL。"""
-    s = _strip_proxy_comment(proxy_url or "")
-    if not s:
-        return ""
-    try:
-        u = urlparse(s if "://" in s else f"http://{s}")
-        host = (u.hostname or "").strip().lower()
-        port = u.port
-        if host and port:
-            return f"{host}:{port}"
-        if host:
-            return host
-    except Exception:
-        pass
-    # 去掉凭证后的 host:port 粗解析
-    m = re.search(r"@([^:/?#]+):(\d+)", s)
-    if m:
-        return f"{m.group(1).lower()}:{m.group(2)}"
-    m2 = re.search(r"://([^:/?#]+):(\d+)", s)
-    if m2:
-        return f"{m2.group(1).lower()}:{m2.group(2)}"
-    return s
-
 
 def reload_pools(force: bool = False) -> None:
     """重读 config。force=True 时也保留轮换下标（列表未变时）。"""
@@ -833,7 +941,27 @@ def acquire_proxy_for_register(
     """
     reload_pools()
     waited = 0.0
+
+    def _build_identity_hints() -> Dict[str, str]:
+        # Sing-Box 出口探测可能发起网络请求，必须在 _lock 外完成。
+        with _lock:
+            urls = list(_proxy_list)
+        if not urls and (fallback or '').strip():
+            urls = [(fallback or '').strip()]
+        hints: Dict[str, str] = {}
+        for url in dict.fromkeys(urls):
+            try:
+                hints[url] = proxy_identity_key(url)
+            except Exception:
+                hints[url] = _basic_proxy_identity_key(url)
+        return hints
+
     while True:
+        identity_hints = (
+            _build_identity_hints()
+            if float(_proxy_ip_interval_sec or 0) > 0
+            else {}
+        )
         # 跨进程真相源：先并入磁盘状态，避免与同出口上的其它 runner 各自计时。
         # 放在 _lock 之外：文件 IO 不该阻塞其它线程读配置。
         if float(_proxy_ip_interval_sec or 0) > 0:
@@ -867,10 +995,13 @@ def acquire_proxy_for_register(
             else:
                 preferred = candidates[0]
 
+            def identity_for(url: str) -> str:
+                return identity_hints.get(url) or proxy_identity_key(url)
+
             def remaining(url: str) -> float:
                 if interval <= 0:
                     return 0.0
-                key = proxy_identity_key(url)
+                key = identity_for(url)
                 if not key:
                     return 0.0
                 last = _proxy_last_used.get(key, 0.0)
@@ -885,7 +1016,7 @@ def acquire_proxy_for_register(
             sleep_sec = 0.0
             wait_key = "-"
             if rem_pref <= 0:
-                key = proxy_identity_key(preferred)
+                key = identity_for(preferred)
                 if key and interval > 0:
                     _proxy_last_used[key] = now
                     claimed = (key, now)
@@ -913,7 +1044,7 @@ def acquire_proxy_for_register(
                             if url in ready:
                                 chosen = url
                                 break
-                    key = proxy_identity_key(chosen)
+                    key = identity_for(chosen)
                     if key and interval > 0:
                         _proxy_last_used[key] = now
                         claimed = (key, now)
@@ -921,7 +1052,7 @@ def acquire_proxy_for_register(
                 else:
                     # 3) 全部冷却中 → 暂停等待最早可用
                     sleep_sec = min(max(soonest_wait, 0.05), 30.0)
-                    wait_key = proxy_identity_key(soonest_url) or "-"
+                    wait_key = identity_for(soonest_url) or "-"
 
         # 已占用到代理：锁外立即落盘，让同出口的其它 runner 立刻看到
         if picked is not None:
