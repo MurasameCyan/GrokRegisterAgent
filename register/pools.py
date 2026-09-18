@@ -49,8 +49,8 @@ _proxy_ip_interval_sec = 0.0
 # 进程内存会各自计时 → 同 IP 实际频率翻倍。
 _proxy_last_used: Dict[str, float] = {}
 
-# Sing-Box 的 Python 入口恒为 127.0.0.1:2080，不能把这个本地地址直接当作公网 IP。
-# 优先缓存通过该入口探测到的真实公网 IP；探测失败时退回运行配置中的 route.final 节点 tag。
+# Sing-Box 的 Python 入口恒为 127.0.0.1:2080，不能把这个本地地址当作公网 IP。
+# route.final 节点 tag 是稳定身份；节点上游的公网 IP 可能动态轮换，只作无 tag 时的 fallback。
 _SINGBOX_IDENTITY_TTL_SEC = 30.0
 _singbox_identity_lock = threading.Lock()
 _singbox_identity_cache: Dict[str, Tuple[float, str, str]] = {}
@@ -302,24 +302,27 @@ def _basic_proxy_identity_key(proxy_url: str) -> str:
 
 def _singbox_proxy_identity_key(proxy_url: str) -> str:
     node_tag = _active_singbox_node_tag()
+    if node_tag:
+        return f"singbox-node:{node_tag}"
+
+    # 没有 route.final 时才探测公网 IP；该分支仅用于兼容残缺/手工测试配置。
     now = time.time()
     with _singbox_identity_lock:
         cached = _singbox_identity_cache.get(proxy_url)
         if cached and cached[1] == node_tag and now - cached[0] < _SINGBOX_IDENTITY_TTL_SEC:
             return cached[2]
         exit_ip = _probe_singbox_exit_ip(proxy_url)
-        if exit_ip:
-            identity = f"singbox-ip:{exit_ip}"
-        elif node_tag:
-            identity = f"singbox-node:{node_tag}"
-        else:
-            identity = _basic_proxy_identity_key(proxy_url)
+        identity = (
+            f"singbox-ip:{exit_ip}"
+            if exit_ip
+            else _basic_proxy_identity_key(proxy_url)
+        )
         _singbox_identity_cache[proxy_url] = (now, node_tag, identity)
         return identity
 
 
 def proxy_identity_key(proxy_url: str) -> str:
-    """返回共享节流身份：Sing-Box 优先真实出口 IP，普通代理使用 host:port。"""
+    """返回共享节流身份：Sing-Box 优先 route.final，普通代理使用 host:port。"""
     s = _strip_proxy_comment(proxy_url or "")
     if not s:
         return ""

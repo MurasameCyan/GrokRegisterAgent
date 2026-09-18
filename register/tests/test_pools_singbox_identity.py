@@ -1,7 +1,7 @@
 """Sing-Box 本地入口的节流身份测试。
 
-Sing-Box 节点池共享 127.0.0.1:2080；节流必须看实际出口 IP，网络探测失败时
-退回当前 route.final 节点 tag，而不能把所有节点都归为本地端口一个 key。
+订阅节点的公网出口可能动态轮换；节流必须优先使用稳定的 route.final 节点
+tag，只有运行配置缺少节点 tag 时才退回公网 IP，不能每次把动态 IP 当新出口。
 """
 import json
 import os
@@ -78,7 +78,21 @@ class SingBoxIdentityTests(unittest.TestCase):
         except OSError:
             pass
 
-    def test_singbox_identity_prefers_actual_exit_ip(self):
+    def test_singbox_identity_prefers_active_node_tag_without_network_probe(self):
+        with patch.object(
+            pools,
+            "_probe_singbox_exit_ip",
+            return_value="203.0.113.10",
+            create=True,
+        ) as probe:
+            self.assertEqual(
+                pools.proxy_identity_key("http://127.0.0.1:2080"),
+                "singbox-node:node-a",
+            )
+            probe.assert_not_called()
+
+    def test_singbox_identity_falls_back_to_exit_ip_without_node_tag(self):
+        self.sb_cfg.write_text(json.dumps({"route": {}}), encoding="utf-8")
         with patch.object(
             pools,
             "_probe_singbox_exit_ip",
@@ -90,15 +104,6 @@ class SingBoxIdentityTests(unittest.TestCase):
                 "singbox-ip:203.0.113.10",
             )
             probe.assert_called_once_with("http://127.0.0.1:2080")
-
-    def test_singbox_identity_falls_back_to_active_node_tag(self):
-        with patch.object(
-            pools, "_probe_singbox_exit_ip", return_value="", create=True
-        ):
-            self.assertEqual(
-                pools.proxy_identity_key("http://127.0.0.1:2080"),
-                "singbox-node:node-a",
-            )
 
     def test_non_singbox_loopback_keeps_host_port_identity(self):
         self.cfg.write_text(
@@ -123,7 +128,7 @@ class SingBoxIdentityTests(unittest.TestCase):
             )
             probe.assert_not_called()
 
-    def test_acquire_ignores_legacy_local_port_state_when_exit_ip_is_available(self):
+    def test_acquire_ignores_legacy_local_port_state_when_node_tag_available(self):
         self.state.write_text(
             json.dumps({"last_used": {"127.0.0.1:2080": time.time()}}),
             encoding="utf-8",
@@ -145,11 +150,11 @@ class SingBoxIdentityTests(unittest.TestCase):
         self.assertEqual(picked, "http://127.0.0.1:2080")
         self.assertEqual(waited, 0.0)
         state = json.loads(self.state.read_text(encoding="utf-8"))
-        self.assertIn("singbox-ip:203.0.113.10", state["last_used"])
+        self.assertIn("singbox-node:node-a", state["last_used"])
 
-    def test_same_exit_ip_still_obeys_cooldown(self):
+    def test_same_active_node_still_obeys_cooldown(self):
         self.state.write_text(
-            json.dumps({"last_used": {"singbox-ip:203.0.113.10": time.time()}}),
+            json.dumps({"last_used": {"singbox-node:node-a": time.time()}}),
             encoding="utf-8",
         )
         with patch.object(
@@ -160,9 +165,9 @@ class SingBoxIdentityTests(unittest.TestCase):
         ), patch.object(
             pools.time,
             "sleep",
-            side_effect=AssertionError("same Sing-Box exit IP was not throttled"),
+            side_effect=AssertionError("same Sing-Box node was not throttled"),
         ):
-            with self.assertRaisesRegex(AssertionError, "same Sing-Box exit IP"):
+            with self.assertRaisesRegex(AssertionError, "same Sing-Box node"):
                 pools.acquire_proxy_for_register("", log=lambda _msg: None)
 
 
